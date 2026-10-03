@@ -33,6 +33,31 @@ QUOTES = {
 WINDOW_SESSIONS = 30
 
 
+def _next_weekday(yyyymmdd):
+    d = datetime.strptime(yyyymmdd, "%Y%m%d").date() + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d.strftime("%Y%m%d")
+
+
+def _volume_files_held(conn, have_trade):
+    """CME names daily_volume_YYYYMMDD after the publication date, which is the business day after the trade date
+    inside the file. Return the listing (file) dates already held: names of workbooks the lake captured, plus the
+    next weekday after each stored trade date (covers history whose original file name is unknown)."""
+    held = {_next_weekday(t) for t in have_trade}
+    for request_json, origin_path, source_date in conn.execute(
+            "SELECT request_json, origin_path, source_date FROM v2_payloads "
+            "WHERE source = 'cme_volume' AND status = 'ok'"):
+        m = re.search(r"daily_volume_(\d{8})\.xlsx", request_json or "")
+        if m:
+            held.add(m.group(1))
+        # a local file may carry CME's name or our trade-dated archive name; only the former is a listing date
+        m = re.search(r"daily_volume_(\d{8})\.xlsx", origin_path or "")
+        if m and m.group(1) != (source_date or "")[:10].replace("-", ""):
+            held.add(m.group(1))
+    return held
+
+
 def _today_local(ctx_now):
     return ctx_now.astimezone(CHICAGO).date()
 
@@ -121,9 +146,10 @@ def acquire_cme(conn, session, run_id, data_dir, *, offline, use_browser=True, m
         out["volume"] = {"outcome": "skipped",
                          "detail": "offline run: no CME request" if offline else "volume download not requested"}
     else:
-        have = {r[0][:10].replace("-", "") for r in conn.execute(
+        have_trade = {r[0][:10].replace("-", "") for r in conn.execute(
             "SELECT DISTINCT observed_at FROM v2_observations WHERE metric_id = 'cme.ES_F.volume'")}
-        latest_have = max(have) if have else None
+        latest_have = max(have_trade) if have_trade else None
+        have = _volume_files_held(conn, have_trade)
         started = lake.utc_now_iso()
         t0 = time.monotonic()
         session.calls["cme"] = session.calls.get("cme", 0) + 1

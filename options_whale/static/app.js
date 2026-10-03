@@ -769,7 +769,8 @@ function refreshFrame(id) {
 async function triggerAction(endpoint) {
     log(`System Command: ${endpoint}`, 'cmd');
     try { 
-        const res = await fetch(`${API_BASE}${endpoint}`); 
+        // /run changes state, so the server accepts it only as a POST
+        const res = await fetch(`${API_BASE}${endpoint}`, endpoint === '/run' ? { method: 'POST' } : undefined); 
         const t = await res.text();
         window._lastXmlDump = t; // Cache for copy-data on panel1/panel2
         log(t, 'success'); 
@@ -2121,7 +2122,9 @@ async function loadMacroNews() {
             articles.forEach(article => {
                 const title = article.getAttribute('title') || 'No Title';
                 const published = article.getAttribute('published') || '';
-                const link = article.getAttribute('link') || '#';
+                const rawLink = article.getAttribute('link') || '';
+                // feed text is untrusted: only http(s) links, and every field goes in as text, never as HTML
+                const link = /^https?:\/\//i.test(rawLink) ? rawLink : '#';
                 const sentiment = parseFloat(article.getAttribute('sentiment') || '0');
                 
                 const sentColor = sentiment > 0.05 ? 'text-green-500' : (sentiment < -0.05 ? 'text-red-500' : 'text-zinc-500');
@@ -2130,14 +2133,17 @@ async function loadMacroNews() {
                 const row = document.createElement('a');
                 row.href = link;
                 row.target = '_blank';
+                row.rel = 'noopener noreferrer';
                 row.className = 'block bg-zinc-950 border border-zinc-900 rounded px-3 py-2 hover:border-blue-900 transition-colors group cursor-pointer';
                 row.innerHTML = `
                     <div class="flex justify-between items-start gap-2">
-                        <div class="text-zinc-300 text-[11px] group-hover:text-blue-400 transition-colors leading-tight flex-1">${title}</div>
+                        <div class="news-title text-zinc-300 text-[11px] group-hover:text-blue-400 transition-colors leading-tight flex-1"></div>
                         <div class="text-[7px] font-bold px-1 rounded border border-current ${sentColor} whitespace-nowrap mt-0.5">${sentLabel}</div>
                     </div>
-                    <div class="text-zinc-600 text-[8px] mt-1 uppercase tracking-widest">${published}</div>
+                    <div class="news-published text-zinc-600 text-[8px] mt-1 uppercase tracking-widest"></div>
                 `;
+                row.querySelector('.news-title').textContent = title;
+                row.querySelector('.news-published').textContent = published;
                 container.appendChild(row);
             });
         } else {

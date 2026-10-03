@@ -113,7 +113,7 @@ Serves an interactive vault history dashboard.
 Intelligently merges the latest CME data (Tactical Ruling + Volume Dashboard).
 - **Response**: `application/xml` aggregate of the most recent trading session analysis.
 
-### 2. `GET /run`
+### 2. `POST /run`
 Triggers the local `run_dashboard.command` script on the host system.
 - **Response**: `application/xml` execution confirmation with timestamp.
 
