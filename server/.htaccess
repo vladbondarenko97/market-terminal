@@ -1,0 +1,10 @@
+# /admin/data/.htaccess — uploads are for server-side use (index.php reads portfolio.db from disk), never direct download
+Options -Indexes
+AddDefaultCharset UTF-8
+AddCharset UTF-8 .txt
+<FilesMatch "\.(db|sqlite|sqlite3|bak|xml)$">
+    Require all denied
+</FilesMatch>
+<If "%{REQUEST_URI} =~ m#^/admin/data/backup(/|$)#">
+    Require all denied
+</If>

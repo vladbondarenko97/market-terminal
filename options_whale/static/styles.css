@@ -1,0 +1,472 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+body { 
+    background-color: #050505; 
+    color: #00ff00; 
+    font-family: 'JetBrains Mono', monospace; 
+    font-size: 13px;
+}
+
+#consoleSection {
+    transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#panelContainer {
+    transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-panel { 
+    background: rgba(15, 15, 15, 0.8); 
+    border: 1px solid #1a1a1a; 
+    border-radius: 4px; 
+}
+
+.terminal-scroll::-webkit-scrollbar { width: 4px; }
+.terminal-scroll::-webkit-scrollbar-thumb { background: #1a1a1a; }
+
+.btn-action { 
+    transition: all 0.2s; 
+    border: 1px solid #00ff00; 
+    cursor: pointer; 
+}
+
+.btn-action:hover { 
+    background: #00ff00; 
+    color: #000; 
+    box-shadow: 0 0 15px rgba(0, 255, 0, 0.4); 
+}
+
+.status-pulse { animation: pulse 2s infinite; }
+
+@keyframes pulse { 
+    0%, 100% { opacity: 1; } 
+    50% { opacity: .3; } 
+}
+
+iframe { filter: contrast(1.1) brightness(0.9); }
+
+/* --- WAR ROOM SPECIFIC STYLES --- */
+
+/* Historical Presets */
+.btn-preset {
+    background: rgba(15, 15, 15, 0.8);
+    border: 1px solid #3f3f46;
+    color: #a1a1aa;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-radius: 2px;
+}
+.btn-preset:hover {
+    border-color: #ef4444;
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+/* Custom Range Sliders */
+.war-slider {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: #27272a;
+    border-radius: 2px;
+    outline: none;
+}
+.war-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #ef4444;
+    cursor: pointer;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.8);
+    transition: background 0.15s, transform 0.1s;
+}
+.war-slider::-webkit-slider-thumb:hover {
+    background: #f87171;
+    transform: scale(1.2);
+}
+
+/* War room: score, tripwire bar, formula factors, guide */
+.war-score { font-size: 30px; line-height: 1; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.war-track { position: relative; height: 8px; border-radius: 999px; background: #18181b; margin-top: 2px; }
+.war-zone { position: absolute; top: 0; bottom: 0; opacity: 0.55; }
+.war-zone:first-child { border-radius: 999px 0 0 999px; }
+.war-zone:nth-child(4) { border-radius: 0 999px 999px 0; }
+.war-mark { position: absolute; top: 50%; transform: translate(-50%, -50%); transition: left 0.25s ease; }
+.war-mark-scenario { width: 14px; height: 14px; border-radius: 50%; background: #22c55e; border: 2px solid #09090b; z-index: 2; }
+.war-mark-live { width: 2px; height: 16px; background: #e4e4e7; z-index: 1; }
+.war-ticks { position: relative; height: 10px; margin-top: 2px; letter-spacing: 0.08em; }
+.war-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.war-ticks span:first-child { transform: none; }
+.war-ticks span:last-child { transform: translateX(-100%); }
+.war-ticks.uppercase span:first-child, .war-ticks.uppercase span:last-child { transform: translateX(-50%); }
+.war-factor { background: #09090b; border: 1px solid #27272a; border-radius: 4px; padding: 4px 6px; }
+.war-lever-name { color: #a1a1aa; border-bottom: 1px dashed #52525b; padding-bottom: 1px; cursor: help; text-align: left; }
+.war-lever-name:hover { color: #fafafa; }
+.war-solo { font-size: 8px; color: #71717a; }
+.war-solo.up { color: #f87171; }
+.war-solo.down { color: #4ade80; }
+.btn-preset.active { border-color: #ef4444; color: #fca5a5; background: rgba(239, 68, 68, 0.15); }
+.war-guide-backdrop { position: fixed; inset: 0; z-index: 9500; background: rgba(0, 0, 0, 0.72); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.war-guide { display: flex; flex-direction: column; gap: 10px; font-size: 12px; line-height: 1.5; color: #a1a1aa; width: 100%; max-width: 620px; max-height: 86vh;
+             overflow-y: auto; background: #09090b; border: 1px solid #7f1d1d; border-radius: 8px; padding: 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8); }
+/* The page grid pins rows at 320px, which clipped this card; it takes two rows, and scrolls if still short */
+#panel3:not(.fullscreen-mode) { grid-row: span 2; }
+#panel3 .zoomable { overflow-y: auto; }
+.war-guide b { color: #d4d4d8; }
+.war-guide-item { border-top: 1px solid #27272a; padding-top: 10px; display: flex; flex-direction: column; gap: 2px; }
+.war-guide-item.focus { border: 1px solid #7f1d1d; border-radius: 4px; padding: 6px; background: rgba(127, 29, 29, 0.12); }
+.fullscreen-mode .war-score { font-size: 72px; }
+.fullscreen-mode .war-track { height: 16px; }
+.fullscreen-mode .war-solo { font-size: 16px; }
+.fullscreen-mode #bellCurve { height: 120px !important; }
+
+/* Forces the panel to break out of the grid and fill the screen */
+.fullscreen-mode {
+    position: fixed !important;
+    top: 2rem !important;
+    left: 2rem !important;
+    right: 2rem !important;
+    bottom: 2rem !important;
+    z-index: 9999 !important;
+    height: calc(100vh - 4rem) !important;
+    width: calc(100vw - 4rem) !important;
+    box-shadow: 0 0 50px rgba(0,0,0,1);
+    border: 1px solid #3f3f46 !important; /* Zinc-700 border for visibility */
+    cursor: default !important;
+    background: black !important; /* Ensure it's opaque */
+}
+
+/* --- FULLSCREEN TEXT SCALING --- */
+/* When a panel is maxed, we target all the tiny pixel-based Tailwind classes */
+.fullscreen-mode .text-\[7px\], .fullscreen-mode .text-\[8px\] { font-size: 14px !important; }
+.fullscreen-mode .text-\[9px\] { font-size: 16px !important; }
+.fullscreen-mode .text-\[10px\], .fullscreen-mode .text-xs { font-size: 18px !important; }
+.fullscreen-mode .text-\[12px\] { font-size: 22px !important; }
+
+/* Scale the Sliders and Tooltips in Fullscreen */
+.fullscreen-mode .war-slider { height: 12px; }
+.fullscreen-mode .war-slider::-webkit-slider-thumb { width: 24px; height: 24px; }
+.fullscreen-mode .group-hover\:block { width: 400px !important; font-size: 16px !important; }
+
+/* High-Res Canvas Container */
+.fullscreen-mode canvas {
+    height: 150px !important; /* Give the curve more vertical room in full screen */
+}
+
+/* --- RESIZER FRICTION FIXES --- */
+
+/* When this class is on the body, nothing can be highlighted */
+body.resizing-active {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    cursor: row-resize !important;
+}
+
+/* The Event Shield: Blocks iframes from stealing mouse focus */
+#resize-shield {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 9999; /* Higher than iframes and modals */
+    background: transparent;
+    display: none;
+    cursor: row-resize;
+}
+
+/* Ensure the resizer bar itself stays highlighted during the drag */
+body.resizing-active #v-resizer {
+    background-color: #2563eb; /* blue-600 */
+}
+
+/* --- FLEX-SYNC LAYOUT FIXES --- */
+
+/* Ensure the main center column is a strict flex container */
+.center-display-column {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+/* Allow the 3 Panels to grow and fill the grid cells */
+.draggable-panel {
+    height: 100%;
+    min-height: 0;
+}
+
+/* Force iframes to never cause scrollbars on the parent */
+.draggable-panel iframe {
+    height: 100% !important;
+    width: 100% !important;
+    display: block;
+}
+
+/* Ensure the zoom wrapper hides anything that scales too large */
+.overflow-hidden.relative {
+    overflow: hidden !important;
+}
+
+/* Allow the War Room internal columns to stretch */
+#panel3 .flex-1.flex-col {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden; /* Prevent internal scrolling */
+}
+
+/* Make the War Room canvas responsive but shrinkable */
+#panel3 canvas {
+    flex-shrink: 1; /* Allow it to get smaller when squished */
+    flex-grow: 1;
+    min-height: 20px; /* Lower min-height so it doesn't force a scrollbar */
+    max-height: 120px; /* Don't let it get too tall */
+    width: 100% !important;
+    margin-top: 0.25rem !important; /* Reduce top margin */
+}
+
+/* Tighter spacing for the War Room sliders when in 2-row layout */
+#panel3 .slider-group {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    margin-bottom: 0px !important; /* Remove bottom margin */
+}
+
+#panel3 .slider-group .flex.justify-between {
+    margin-bottom: 0px !important; /* Tighter gap between label and slider */
+}
+
+/* Ensure the War Room footer buttons don't take up too much vertical space */
+#panel3 .flex.justify-between.items-center.mt-2 {
+    padding-top: 0.25rem !important;
+    margin-top: 0.25rem !important;
+}
+
+/* Change slider dot color and add glow on hover (Chrome/Safari/Edge) */
+.war-slider::-webkit-slider-thumb:hover {
+    background: #ff4444 !important; /* Brighter neon red */
+    box-shadow: 0 0 12px rgba(255, 68, 68, 0.9) !important; /* Stronger glow */
+    transform: scale(1.3); /* Makes the dot pop slightly larger */
+    cursor: grab;
+}
+
+/* While actively dragging the slider */
+.war-slider::-webkit-slider-thumb:active {
+    background: #ffffff !important; /* Turns white when clicked/dragging */
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.8) !important;
+    cursor: grabbing;
+}
+
+/* Firefox Support */
+.war-slider::-moz-range-thumb:hover {
+    background: #ff4444 !important;
+    box-shadow: 0 0 12px rgba(255, 68, 68, 0.9) !important;
+    transform: scale(1.3);
+    cursor: grab;
+}
+
+.war-slider::-moz-range-thumb:active {
+    background: #ffffff !important;
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.8) !important;
+    cursor: grabbing;
+}
+
+/* Physical Arb Ledger Toggle States */
+.arb-toggle.active {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+    border-color: #ffffff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
+}
+
+/* SLV Flow Toggle States */
+.slv-toggle.active {
+    background-color: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border-color: #34d399;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+}
+
+/* --- MOBILE SPECIFIC STYLES --- */
+@media (max-width: 768px) {
+    .fullscreen-mode {
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        height: 100vh !important;
+        height: 100dvh !important;
+        width: 100vw !important;
+    }
+    
+    .war-slider::-webkit-slider-thumb {
+        width: 20px;
+        height: 20px;
+    }
+    .war-slider::-moz-range-thumb {
+        width: 20px;
+        height: 20px;
+    }
+    
+    /* Improve touch scroll on panels */
+    .draggable-panel {
+        touch-action: pan-y;
+    }
+    
+    /* Prevent horizontal overflow on mobile */
+    body, main {
+        overflow-x: hidden;
+    }
+    
+    /* Fix tooltips for mobile (tap instead of hover) */
+    .group-hover\:block {
+        display: none !important;
+    }
+    .group:active .group-hover\:block,
+    .group:focus .group-hover\:block,
+    .group:focus-within .group-hover\:block {
+        display: block !important;
+    }
+
+    /* Mobile Tab System */
+    .mobile-tab-hidden {
+        display: none !important;
+    }
+}
+
+/* --- TAB NAVIGATION SYSTEM --- */
+.tab-bar {
+    display: flex;
+    background: #000;
+    border-bottom: 1px solid #1a1a1a;
+    padding: 0 1rem;
+    gap: 2rem;
+    height: 3rem;
+    align-items: center;
+    z-index: 40;
+}
+
+.tab-btn {
+    font-size: 11px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #52525b; /* zinc-500 */
+    cursor: pointer;
+    transition: all 0.3s;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    border-bottom: 2px solid transparent;
+}
+
+.tab-btn:hover {
+    color: #a1a1aa; /* zinc-400 */
+}
+
+.tab-btn.active {
+    color: #fff;
+    border-bottom-color: #22c55e; /* green-500 */
+    text-shadow: 0 0 10px rgba(34, 197, 94, 0.5);
+}
+
+.tab-content {
+    display: block;
+}
+
+.tab-content.hidden {
+    display: none !important;
+}
+
+/* --- TIME ARBITRAGE SPECIFIC STYLES --- */
+.matrix-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: bold;
+}
+
+.trap-active {
+    animation: trap-flash 1s infinite alternate;
+}
+
+@keyframes trap-flash {
+    from { color: #ef4444; text-shadow: 0 0 5px rgba(239, 68, 68, 0.5); }
+    to { color: #fff; text-shadow: 0 0 20px rgba(239, 68, 68, 0.8); }
+}
+
+/* ============================ FORECAST LAB: rotating rainbow cards ============================ */
+@property --fc-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+@keyframes fc-spin { to { --fc-angle: 360deg; } }
+@keyframes fc-hue { to { background-position: 200% 0; } }
+.rainbow-card {
+    position: relative; isolation: isolate; border-radius: 12px; padding: 2px; min-height: 380px;
+    background: conic-gradient(from var(--fc-angle), #ff3b5c, #ff9f1c, #ffe14d, #3ddc84, #22d3ee, #6366f1, #d946ef, #ff3b5c);
+    animation: fc-spin 4s linear infinite; animation-delay: var(--fc-delay, 0s);
+}
+.rainbow-card::after {
+    content: ""; position: absolute; inset: 0; border-radius: 12px; background: inherit;
+    filter: blur(16px); opacity: .35; z-index: -1; animation: inherit;
+}
+.rainbow-inner { background: #050507; border-radius: 10px; height: 100%; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.fc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; border-bottom: 1px solid #1f1f23; padding-bottom: 8px; }
+.fc-title { font-size: 11px; font-weight: 800; letter-spacing: .18em; color: #f4f4f5; }
+.fc-sub { font-size: 9px; color: #71717a; margin-top: 3px; letter-spacing: .05em; }
+.fc-copy { font-size: 9px; color: #71717a; font-weight: 700; }
+.fc-copy:hover { color: #4ade80; }
+.fc-body { flex: 1; display: flex; flex-direction: column; gap: 10px; font-size: 11px; color: #d4d4d8; min-height: 0; }
+.fc-muted { color: #71717a; font-size: 10px; }
+.fc-note { color: #71717a; font-size: 9px; line-height: 1.4; }
+.fc-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; }
+.fc-kpi { background: #0c0c10; border: 1px solid #1f1f23; border-radius: 8px; padding: 7px 9px; }
+.fc-kpi .l { font-size: 8px; color: #71717a; text-transform: uppercase; letter-spacing: .12em; }
+.fc-kpi .v { font-size: 15px; font-weight: 800; color: #fafafa; font-family: ui-monospace, Menlo, monospace; margin-top: 2px; }
+.fc-kpi .s { font-size: 9px; color: #a1a1aa; margin-top: 1px; }
+.fc-table { width: 100%; border-collapse: collapse; font-family: ui-monospace, Menlo, monospace; font-size: 10px; }
+.fc-table th { text-align: right; font-size: 8px; color: #71717a; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; padding: 3px 4px; border-bottom: 1px solid #1f1f23; }
+.fc-table td { text-align: right; padding: 4px; border-bottom: 1px solid #111114; color: #d4d4d8; white-space: nowrap; }
+.fc-table th:first-child, .fc-table td:first-child { text-align: left; }
+.fc-chart { position: relative; height: 170px; }
+.fc-pos { color: #4ade80; } .fc-neg { color: #f87171; } .fc-warn { color: #fbbf24; }
+.fc-badge { display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: .12em; padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.fc-seg { display: flex; gap: 4px; }
+.fc-seg button { font-size: 9px; padding: 2px 8px; border-radius: 999px; border: 1px solid #27272a; color: #a1a1aa; }
+.fc-seg button.active { color: #fafafa; border-color: #a1a1aa; }
+.fc-bar { position: relative; height: 10px; border-radius: 999px; background: linear-gradient(90deg, #f87171, #27272a 50%, #4ade80); }
+.fc-bar i { position: absolute; top: -3px; width: 4px; height: 16px; background: #fafafa; border-radius: 2px; transform: translateX(-2px); }
+.fc-toggle { font-size: 10px; font-weight: 800; letter-spacing: .15em; padding: 5px 12px; border-radius: 999px; border: 1px solid #27272a; color: #a1a1aa; }
+.fc-toggle.active { color: #050507; background: linear-gradient(90deg, #ff3b5c, #ffe14d, #3ddc84, #22d3ee, #d946ef); border-color: transparent; }
+.fc-rainbow-text { background: linear-gradient(90deg, #ff3b5c, #ff9f1c, #ffe14d, #3ddc84, #22d3ee, #6366f1, #d946ef, #ff3b5c);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: fc-hue 6s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+    .rainbow-card, .rainbow-card::after, .fc-rainbow-text { animation: none; }
+}
+
+/* ============================ Console minimized: title bar only, fully on screen ============================ */
+#consoleSection.console-minimized { padding-bottom: 6px; }
+#consoleSection.console-minimized > .glass-panel { height: auto; }
+
+/* ============================ Forecast Lab: full screen + FAQ ============================ */
+.fc-actions { display: flex; gap: 6px; align-items: center; }
+.fc-icon { width: 20px; height: 20px; border-radius: 999px; border: 1px solid #3f3f46; color: #a1a1aa; font-size: 10px; font-weight: 800;
+    display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
+.fc-icon:hover { color: #fafafa; border-color: #a1a1aa; }
+.rainbow-card.fc-full { position: fixed; inset: 18px; z-index: 9001; min-height: 0; }
+.rainbow-card.fc-full .rainbow-inner { overflow-y: auto; }
+.rainbow-card.fc-full .fc-chart { height: 38vh; }
+.fc-chart-tall { height: 300px; flex-shrink: 0; }
+.rainbow-card.fc-full .fc-chart-tall { height: 52vh; }
+.rainbow-card.fc-full .fc-body { font-size: 12px; }
+.fc-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9000; backdrop-filter: blur(3px); }
+.fc-faq { position: fixed; inset: 0; z-index: 9100; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.6); }
+.fc-faq.hidden, .fc-backdrop.hidden { display: none; }
+.fc-faq-inner { width: min(760px, 100%); max-height: 86vh; display: flex; }
+.fc-faq-inner .rainbow-inner { overflow-y: auto; }
+.fc-faq-body { font-size: 12px; line-height: 1.6; color: #d4d4d8; }
+.fc-faq-body h4 { font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: #a1a1aa; margin: 14px 0 4px; font-weight: 800; }
+.fc-faq-body ul { list-style: disc; padding-left: 18px; }
+.fc-faq-body li { margin: 2px 0; }
+.fc-faq-body b { color: #fafafa; }
+body.fc-lock { overflow: hidden; }

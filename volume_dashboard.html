@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Volume Flow Dashboard</title>
+        <!-- SweetAlert2 for modals -->
+        <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+        <style>
+            .swal2-modal {
+                min-width: 800px;
+                min-height: 400px;
+                resize: both;
+                overflow: auto;
+            }
+            .swal2-container {
+                z-index: 9999;
+            }
+        </style>
+    <style>
+        :root {
+            --bg-color: #0b0c10;
+            --card-bg: #1f2833;
+            --text-main: #c5c6c7;
+            --accent-blue: #66fcf1;
+            --accent-teal: #45a29e;
+            --buy-color: #00ff88; /* Vibrant Green */
+            --sell-color: #ff3e3e; /* Vibrant Red */
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 40px 20px;
+        }
+        .header { text-align: center; margin-bottom: 50px; }
+        .header h1 { color: var(--accent-blue); font-size: 2.5rem; letter-spacing: 2px; margin: 0; }
+        .header p { color: var(--accent-teal); font-size: 1.1rem; margin-top: 10px; }
+        
+        .grid-container {
+            max-width: 1800px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 40px;
+        }
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            padding: 25px;
+            border: 1px solid rgba(102, 252, 241, 0.15);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .card h2 {
+            color: #fff;
+            border-bottom: 2px solid var(--accent-teal);
+            padding-bottom: 10px;
+            display: inline-block;
+            margin-top: 0;
+        }
+        /* Price Card Styling */
+        .price-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+        }
+        .price-item {
+            padding: 15px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+            border-top: 2px solid var(--accent-teal);
+        }
+        .price-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent-teal);
+            display: block;
+            margin-bottom: 8px;
+        }
+        .price-value {
+            font-size: 1.8rem;
+            font-weight: 800;
+            color: #fff;
+            display: block;
+        }
+        .price-change {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-top: 4px;
+            display: inline-block;
+        }
+        /* Vault Styling */
+        .vault-stats {
+            text-align: left;
+            padding: 10px 20px;
+        }
+        .vault-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 1.1rem;
+        }
+        .vault-label { color: var(--accent-teal); font-weight: 600; }
+        .vault-num { color: #fff; font-family: 'Courier New', monospace; }
+        
+        .up { color: var(--buy-color) !important; }
+        .down { color: var(--sell-color) !important; }
+        .buy { color: var(--buy-color); font-weight:700; }
+        .sell { color: var(--sell-color); font-weight:700; }
+        
+        /* NEW: DUAL CHART FLEXBOX LAYOUT */
+        .chart-comparison {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+        .chart-box {
+            flex: 1;
+            background-color: #111;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+        .chart-box h3 {
+            text-align: center;
+            color: var(--accent-teal);
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 1.1rem;
+        }
+        .chart-box img {
+            width: 100%;
+            border-radius: 6px;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Volume Flow Dashboard</h1>
+        <p>Dual-Horizon Institutional Matrix for SPY and SLV</p>
+    </div>
+    <div class="grid-container">
+
+        <style>
+        :root {
+            --bg-color: #0b0c10;
+            --card-bg: #1f2833;
+            --text-main: #c5c6c7;
+            --accent-blue: #66fcf1;
+            --accent-teal: #45a29e;
+            --buy-color: #00ff88; /* Vibrant Green */
+            --sell-color: #ff3e3e; /* Vibrant Red */
+        }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 40px 20px;
+        }
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            padding: 25px;
+            border: 1px solid rgba(102, 252, 241, 0.15);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        /* Price Card Styling */
+        .price-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+        }
+        .price-item {
+            padding: 15px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+            border-top: 2px solid var(--accent-teal);
+        }
+        .price-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent-teal);
+            display: block;
+            margin-bottom: 8px;
+        }
+        .price-value {
+            font-size: 1.8rem;
+            font-weight: 800;
+            color: #fff;
+            display: block;
+        }
+        .price-change {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-top: 4px;
+            display: inline-block;
+        }
+        /* Vault Styling */
+        .vault-stats {
+            text-align: left;
+            padding: 10px 20px;
+        }
+        .vault-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 1.1rem;
+        }
+        .vault-label { color: var(--accent-teal); font-weight: 600; }
+        .vault-num { color: #fff; font-family: 'Courier New', monospace; }
+        
+        .up { color: var(--buy-color) !important; }
+        .down { color: var(--sell-color) !important; }
+        .buy { color: var(--buy-color); font-weight:700; }
+        .sell { color: var(--sell-color); font-weight:700; }
+        
+        /* ... Keep your existing Chart styles below ... */
+    </style>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 20px; max-width: 1800px; margin: 0 auto 40px auto;">
+        
+        <div class="card" style="flex: 3; min-width: 700px;">
+            <h2 style="border-bottom: none; margin-bottom: 20px; font-size: 1.2rem;">GLOBAL SILVER ARBITRAGE MATRIX</h2>
+            <div class="price-grid">
+                <div class="price-item" id="slv-card" style="cursor:pointer; position:relative;">
+                    <button class="info-btn" id="slv-info-btn" style="position:absolute;top:8px;right:8px;background:#444;color:#fff;border:none;border-radius:50%;width:24px;height:24px;font-size:14px;font-weight:bold;cursor:pointer;line-height:24px;text-align:center;">i</button>
+                    <span class="price-label">SLV (ETF)</span>
+                    <span class="price-value">{{SLV_PRICE}}</span>
+                    <span class="price-change {{SLV_CLASS}}">{{SLV_CHANGE}}</span>
+                    <span class="price-change {{SLV_CLASS}}" style="font-size:0.9rem;">{{SLV_PCT}}</span>
+                </div>
+                <div class="price-item" id="comex-card" style="cursor:pointer; position:relative;">
+                    <button class="info-btn" id="comex-info-btn" style="position:absolute;top:8px;right:8px;background:#444;color:#fff;border:none;border-radius:50%;width:24px;height:24px;font-size:14px;font-weight:bold;cursor:pointer;line-height:24px;text-align:center;">i</button>
+                    <span class="price-label">COMEX (SIH26)</span>
+                    <span class="price-value">{{SIH26_PRICE}}</span>
+                    <span class="price-change {{SIH26_CLASS}}">{{SIH26_CHANGE}}</span>
+                    <span class="price-change {{SIH26_CLASS}}" style="font-size:0.9rem;">{{SIH26_PCT}}</span>
+                </div>
+                <div class="price-item" id="spot-card" style="border-top-color: var(--accent-blue);cursor:pointer; position:relative;">
+                    <button class="info-btn" id="spot-info-btn" style="position:absolute;top:8px;right:8px;background:#444;color:#fff;border:none;border-radius:50%;width:24px;height:24px;font-size:14px;font-weight:bold;cursor:pointer;line-height:24px;text-align:center;">i</button>
+                    <span class="price-label" style="color: var(--accent-blue);">Spot (Physical)</span>
+                    <span class="price-value">{{SPOT_PRICE}}</span>
+                    <span class="price-change {{SPOT_CLASS}}">{{SPOT_CHANGE}}</span>
+                    <span class="price-change {{SPOT_CLASS}}" style="font-size:0.9rem;">{{SPOT_PCT}}</span>
+                </div>
+                <div class="price-item" id="shfe-card" style="cursor:pointer; position:relative;">
+                    <button class="info-btn" id="shfe-info-btn" style="position:absolute;top:8px;right:8px;background:#444;color:#fff;border:none;border-radius:50%;width:24px;height:24px;font-size:14px;font-weight:bold;cursor:pointer;line-height:24px;text-align:center;">i</button>
+                    <style>
+                        .info-tooltip {
+                            position: absolute;
+                            z-index: 99999;
+                            background: #222;
+                            color: #fff;
+                            padding: 8px 14px;
+                            border-radius: 6px;
+                            font-size: 0.95rem;
+                            box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+                            pointer-events: none;
+                            opacity: 0;
+                            transition: opacity 0.15s;
+                            white-space: pre-line;
+                        }
+                    </style>
+                    <script>
+
+                    const infoSources = {
+                        slv: {
+                            title: 'SLV (ETF) Data Source',
+                            provider: 'Yahoo Finance',
+                            url: 'https://finance.yahoo.com/quote/SLV',
+                            method: 'GET',
+                            headers: 'None'
+                        },
+                        comex: {
+                            title: 'COMEX (SIH26) Data Source',
+                            provider: 'Yahoo Finance',
+                            url: 'https://finance.yahoo.com/quote/SIH26.CMX',
+                            method: 'GET',
+                            headers: 'None'
+                        },
+                        spot: {
+                            title: 'Spot Silver Data Source',
+                            provider: 'GoldAPI.io',
+                            url: 'https://www.goldapi.io/api/XAG/USD',
+                            method: 'GET',
+                            headers: '{\n  "x-access-token": "<GOLD_API_KEY>"\n}'
+                        },
+                        shfe: {
+                            title: 'SHFE (Shanghai) Data Source',
+                            provider: 'Sina Finance',
+                            url: 'https://finance.sina.com.cn',
+                            method: 'GET',
+                            headers: '{\n  "Referer": "https://finance.sina.com.cn"\n}'
+                        }
+                    };
+
+                    function createTooltip() {
+                        let tooltip = document.createElement('div');
+                        tooltip.className = 'info-tooltip';
+                        document.body.appendChild(tooltip);
+                        return tooltip;
+                    }
+
+                    function showTooltip(asset, event) {
+                        const src = infoSources[asset];
+                        const tooltip = window._infoTooltip || (window._infoTooltip = createTooltip());
+                        tooltip.innerHTML = `<b>${src.title}</b><br><b>Provider:</b> ${src.provider}<br><b>URL:</b> <a href='${src.url}' target='_blank' style='color:#66fcf1;'>${src.url}</a>`;
+                        tooltip.style.opacity = 1;
+                        tooltip.style.left = (event.pageX + 18) + 'px';
+                        tooltip.style.top = (event.pageY - 10) + 'px';
+                    }
+
+                    function hideTooltip() {
+                        const tooltip = window._infoTooltip;
+                        if (tooltip) tooltip.style.opacity = 0;
+                    }
+
+                    document.getElementById('slv-info-btn').addEventListener('mouseenter', e => showTooltip('slv', e));
+                    document.getElementById('slv-info-btn').addEventListener('mousemove', e => showTooltip('slv', e));
+                    document.getElementById('slv-info-btn').addEventListener('mouseleave', hideTooltip);
+
+                    document.getElementById('comex-info-btn').addEventListener('mouseenter', e => showTooltip('comex', e));
+                    document.getElementById('comex-info-btn').addEventListener('mousemove', e => showTooltip('comex', e));
+                    document.getElementById('comex-info-btn').addEventListener('mouseleave', hideTooltip);
+
+                    document.getElementById('spot-info-btn').addEventListener('mouseenter', e => showTooltip('spot', e));
+                    document.getElementById('spot-info-btn').addEventListener('mousemove', e => showTooltip('spot', e));
+                    document.getElementById('spot-info-btn').addEventListener('mouseleave', hideTooltip);
+
+                    document.getElementById('shfe-info-btn').addEventListener('mouseenter', e => showTooltip('shfe', e));
+                    document.getElementById('shfe-info-btn').addEventListener('mousemove', e => showTooltip('shfe', e));
+                    document.getElementById('shfe-info-btn').addEventListener('mouseleave', hideTooltip);
+                    </script>
+                    <span class="price-label">SHFE (Shanghai)</span>
+                    <span class="price-value">{{SHFE_PRICE}}</span>
+                    <span class="price-change {{SHFE_CLASS}}">{{SHFE_CHANGE}}</span>
+                    <span class="price-change {{SHFE_CLASS}}" style="font-size:0.9rem;">{{SHFE_PCT}}</span>
+                </div>
+            </div>
+            </head>
+            <body>
+            <script>
+            // Track open modals
+            let openModals = {};
+            const maxModals = 4;
+
+            function openTradingViewModal(asset) {
+                if (openModals[asset]) return; // Prevent duplicate modals
+                if (Object.keys(openModals).length >= maxModals) {
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'Max 4 modals',
+                        text: 'Close a modal before opening another.',
+                        showConfirmButton: false,
+                        showCloseButton: true,
+                        willClose: () => { delete openModals[asset]; }
+                    });
+                    return;
+                }
+                let symbol, title;
+                switch(asset) {
+                    case 'slv':
+                        symbol = 'AMEX:SLV';
+                        title = 'SLV (ETF) TradingView Chart';
+                        break;
+                    case 'comex':
+                        symbol = 'COMEX:SIH2026';
+                        title = 'COMEX Silver Futures Chart';
+                        break;
+                    case 'spot':
+                        symbol = 'OANDA:XAGUSD';
+                        title = 'Spot Silver Chart';
+                        break;
+                    case 'shfe':
+                        symbol = 'AG1!';
+                        title = 'SHFE (Shanghai) Silver Chart';
+                        break;
+                    default:
+                        symbol = 'AMEX:SLV';
+                        title = 'SLV (ETF) TradingView Chart';
+                }
+                openModals[asset] = true;
+                Swal.fire({
+                    title: title,
+                    html: `<div style='width:100%;height:400px;min-width:600px;'><iframe src='https://www.tradingview.com/widgetembed/?symbol=${symbol}&interval=D&theme=dark&style=1&toolbarbg=1f2833&withdateranges=1&hide_side_toolbar=0&allow_symbol_change=1&save_image=1&studies=[]' width='100%' height='400' frameborder='0' allowfullscreen style='border-radius:8px;'></iframe></div>`,
+                    showCloseButton: true,
+                    showConfirmButton: false,
+                    willClose: () => { delete openModals[asset]; },
+                    customClass: {
+                        popup: 'swal2-modal'
+                    }
+                });
+            }
+
+            document.getElementById('slv-card').onclick = () => openTradingViewModal('slv');
+            document.getElementById('comex-card').onclick = () => openTradingViewModal('comex');
+            document.getElementById('spot-card').onclick = () => openTradingViewModal('spot');
+            document.getElementById('shfe-card').onclick = () => openTradingViewModal('shfe');
+            </script>
+            <div style="margin-top: 15px; font-size: 0.75rem; color: #555; text-align: right;">
+                SYNCED AT: {{LAST_UPDATED}}
+            </div>
+        </div>
+
+        <div class="card" style="flex: 1; min-width: 300px; border-top: 3px solid var(--accent-blue);">
+            <h2 style="border-bottom: none; margin-bottom: 20px; font-size: 1.2rem;">COMEX VAULTS</h2>
+            <div class="vault-stats">
+                <div class="vault-row">
+                    <span class="vault-label">Registered:</span>
+                    <span class="vault-num" style="color: var(--accent-blue);">{{REG_OZ}}</span>
+                </div>
+                <div class="vault-row">
+                    <span class="vault-label">Eligible:</span>
+                    <span class="vault-num">{{ELIG_OZ}}</span>
+                </div>
+                <hr style="border: 0; border-top: 1px solid #333; margin: 15px 0;">
+                <div class="vault-row" style="font-size: 1.3rem;">
+                    <span class="vault-label">Daily Change:</span>
+                    <span class="vault-num {{CHANGE_COLOR}}">{{DAILY_CHANGE}}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+        <div class="card">
+            <h2>COMEX Physical Silver Inventory</h2>
+            <div class="chart-comparison">
+                <div class="chart-box">
+                    <h3>Macro Trend (30 Days)</h3>
+                    <img src="chart6_comex_inventory_30d.png" alt="30 Day Inventory" style="width: 100%; border-radius: 6px; display: block;">                
+                </div>
+            </div>
+            <div class="signal-box">
+                <strong>Actionable SLV Signal:</strong>
+                A vertical drain in <strong>Registered (Deliverable)</strong> silver while SLV price remains flat is the ultimate "Physical Squeeze" signal. This indicates institutional giants are de-warranting metal and pulling supply into private hands. When confirmed by SI Volume spikes and rising SI Open Interest, this is a high-conviction supply-shock setup—pile into long-dated calls or physical metal (<span class="buy">STRONG BUY</span>). Conversely, large inflows or sustained green change bars indicate a vault glut; exit long calls and pivot to selling premium (<span class="sell">SELL</span>).
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>S&P 500 (ES) - Macro Liquidity Gauge</h2>
+            <div class="chart-comparison">
+                <div class="chart-box">
+                    <h3>Macro Trend (30 Days)</h3>
+                    <img src="chart1_es_conviction_30d.png" alt="30 Day">
+                </div>
+                <div class="chart-box">
+                    <h3>Immediate Momentum (7 Days)</h3>
+                    <img src="chart1_es_conviction_7d.png" alt="7 Day">
+                </div>
+            </div>
+            <div class="signal-box">
+                <strong>Actionable SLV Signal:</strong>
+                Rising <strong>ES Open Interest</strong> alongside price appreciation is the heartbeat of institutional liquidity. It confirms "Big Money" is expanding risk appetite, creating a supportive tailwind for precious metals. Use this expansion as a green light to accumulate long-dated SLV calls (<span class="buy">BUY</span>). If ES OI evaporates while prices stall, the pros are de-risking and liquidity is pulling back; cut exposure and tighten stop-losses on all silver positions (<span class="sell">SELL</span>).
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Silver (SI) - Institutional Conviction</h2>
+            <div class="chart-comparison">
+                <div class="chart-box">
+                    <h3>Macro Trend (30 Days)</h3>
+                    <img src="chart2_si_conviction_30d.png" alt="30 Day">
+                </div>
+                <div class="chart-box">
+                    <h3>Immediate Momentum (7 Days)</h3>
+                    <img src="chart2_si_conviction_7d.png" alt="7 Day">
+                </div>
+            </div>
+            <div class="signal-box">
+                <strong>Actionable SLV Signal:</strong>
+                Focus on the <strong>Conviction Trifecta</strong>: Rising Price + Explosive Volume + Expanding Open Interest. This confirms structural, long-term institutional accumulation rather than temporary noise. Position aggressively in long-dated calls to ride the trend (<span class="buy">BUY</span>). If the price rallies while OI drops, you are looking at a short-covering fake-out—the move is hollow and lacks "Smart Money" sponsorship; take profits immediately or hedge for a reversal (<span class="sell">SELL</span>).
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Silver: Smart Money vs. Dumb Money</h2>
+            <div class="chart-comparison">
+                <div class="chart-box">
+                    <h3>Macro Trend (30 Days)</h3>
+                    <img src="chart3_silver_divergence_30d.png" alt="30 Day">
+                </div>
+                <div class="chart-box">
+                    <h3>Immediate Momentum (7 Days)</h3>
+                    <img src="chart3_silver_divergence_7d.png" alt="7 Day">
+                </div>
+            </div>
+            <div class="signal-box">
+                <strong>Actionable SLV Signal:</strong>
+                Watch for <strong>Retail Divergence</strong>. If the orange retail line (Micro Silver) spikes while the blue institutional line goes flat or falls, you are looking at classic "Dumb Money" FOMO. Retail is chasing the top, and a mean-reversion crash is likely. Fade the impulse by trimming positions or selling calls. Only add significant risk when the blue line leads the way—institutional sponsorship is mandatory for any sustained silver rally.
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>S&P 500 (ES) Put/Call Options Flow</h2>
+            <div class="chart-comparison">
+                <div class="chart-box">
+                    <h3>Macro Trend (30 Days)</h3>
+                    <img src="chart4_spy_options_flow_30d.png" alt="30 Day">
+                </div>
+                <div class="chart-box">
+                    <h3>Immediate Momentum (7 Days)</h3>
+                    <img src="chart4_spy_options_flow_7d.png" alt="7 Day">
+                </div>
+            </div>
+            <div class="signal-box">
+                <strong>Actionable SLV Signal:</strong>
+                A sustained, elevated <strong>Put/Call Skew</strong> indicates institutional fear is high and the "Big Boys" are buying downside insurance. In this regime, market volatility will stay high and equity rallies will be capped. Avoid aggressive directional longs; instead, capitalize on elevated IV by selling out-of-the-money call premium to generate income while silver consolidates (<span class="sell">SELL PREMIUM</span>).
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Macro Wrecking Ball (10Y Note Yields)</h2>
+            <div class="chart-comparison">
+                <div class="chart-box">
+                    <h3>Macro Trend (30 Days)</h3>
+                    <img src="chart5_macro_10y_yields_30d.png" alt="30 Day">
+                </div>
+                <div class="chart-box">
+                    <h3>Immediate Momentum (7 Days)</h3>
+                    <img src="chart5_macro_10y_yields_7d.png" alt="7 Day">
+                </div>
+            </div>
+            <div class="signal-box">
+                <strong>Actionable SLV Signal:</strong>
+                The <strong>10Y Yield</strong> is the macro wrecking ball. Rising yields alongside surging bond volume and positive OI change tighten the noose on commodities by strengthening the USD. If yields are vertical, kill your long-dated calls immediately (<span class="sell">SELL</span>). When the 10Y rolls over and yield volume drops, the financial noose loosens; this is the prime window to scale back into physical silver and long-dated SLV calls (<span class="buy">BUY</span>).
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AlphaFlow Developer Documentation</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --text-color: #f8fafc;
+            --accent-color: #3b82f6;
+            --code-bg: #1e293b;
+            --border-color: #334155;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            margin: 0;
+            padding: 40px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1, h2, h3 {
+            color: var(--accent-color);
+        }
+        h1 {
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+        code, pre {
+            font-family: Consolas, 'Courier New', monospace;
+            background-color: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+        code {
+            padding: 2px 6px;
+        }
+        pre {
+            padding: 15px;
+            overflow-x: auto;
+        }
+        .note {
+            background-color: rgba(59, 130, 246, 0.1);
+            border-left: 4px solid var(--accent-color);
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 0 4px 4px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AlphaFlow Developer Handbook</h1>
+        
+        <h2>Overview</h2>
+        <p><strong>AlphaFlow</strong> is an isolated Flask application designed to scan historical OPRA data to identify anomalous institutional options flow (Smart Money Sweeps). It is built with complete separation from the legacy <code>options_whale</code> codebase, running on port <code>5001</code> to prevent conflicts.</p>
+        
+        <h2>System Architecture</h2>
+        <ul>
+            <li><strong>Frontend (<code>templates/index.html</code>)</strong>: A visual node-based programming canvas built in Vanilla JS using <a href="https://github.com/jerosoler/Drawflow" style="color:var(--accent-color);">Drawflow</a>.</li>
+            <li><strong>Backend Server (<code>server.py</code>)</strong>: A lightweight Flask server exposing the REST API.</li>
+            <li><strong>Execution Engine (<code>engine.py</code>)</strong>: The core processing script that runs the historical logic, interacting with SQLite and Databento APIs.</li>
+            <li><strong>Database (<code>alphaflow.db</code>)</strong>: Local SQLite storage tracking detected swing setups.</li>
+        </ul>
+
+        <h2>1. The Execution Engine (<code>engine.py</code>)</h2>
+        <p>The engine executes a simulated historical Databento scan to capture swing setups from the previous trading day.</p>
+        
+        <h3>Universe Pre-Filter</h3>
+        <p>Running a heavy OPRA historical query against 8,000 tickers incurs immense data costs. Therefore, the engine first simulates gathering a target universe of small/mid-cap equities ($100M - $10B) via <code>yfinance</code>. See <code>get_yfinance_universe()</code>.</p>
+        
+        <h3>The Databento Query</h3>
+        <p>In a live scenario, the engine utilizes the Databento Historical API using the OPRA <code>mbp-1</code> schema:</p>
+        <pre><code>client = db.Historical(key=os.getenv('DATABENTO_API_KEY'))
+client.timeseries.get_range(
+    dataset='OPRA.PILLAR', 
+    schema='mbp-1', 
+    symbols=target_symbols, 
+    start='2026-05-18T00:00'
+)</code></pre>
+        
+        <div class="note">
+            <strong>Algorithmic Expiration Recommendation:</strong> During processing, the engine calculates a recommended contract expiration date (padding the required swing term with sufficient theta runway) and inserts it directly into the <code>expiration</code> column of the SQLite database.
+        </div>
+
+        <h2>2. Modifying the Visual Canvas (<code>index.html</code>)</h2>
+        <p>The UI is completely free of React and Webpack. It uses standard DOM manipulation alongside the Drawflow library.</p>
+        <p>To add a new visual Node, define the raw HTML string inside a backtick template literal, and register it with the editor:</p>
+        <pre><code>const customNodeHTML = `
+&lt;div&gt;
+    &lt;div class="title-box"&gt;&lt;span&gt;New Filter&lt;/span&gt;&lt;/div&gt;
+    &lt;div class="box"&gt;
+        &lt;label&gt;Parameter&lt;/label&gt;
+        &lt;input type="text" id="custom_param"&gt;
+    &lt;/div&gt;
+&lt;/div&gt;`;
+editor.addNode('custom', 1, 1, 100, 200, 'custom', {}, customNodeHTML);</code></pre>
+
+        <h2>3. Database Schema (SQLite)</h2>
+        <p>The <code>swing_plays</code> table is designed dynamically. If you add new parameters to the engine, you must modify the <code>init_db()</code> function to drop and recreate the table, or run an <code>ALTER TABLE</code> script.</p>
+        <ul>
+            <li><code>id</code>: Auto-increment primary key.</li>
+            <li><code>date</code>: The date of the execution.</li>
+            <li><code>ticker</code>: Target equity symbol.</li>
+            <li><code>contract</code>: Detected anomalous option leg.</li>
+            <li><code>expiration</code>: Algorithmic recommended exit date.</li>
+            <li><code>max_risk</code>: Computed maximum dollar risk per trade.</li>
+        </ul>
+        
+    </div>
+</body>
+</html>

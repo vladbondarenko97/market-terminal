@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AlphaFlow | Options Scanner</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --panel-dark: #1e293b;
+            --accent: #3b82f6;
+            --text-main: #f8fafc;
+        }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--bg-dark); color: var(--text-main); overflow: hidden; }
+        #drawflow { position: relative; width: 100vw; height: 100vh; }
+        
+        /* Custom Drawflow Styling */
+        .drawflow .drawflow-node { background: var(--panel-dark); border: 2px solid #334155; border-radius: 8px; color: white; width: 320px; padding: 0; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+        .drawflow .drawflow-node .title-box { background: #334155; padding: 12px; font-weight: 700; font-size: 15px; border-radius: 6px 6px 0 0; display: flex; align-items: center; justify-content: space-between; }
+        .drawflow .drawflow-node .box { padding: 15px; font-size: 13px; }
+        .drawflow .connection .main-path { stroke: var(--accent); stroke-width: 3px; }
+        
+        .input-group { margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        .input-group label { color: #cbd5e1; font-weight: 500; }
+        .input-group input { background: #0f172a; border: 1px solid #475569; color: white; padding: 6px; border-radius: 4px; width: 110px; text-align: right; }
+        .input-group input:focus { outline: none; border-color: var(--accent); }
+        
+        .btn-run { background: #10b981; color: white; border: none; padding: 12px; width: 100%; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top: 10px; transition: background 0.2s; font-size: 14px; }
+        .btn-run:hover { background: #059669; }
+
+        .result-card { background: #0f172a; border-left: 4px solid #10b981; padding: 12px; margin-bottom: 12px; font-family: monospace; border-radius: 0 4px 4px 0; }
+        .result-card span { display: block; color: #94a3b8; line-height: 1.5; }
+        .result-card strong { color: white; font-size: 1.2em; display: block; margin-bottom: 4px; }
+        
+        .nav-bar { position: absolute; top: 20px; left: 20px; z-index: 100; background: rgba(30, 41, 59, 0.85); padding: 15px 25px; border-radius: 8px; border: 1px solid #334155; box-shadow: 0 4px 6px rgba(0,0,0,0.3); backdrop-filter: blur(8px); }
+        .nav-bar h1 { margin: 0; font-size: 20px; font-weight: 800; color: white; letter-spacing: -0.5px; }
+        .nav-bar a { color: var(--accent); text-decoration: none; font-size: 13px; margin-top: 8px; display: inline-block; font-weight: 600; }
+        .nav-bar a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+    <div class="nav-bar">
+        <h1>⚡ AlphaFlow Scanner</h1>
+        <a href="/documentation" target="_blank">View Developer Documentation ↗</a>
+    </div>
+
+    <div id="drawflow"></div>
+
+    <script>
+        var id = document.getElementById("drawflow");
+        const editor = new Drawflow(id);
+        editor.reroute = true;
+        editor.start();
+
+        // ------------------ NODE 1: SCANNER RULES ------------------
+        const nodeRulesHTML = `
+            <div>
+                <div class="title-box">
+                    <span>⚙️ Scanner Rules (OPRA)</span>
+                </div>
+                <div class="box">
+                    <div class="input-group">
+                        <label>Scan Date (YYYY-MM-DD)</label>
+                        <input type="text" id="scan_date" value="2026-05-18">
+                    </div>
+                    <div class="input-group">
+                        <label>Min Mkt Cap ($)</label>
+                        <input type="number" id="min_cap" value="100000000">
+                    </div>
+                    <div class="input-group">
+                        <label>Max Mkt Cap ($)</label>
+                        <input type="number" id="max_cap" value="10000000000">
+                    </div>
+                    <div class="input-group">
+                        <label>Min Spend ($)</label>
+                        <input type="number" id="min_spend" value="50000">
+                    </div>
+                    <div class="input-group">
+                        <label>Vol vs OI Ratio</label>
+                        <input type="number" id="vol_oi" value="1.5" step="0.1">
+                    </div>
+                    <div class="input-group">
+                        <label>Trade Type</label>
+                        <input type="text" value="Calls Only" disabled>
+                    </div>
+                </div>
+            </div>
+        `;
+        const rulesId = editor.addNode('rules', 0, 1, 80, 200, 'rules', {}, nodeRulesHTML);
+
+        // ------------------ NODE 2: EXECUTION ------------------
+        const nodeExecHTML = `
+            <div>
+                <div class="title-box" style="background:#b45309;">
+                    <span>🚀 Code Execution</span>
+                </div>
+                <div class="box">
+                    <p style="color:#94a3b8; font-size:13px; line-height: 1.4; margin-top: 0;">Connects to Databento Historical OPRA API to scan the previous trading day flow for anomalies.</p>
+                    <button class="btn-run" onclick="runScan()">▶ RUN HISTORICAL SCAN</button>
+                    <div id="exec_status" style="margin-top:12px; font-size:12px; font-weight: 600; color:#fbbf24;"></div>
+                </div>
+            </div>
+        `;
+        const execId = editor.addNode('exec', 1, 1, 480, 240, 'exec', {}, nodeExecHTML);
+
+        // ------------------ NODE 3: RESULTS ------------------
+        const nodeResultsHTML = `
+            <div>
+                <div class="title-box" style="background:#047857;">
+                    <span>📊 Swing Plays Detected</span>
+                </div>
+                <div class="box" id="results_box" style="max-height: 450px; overflow-y: auto;">
+                    <em style="color:#64748b;">Awaiting execution...</em>
+                </div>
+            </div>
+        `;
+        const resId = editor.addNode('results', 1, 0, 900, 150, 'results', {}, nodeResultsHTML);
+
+        // Connect them visually
+        editor.addConnection(rulesId, execId, 'output_1', 'input_1');
+        editor.addConnection(execId, resId, 'output_1', 'input_1');
+
+        async function runScan() {
+            document.getElementById('exec_status').innerText = '📡 Scanning OPRA... (this may take a moment)';
+            
+            const config = {
+                scan_date: document.getElementById('scan_date').value,
+                market_cap_min: document.getElementById('min_cap').value,
+                market_cap_max: document.getElementById('max_cap').value,
+                min_spend: document.getElementById('min_spend').value,
+                vol_oi: document.getElementById('vol_oi').value
+            };
+
+            try {
+                const response = await fetch('/api/scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                const res = await response.json();
+                
+                if (res.status === 'success') {
+                    document.getElementById('exec_status').innerText = '✅ Scan complete!';
+                    renderResults(res.data);
+                } else {
+                    document.getElementById('exec_status').innerText = '❌ Error: ' + res.message;
+                }
+            } catch (err) {
+                document.getElementById('exec_status').innerText = '❌ Error connecting to backend.';
+            }
+        }
+
+        function renderResults(data) {
+            const box = document.getElementById('results_box');
+            if (!data || data.length === 0) {
+                box.innerHTML = '<em style="color:#64748b;">No setups found matching criteria.</em>';
+                return;
+            }
+            
+            let html = '';
+            data.forEach(play => {
+                html += `
+                    <div class="result-card">
+                        <strong>${play.contract}</strong> <span style="font-size: 0.8em; color: #fbbf24;">[${play.time_of_sweep}]</span>
+                        <span>💰 Spend: $${play.spend.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                        <span>📈 Vol: ${play.volume.toLocaleString()} vs OI: ${play.oi.toLocaleString()}</span>
+                        <span>📅 Rec. Expiration: ${play.expiration}</span>
+                        <span>⏳ ${play.term} | Risk: ~$${play.max_risk.toLocaleString()}</span>
+                    </div>
+                `;
+            });
+            box.innerHTML = html;
+        }
+    </script>
+</body>
+</html>

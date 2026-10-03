@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Financial Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        :root {
+            --bg-color: #121212;
+            --widget-bg: #1e1e1e;
+            --border-color: #333;
+            --text-primary: #e0e0e0;
+            --text-secondary: #888;
+            --text-white: #ffffff;
+            --positive-color: #4caf50;
+            --negative-color: #f44336;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            padding: 20px;
+        }
+
+        h1 {
+            color: var(--text-white);
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .widget {
+            background-color: var(--widget-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            transition: all 0.2s ease-in-out;
+            position: relative;
+        }
+
+        .widget:hover {
+            transform: translateY(-5px);
+            border-color: #555;
+        }
+
+        .widget-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .widget-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--text-white);
+        }
+
+        .widget-ticker {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            background-color: var(--border-color);
+            padding: 3px 6px;
+            border-radius: 4px;
+        }
+
+        .widget-price {
+            font-size: 2.2rem;
+            font-weight: bold;
+            color: var(--text-white);
+            margin-bottom: 5px;
+        }
+
+        .widget-change {
+            font-size: 1rem;
+            min-height: 1.2em; /* Prevent layout shift */
+        }
+
+        .widget-change-positive { color: var(--positive-color); }
+        .widget-change-negative { color: var(--negative-color); }
+
+        .chart-container {
+            position: relative;
+            height: 100px;
+        }
+
+        /* API Info Button */
+        .api-info-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #444;
+            color: var(--text-primary);
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 24px;
+            text-align: center;
+        }
+        .api-info-btn:hover { background: #555; }
+
+        /* Add New Asset Widget */
+        .add-widget {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 80px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            min-height: 250px;
+        }
+        .add-widget:hover {
+            color: var(--text-primary);
+            border-color: var(--text-primary);
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0, 0, 0, 0.7);
+            align-items: center;
+            justify-content: center;
+        }
+        .modal.show {
+            display: flex;
+        }
+        .modal-content {
+            background-color: var(--widget-bg);
+            margin: auto;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            width: 90%;
+            max-width: 600px;
+            color: var(--text-primary);
+            position: relative;
+        }
+        .modal-close {
+            color: var(--text-secondary);
+            position: absolute;
+            top: 10px;
+            right: 20px;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .modal-close:hover,
+        .modal-close:focus {
+            color: var(--text-white);
+        }
+        .modal h2 {
+            margin-top: 0;
+            color: var(--text-white);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+        #api-info-modal pre {
+            background: var(--bg-color);
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid var(--border-color);
+            color: #f0f0f0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        /* Add Asset Form Styles */
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+            box-sizing: border-box; /* Important */
+        }
+        .form-group input[type="checkbox"] {
+            width: auto;
+        }
+        .form-group .checkbox-label {
+            display: inline-block;
+            margin-left: 10px;
+        }
+        .form-btn {
+            background: var(--positive-color);
+            color: var(--text-white);
+            padding: 12px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .form-btn:hover {
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Core Market Vitals</h1>
+
+    <div class="dashboard-grid" id="dashboard-grid"></div>
+
+    <div id="api-info-modal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close" id="api-info-close">&times;</span>
+            <h2 id="api-info-title">API Request Info</h2>
+            <pre id="api-info-content"></pre>
+        </div>
+    </div>
+
+    <div id="add-asset-modal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close" id="add-asset-close">&times;</span>
+            <h2>Add New Asset</h2>
+            <form id="add-asset-form">
+                <div class="form-group">
+                    <label for="asset-title">Display Name</label>
+                    <input type="text" id="asset-title" placeholder="e.g., Ethereum" required>
+                </div>
+                <div class="form-group">
+                    <label for="api-select">API Provider</label>
+                    <select id="api-select">
+                        <option value="">-- Select API --</option>
+                        <option value="finnhub">Finnhub (Stocks/Indices)</option>
+                        <option value="coingecko">CoinGecko (Crypto)</option>
+                        <option value="goldapi">GoldAPI.io (Metals)</option>
+                    </select>
+                </div>
+
+                <div id="finnhub-fields" class="form-group" style="display: none;">
+                    <label for="finnhub-ticker">Ticker Symbol</label>
+                    <input type="text" id="finnhub-ticker" placeholder="e.g., AAPL or ^VIX">
+                    <div>
+                        <input type="checkbox" id="finnhub-currency" checked>
+                        <label for="finnhub-currency" class="checkbox-label">Format as Currency?</label>
+                    </div>
+                </div>
+
+                <div id="coingecko-fields" class="form-group" style="display: none;">
+                    <label for="coingecko-id">Coin ID</label>
+                    <input type="text" id="coingecko-id" placeholder="e.g., ethereum or cardano">
+                </div>
+
+                <div id="goldapi-fields" class="form-group" style="display: none;">
+                    <label for="goldapi-symbol">Metal Symbol</label>
+                    <input type="text" id="goldapi-symbol" placeholder="e.g., XPT (Platinum)">
+                </div>
+
+                <button type="submit" class="form-btn">Add Asset</button>
+            </form>
+        </div>
+    </div>
+
+
+    <script src="index.keys.js"></script>
+    <script>
+        // =================================================================
+        // API KEYS
+        // =================================================================
+        // Keys live in index.keys.js (not in git); copy index.keys.example.js to create it.
+        const DASHBOARD_KEYS = window.DASHBOARD_KEYS || {};
+        const coinGeckoApiKey = DASHBOARD_KEYS.coinGecko || '';
+        const goldApiKey = DASHBOARD_KEYS.gold || '';
+        const finnhubApiKey = DASHBOARD_KEYS.finnhub || '';
+        // =================================================================
+
+        // Store chart instances to destroy them before re-rendering
+        let chartInstances = {};
+
+        let assets = [
+            { id: 'gold', api: 'goldapi', symbol: 'XAU', currency: 'USD', title: 'Gold', ticker: 'XAU/USD' },
+            { id: 'silver', api: 'goldapi', symbol: 'XAG', currency: 'USD', title: 'Silver', ticker: 'XAG/USD' },
+            { id: 'btc', api: 'coingecko', symbol: 'bitcoin', title: 'Bitcoin', ticker: 'BTC' },
+            { id: 'sol', api: 'coingecko', symbol: 'solana', title: 'Solana', ticker: 'SOL' },
+            { id: 'spy', api: 'finnhub', symbol: 'SPY', isCurrency: true, title: 'S&P 500', ticker: 'SPY' },
+            { id: 'move', api: 'finnhub', symbol: '^MOVE', isCurrency: false, title: 'Bond Volatility', ticker: 'MOVE' },
+            { id: 'hui', api: 'finnhub', symbol: '^HUI', isCurrency: false, title: 'Gold Miners', ticker: 'HUI' }
+        ];
+
+        const grid = document.getElementById('dashboard-grid');
+
+        function generateWidgetHTML(asset) {
+            let apiInfo = {};
+            switch(asset.api) {
+                case 'goldapi':
+                    apiInfo = { provider: 'GoldAPI.io', url: `https://www.goldapi.io/api/${asset.symbol}/${asset.currency}`, method: 'GET', headers: `{\n  "x-access-token": "${goldApiKey}"\n}` };
+                    break;
+                case 'coingecko':
+                    apiInfo = { provider: 'CoinGecko', url: `https://api.coingecko.com/api/v3/coins/${asset.symbol}/market_chart?vs_currency=usd&days=1&...`, method: 'GET', headers: `{\n  "x_cg_demo_api_key": "${coinGeckoApiKey}"\n}` };
+                    break;
+                case 'finnhub':
+                    apiInfo = { provider: 'Finnhub', url: `https://finnhub.io/api/v1/stock/candle?symbol=${asset.symbol}&resolution=15&...`, method: 'GET', headers: 'None' };
+                    break;
+            }
+
+            return `
+                <div class="widget" id="widget-${asset.id}">
+                    <button class="api-info-btn" 
+                        data-title="${asset.title}" 
+                        data-provider="${apiInfo.provider}"
+                        data-url="${apiInfo.url}"
+                        data-method="${apiInfo.method}"
+                        data-headers="${apiInfo.headers}">i</button>
+                    <div class="widget-header">
+                        <span class="widget-title">${asset.title}</span>
+                        <span class="widget-ticker">${asset.ticker}</span>
+                    </div>
+                    <div class="widget-price" id="${asset.id}-price">Loading...</div>
+                    <div class="widget-change" id="${asset.id}-change"></div>
+                    <div class="chart-container">
+                        <canvas id="${asset.id}Chart"></canvas>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderAllWidgets() {
+            let gridHTML = '';
+            assets.forEach(asset => gridHTML += generateWidgetHTML(asset));
+            gridHTML += `<div class="widget add-widget" id="add-asset-btn">+</div>`;
+            grid.innerHTML = gridHTML;
+            document.getElementById('add-asset-btn').addEventListener('click', () => {
+                document.getElementById('add-asset-modal').classList.add('show');
+            });
+        }
+        
+        function formatCurrency(number, minDecimals = 2, maxDecimals = 2) {
+             if (minDecimals === 0) {
+                return new Intl.NumberFormat('en-US', {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 2,
+                }).format(number);
+            }
+            return new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: minDecimals,
+                maximumFractionDigits: maxDecimals > minDecimals ? maxDecimals : minDecimals
+            }).format(number);
+        }
+
+        function updateCryptoWidget(id, data) {
+            const priceEl = document.getElementById(`${id}-price`);
+            const changeEl = document.getElementById(`${id}-change`);
+            if (!priceEl || !changeEl) return; 
+
+            if (data && data.usd) { // Check for simple price data
+                const price = data.usd;
+                const change = data.usd_24h_change;
+                const priceDecimals = price < 1 ? 6 : 2;
+                priceEl.textContent = formatCurrency(price, priceDecimals, priceDecimals);
+                changeEl.textContent = `${change.toFixed(2)}% (24h)`;
+                changeEl.className = `widget-change ${change >= 0 ? 'widget-change-positive' : 'widget-change-negative'}`;
+            } else if (!data) {
+                priceEl.textContent = 'Error';
+                changeEl.textContent = '---';
+            }
+        }
+        
+        function updateMetalWidget(id, data) {
+            const priceEl = document.getElementById(`${id}-price`);
+            const changeEl = document.getElementById(`${id}-change`);
+            if (!priceEl || !changeEl) return;
+
+            if (data && data.price) {
+                const price = data.price;
+                const changeValue = data.ch;
+                const changePercent = data.chp;
+                priceEl.textContent = formatCurrency(price, 2, 2);
+                changeEl.textContent = `${formatCurrency(changeValue, 2, 2)} (${changePercent.toFixed(2)}%)`;
+                changeEl.className = `widget-change ${changeValue >= 0 ? 'widget-change-positive' : 'widget-change-negative'}`;
+            } else {
+                priceEl.textContent = 'Error';
+                changeEl.textContent = data.error || '---';
+            }
+        }
+
+        function updateFinnhubWidget(id, data, formatAsCurrency = true) {
+            const priceEl = document.getElementById(`${id}-price`);
+            const changeEl = document.getElementById(`${id}-change`);
+            if (!priceEl || !changeEl) return;
+
+            if (data && data.c !== null && data.c !== undefined) {
+                const price = data.c; // Current price
+                const changeValue = data.d; // Change
+                const changePercent = data.dp; // Percent change
+
+                if (formatAsCurrency) {
+                    priceEl.textContent = formatCurrency(price, 2, 2);
+                    changeEl.textContent = `${formatCurrency(changeValue, 2, 2)} (${changePercent.toFixed(2)}%)`;
+                } else {
+                    priceEl.textContent = price.toFixed(2);
+                    changeEl.textContent = `${changeValue.toFixed(2)} (${changePercent.toFixed(2)}%)`;
+                }
+                changeEl.className = `widget-change ${changeValue >= 0 ? 'widget-change-positive' : 'widget-change-negative'}`;
+            } else {
+                priceEl.textContent = 'Error';
+                changeEl.textContent = '---';
+            }
+        }
+
+        function fetchAllData() {
+            // Fetch simple price data for all assets
+            fetchCryptoPriceData();
+            fetchMetalPriceData();
+            fetchFinnhubPriceData();
+
+            // Fetch chart data
+            fetchCryptoChartData();
+            fetchFinnhubChartData(); // This will now just log to console
+        }
+
+        async function fetchCryptoPriceData() {
+            const cryptoAssets = assets.filter(a => a.api === 'coingecko');
+            if (cryptoAssets.length === 0) return;
+            const ids = cryptoAssets.map(a => a.symbol).join(',');
+            const apiUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&x_cg_demo_api_key=${coinGeckoApiKey}`;
+            try {
+                const response = await fetch(apiUrl);
+                if (!response.ok) throw new Error(`CoinGecko Error: ${response.status}`);
+                const data = await response.json();
+                for (const asset of cryptoAssets) {
+                    updateCryptoWidget(asset.id, data[asset.symbol]);
+                }
+            } catch (error) {
+                console.error("Failed to fetch crypto price data:", error);
+                for (const asset of cryptoAssets) updateCryptoWidget(asset.id, null);
+            }
+        }
+        
+        async function fetchCryptoChartData() {
+            const cryptoAssets = assets.filter(a => a.api === 'coingecko');
+            if (cryptoAssets.length === 0) return;
+            
+            console.log('Fetching crypto chart data...');
+            for (const asset of cryptoAssets) {
+                const apiUrl = `https://api.coingecko.com/api/v3/coins/${asset.symbol}/market_chart?vs_currency=usd&days=1&x_cg_demo_api_key=${coinGeckoApiKey}`;
+                try {
+                    const response = await fetch(apiUrl);
+                    if (!response.ok) throw new Error(`CoinGecko Chart Error: ${response.status}`);
+                    const data = await response.json();
+                    
+                    const labels = data.prices.map(item => item[0]); // Timestamps
+                    const prices = data.prices.map(item => item[1]); // Prices
+                    
+                    createRealChart(asset.id, labels, prices);
+
+                } catch (error) {
+                    console.error(`Failed to fetch crypto chart for ${asset.symbol}:`, error);
+                }
+            }
+        }
+
+        async function fetchMetalPriceData() {
+            const metalAssets = assets.filter(a => a.api === 'goldapi');
+            if (metalAssets.length === 0) return;
+            const headers = new Headers();
+            headers.append("x-access-token", goldApiKey);
+            const requestOptions = { method: 'GET', headers: headers, redirect: 'follow' };
+
+            for (const asset of metalAssets) {
+                const apiUrl = `https://www.goldapi.io/api/${asset.symbol}/${asset.currency}`;
+                try {
+                    const response = await fetch(apiUrl, requestOptions);
+                    if (!response.ok) throw new Error(`Gold API Error: ${response.status}`);
+                    const data = await response.json();
+                    updateMetalWidget(asset.id, data);
+                } catch (error) {
+                    console.error(`Failed to fetch ${asset.symbol}:`, error);
+                    updateMetalWidget(asset.id, { error: 'Fetch Error' });
+                }
+            }
+        }
+
+        async function fetchFinnhubPriceData() {
+            const finnhubAssets = assets.filter(a => a.api === 'finnhub');
+            if (finnhubAssets.length === 0) return;
+
+            for (const asset of finnhubAssets) {
+                const apiUrl = `https://finnhub.io/api/v1/quote?symbol=${asset.symbol}&token=${finnhubApiKey}`;
+                try {
+                    const response = await fetch(apiUrl);
+                    if (!response.ok) throw new Error(`Finnhub Error (${asset.symbol}): ${response.status}`);
+                    const data = await response.json();
+                    if (data.c === null || data.c === undefined || data.c === 0) { 
+                        throw new Error(`No valid price data for ${asset.symbol}.`);
+                    }
+                    updateFinnhubWidget(asset.id, data, asset.isCurrency);
+                } catch (error) {
+                    console.error(`Failed to fetch ${asset.symbol}:`, error);
+                    updateFinnhubWidget(asset.id, null); // Show error
+                }
+            }
+        }
+
+        async function fetchFinnhubChartData() {
+            // --- FIX ---
+            // We know this endpoint is forbidden on the free plan,
+            // so we will not try to fetch it. This prevents 403 errors.
+            console.log('Skipping Finnhub chart data: Not available on free tier.');
+            return;
+            // --- END FIX ---
+        }
+        
+        /**
+         * Creates a chart with REAL data
+         */
+        function createRealChart(assetId, labels, data) {
+            const canvasId = `${assetId}Chart`;
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            if (!ctx) return;
+
+            if (chartInstances[canvasId]) {
+                chartInstances[canvasId].destroy();
+            }
+
+            const startPrice = data[0];
+            const endPrice = data[data.length - 1];
+            const color = endPrice >= startPrice ? '#4caf50' : '#f44336';
+
+            const gradient = ctx.createLinearGradient(0, 0, 0, 100);
+            gradient.addColorStop(0, `${color}66`); // 40% opacity
+            gradient.addColorStop(1, `${color}00`); // 0% opacity
+
+            chartInstances[canvasId] = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        borderColor: color,
+                        borderWidth: 2,
+                        fill: true,
+                        backgroundColor: gradient,
+                        tension: 0.3,
+                        pointRadius: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: { 
+                        // --- FIX ---
+                        // Removed `type: 'timeseries'` to prevent crash
+                        // as we haven't imported a date adapter.
+                        x: { display: false }, 
+                        // --- END FIX ---
+                        y: { display: false } 
+                    }
+                }
+            });
+        }
+
+        /**
+         * Creates placeholder charts only
+         */
+        function createPlaceholderChart(canvasId, color) {
+            const chartData = color === '#4caf50' ?
+                [110, 112, 115, 114, 116, 118, 120, 119, 122, 125, 124, 127, 130, 128, 132, 135, 133, 136, 138, 140, 139, 142, 145, 144, 147, 150, 148, 152, 155, 158] :
+                [158, 155, 152, 154, 150, 148, 145, 147, 144, 142, 140, 138, 136, 139, 135, 132, 133, 130, 128, 125, 127, 124, 122, 120, 118, 116, 114, 115, 112, 110];
+
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            if (!ctx) return;
+            
+            const gradient = ctx.createLinearGradient(0, 0, 0, 100);
+            
+            gradient.addColorStop(0, `${color}66`); 
+            gradient.addColorStop(1, `${color}00`); 
+
+            if (chartInstances[canvasId]) {
+                chartInstances[canvasId].destroy();
+            }
+
+            chartInstances[canvasId] = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: Array(30).fill(''),
+                    datasets: [{
+                        data: chartData,
+                        borderColor: color,
+                        borderWidth: 2,
+                        fill: true,
+                        backgroundColor: gradient,
+                        tension: 0.3,
+                        pointRadius: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: { x: { display: false }, y: { display: false } }
+                }
+            });
+        }
+        
+        /**
+         * Creates all placeholder charts. Real charts are created by fetch functions.
+         */
+        function createAllPlaceholderCharts() {
+            const positiveColor = '#4caf50';
+            const negativeColor = '#f44336';
+            
+            for (let i = 0; i < assets.length; i++) {
+                let color = (i % 2 === 0) ? positiveColor : negativeColor;
+                const asset = assets[i];
+                
+                // --- FIX ---
+                // We create placeholders for GoldAPI (no chart) AND Finnhub (no chart permission)
+                if (asset.api === 'goldapi' || asset.api === 'finnhub') {
+                     createPlaceholderChart(`${asset.id}Chart`, color);
+                }
+                // --- END FIX ---
+            }
+        }
+        
+        function setupModals() {
+            const apiModal = document.getElementById('api-info-modal');
+            const addModal = document.getElementById('add-asset-modal');
+            const apiClose = document.getElementById('api-info-close');
+            const addClose = document.getElementById('add-asset-close');
+
+            grid.addEventListener('click', (e) => {
+                if (e.target.classList.contains('api-info-btn')) {
+                    const btn = e.target;
+                    document.getElementById('api-info-title').textContent = `API Info: ${btn.dataset.title}`;
+                    document.getElementById('api-info-content').textContent = 
+`Provider: ${btn.dataset.provider}
+Method:   ${btn.dataset.method}
+URL:      ${btn.dataset.url}
+
+Headers:
+${btn.dataset.headers}`;
+                    apiModal.classList.add('show');
+                }
+            });
+            
+            apiClose.onclick = () => apiModal.classList.remove('show');
+            addClose.onclick = () => addModal.classList.remove('show');
+
+            window.onclick = (e) => {
+                if (e.target == apiModal) apiModal.classList.remove('show');
+                if (e.target == addModal) addModal.classList.remove('show');
+            }
+        }
+        
+        function setupAddAssetForm() {
+            const select = document.getElementById('api-select');
+            const form = document.getElementById('add-asset-form');
+            
+            const finnhubFields = document.getElementById('finnhub-fields');
+            const coingeckoFields = document.getElementById('coingecko-fields');
+            const goldapiFields = document.getElementById('goldapi-fields');
+
+            select.addEventListener('change', () => {
+                finnhubFields.style.display = 'none';
+                coingeckoFields.style.display = 'none';
+                goldapiFields.style.display = 'none';
+
+                if (select.value === 'finnhub') finnhubFields.style.display = 'block';
+                if (select.value === 'coingecko') coingeckoFields.style.display = 'block';
+                if (select.value === 'goldapi') goldapiFields.style.display = 'block';
+            });
+
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                
+                const title = document.getElementById('asset-title').value;
+                const api = document.getElementById('api-select').value;
+                let newAsset = {
+                    id: title.toLowerCase().replace(/[^a-z0-9]/g, '-'), // Create a unique ID
+                    title: title
+                };
+
+                if (api === 'finnhub') {
+                    const symbol = document.getElementById('finnhub-ticker').value.toUpperCase();
+                    newAsset.api = 'finnhub';
+                    newAsset.symbol = symbol;
+                    newAsset.isCurrency = document.getElementById('finnhub-currency').checked;
+                    newAsset.ticker = symbol;
+                } else if (api === 'coingecko') {
+                    const symbol = document.getElementById('coingecko-id').value.toLowerCase();
+                    newAsset.api = 'coingecko';
+                    newAsset.symbol = symbol;
+                    newAsset.ticker = symbol.toUpperCase();
+                } else if (api === 'goldapi') {
+                    const symbol = document.getElementById('goldapi-symbol').value.toUpperCase();
+                    newAsset.api = 'goldapi';
+                    newAsset.symbol = symbol;
+                    newAsset.currency = 'USD'; // Hard-code USD for now
+                    newAsset.ticker = `${symbol}/USD`;
+                }
+
+                if (newAsset.api) {
+                    assets.push(newAsset); 
+                    renderAllWidgets(); 
+                    createAllPlaceholderCharts(); // Create placeholders first
+                    fetchAllData(); // Fetch all data, which will create real charts
+                    document.getElementById('add-asset-modal').classList.remove('show');
+                    form.reset(); 
+                }
+            });
+        }
+
+        // --- Run when the page loads ---
+        document.addEventListener('DOMContentLoaded', () => {
+            renderAllWidgets();
+            createAllPlaceholderCharts(); // Create placeholders immediately
+            setupModals();
+            setupAddAssetForm();
+            
+            fetchAllData(); // Fetch live data
+
+            // Refresh live data every 60 seconds
+            setInterval(fetchAllData, 60000); 
+        });
+    </script>
+
+</body>
+</html>
