@@ -3503,7 +3503,10 @@ function renderPositions() {
         body.innerHTML = json.data.map(p => {
             const d = new Date(p.created_at);
             const pad = n => String(n).padStart(2, '0');
-            const when = `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+            let hours12 = d.getHours() % 12;
+            if (hours12 === 0) hours12 = 12;
+            const ampm = d.getHours() >= 12 ? 'pm' : 'am';
+            const when = `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${hours12}:${pad(d.getMinutes())}${ampm}`;
             const isCash = p.position_type === 'CASH';
             const typeCls = p.position_type === 'CALL' ? 'text-green-400' : p.position_type === 'PUT' ? 'text-red-400' : 'text-zinc-400';
             const exp = p.expiration ? p.expiration.slice(5).replace('-', '/') : '';
