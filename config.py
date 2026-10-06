@@ -120,6 +120,8 @@ RECIPIENT_EMAIL = optional_env("RECIPIENT_EMAIL", default="")
 NTFY_URL = optional_env("NTFY_URL", default="")
 UPLOAD_URL = optional_env("UPLOAD_URL", default="")
 REPORT_SENDER = optional_env("REPORT_SENDER", default="") or EMAIL_SENDER
+# Only the machine that owns the schedule (setup.sh --schedule sets this) records scheduled runs: one source of truth.
+SCHEDULED_RUNS = optional_env("SCHEDULED_RUNS", default="") == "1"
 
 # Source limits
 MAX_PROVIDER_CONCURRENCY = 3

@@ -7,7 +7,8 @@ legacy ledgers from that snapshot. Same stack (Python, SQLite), same `CME_Data` 
 ## Location
 
 Code: `~/dev/portfolio_dashboard` · data: `~/dev/CME_Data` (pinned by `PORTFOLIO_DATA_DIR` in `.env`) ·
-scheduler: `~/Library/LaunchAgents/com.vlad.marketdashboard.plist` (weekdays 08:31 and 14:30 CT) ·
+scheduler: `~/Library/LaunchAgents/com.vlad.marketdashboard.plist`, installed by `./setup.sh --schedule` on the
+one Mac that owns the schedule (NYSE trading days at 09:31 and 15:45 ET; holidays and late wake-ups skip) ·
 terminal: `python options_whale/api_router.py` → http://localhost:8080. No code hardcodes these paths; everything
 derives from `config.py`.
 
@@ -15,7 +16,7 @@ derives from `config.py`.
 
 | What | Command |
 |---|---|
-| Normal run (what launchd runs at 08:31 / 14:00) | `./run_dashboard.command` → `python main_pipeline.py run --trigger scheduled` |
+| Normal run (what launchd runs at 09:31 / 15:45 ET) | `./run_dashboard.command` → `python main_pipeline.py run --trigger scheduled` |
 | Run without email/NTFY/upload | `python main_pipeline.py run --no-deliver` |
 | Offline run (no network at all) | `python main_pipeline.py run --offline` |
 | Re-render a saved run (no network, no delivery) | `python main_pipeline.py replay [--run RUN_ID] [--out DIR]` |

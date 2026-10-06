@@ -1480,7 +1480,7 @@ def run_dashboard():
     try:
         # Run the script. capture_output=True hides the terminal spam from the Flask console.
         # check=True forces Python to throw an error if the bash script fails or crashes.
-        subprocess.run(["bash", script_path], check=True, capture_output=True, text=True)
+        subprocess.run(["bash", script_path, "manual"], check=True, capture_output=True, text=True)
         
         # Grab the exact time down to the second
         exact_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

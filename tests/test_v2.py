@@ -472,5 +472,27 @@ class T05OfflineImports(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr[-2000:])
 
 
+class T08Schedule(unittest.TestCase):
+    def test_nyse_holidays_and_session_window(self):
+        from datetime import date, datetime
+        from core.market_calendar import NEW_YORK, nyse_holidays, scheduled_run_skip_reason
+        self.assertEqual(sorted(nyse_holidays(2026)), [
+            date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3), date(2026, 5, 25),
+            date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7), date(2026, 11, 26), date(2026, 12, 25)])
+        at = lambda s: datetime.fromisoformat(s).replace(tzinfo=NEW_YORK)
+        self.assertIsNone(scheduled_run_skip_reason(at("2026-10-06T09:31")))
+        self.assertIsNone(scheduled_run_skip_reason(at("2026-10-06T15:45")))
+        self.assertIn("outside the regular session", scheduled_run_skip_reason(at("2026-10-06T19:00")))
+        self.assertIn("not an NYSE trading day", scheduled_run_skip_reason(at("2026-10-03T09:31")))
+        self.assertIn("not an NYSE trading day", scheduled_run_skip_reason(at("2026-11-26T09:31")))
+
+    def test_scheduled_run_needs_opt_in(self):
+        import main_pipeline
+        with mock.patch.object(config, "SCHEDULED_RUNS", False), \
+                mock.patch.object(main_pipeline, "RunLock") as lock:
+            self.assertEqual(main_pipeline.run(trigger="scheduled", offline=True), 0)
+            lock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
