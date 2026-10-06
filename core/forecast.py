@@ -392,32 +392,46 @@ def _cot_stats(dates, net, oi, price=None):
     return out
 
 
+def _complete_cot_rows(rows, fields):
+    """CFTC's API omits a field when it is empty: keep only the rows that carry a number for every field used."""
+    def ok(r):
+        try:
+            return all(r.get(f) not in (None, "") and np.isfinite(float(r[f])) for f in fields) \
+                and bool(r.get("report_date_as_yyyy_mm_dd"))
+        except (TypeError, ValueError):
+            return False
+    return [r for r in rows or [] if ok(r)]
+
+
+def _cot_net(rows, long_f, short_f, close=None):
+    """Net (long - short) positioning stats over the rows that carry both legs and open interest."""
+    rows = _complete_cot_rows(rows, ("open_interest_all", long_f, short_f))
+    if not rows:
+        return None
+    d = [r["report_date_as_yyyy_mm_dd"][:10] for r in rows]
+    oi = [float(r["open_interest_all"]) for r in rows]
+    net = [float(r[long_f]) - float(r[short_f]) for r in rows]
+    return _cot_stats(d, net, oi, close)
+
+
 def positioning(silver_rows, sp_rows, slv_trust, slv_history, si_close, spy_close):
     out = {"status": "fresh"}
-    if silver_rows:
-        d = [r["report_date_as_yyyy_mm_dd"][:10] for r in silver_rows]
-        oi = [float(r["open_interest_all"]) for r in silver_rows]
-        mm = [float(r["m_money_positions_long_all"]) - float(r["m_money_positions_short_all"]) for r in silver_rows]
-        pm = [float(r["prod_merc_positions_long"]) - float(r["prod_merc_positions_short"]) for r in silver_rows]
-        sw = [float(r["swap_positions_long_all"]) - float(r["swap__positions_short_all"]) for r in silver_rows] \
-            if "swap__positions_short_all" in silver_rows[-1] else None
-        out["silver"] = {"contract": "COMEX silver (084691)", "managed_money": _cot_stats(d, mm, oi, si_close),
-                         "producer_merchant": _cot_stats(d, pm, oi)}
+    mm = _cot_net(silver_rows, "m_money_positions_long_all", "m_money_positions_short_all", si_close)
+    pm = _cot_net(silver_rows, "prod_merc_positions_long", "prod_merc_positions_short")
+    if mm and pm:
+        out["silver"] = {"contract": "COMEX silver (084691)", "managed_money": mm, "producer_merchant": pm}
+        sw = _cot_net(silver_rows, "swap_positions_long_all", "swap__positions_short_all")
         if sw:
-            out["silver"]["swap_dealers"] = _cot_stats(d, sw, oi)
+            out["silver"]["swap_dealers"] = sw
     else:
         out["silver"] = {"status": "missing", "reason": "CFTC silver rows unavailable"}
-    if sp_rows:
-        d = [r["report_date_as_yyyy_mm_dd"][:10] for r in sp_rows]
-        oi = [float(r["open_interest_all"]) for r in sp_rows]
-        lev = [float(r["lev_money_positions_long"]) - float(r["lev_money_positions_short"]) for r in sp_rows]
-        am = [float(r["asset_mgr_positions_long"]) - float(r["asset_mgr_positions_short"]) for r in sp_rows]
-        dl = [float(r["dealer_positions_long_all"]) - float(r["dealer_positions_short_all"]) for r in sp_rows] \
-            if "dealer_positions_long_all" in sp_rows[-1] else None
-        out["sp500"] = {"contract": "E-mini S&P 500 (13874A)", "leveraged_funds": _cot_stats(d, lev, oi, spy_close),
-                        "asset_managers": _cot_stats(d, am, oi, spy_close)}
+    lev = _cot_net(sp_rows, "lev_money_positions_long", "lev_money_positions_short", spy_close)
+    am = _cot_net(sp_rows, "asset_mgr_positions_long", "asset_mgr_positions_short", spy_close)
+    if lev and am:
+        out["sp500"] = {"contract": "E-mini S&P 500 (13874A)", "leveraged_funds": lev, "asset_managers": am}
+        dl = _cot_net(sp_rows, "dealer_positions_long_all", "dealer_positions_short_all")
         if dl:
-            out["sp500"]["dealers"] = _cot_stats(d, dl, oi)
+            out["sp500"]["dealers"] = dl
     else:
         out["sp500"] = {"status": "missing", "reason": "CFTC S&P rows unavailable"}
     t = dict(slv_trust or {})

@@ -253,7 +253,7 @@ add the values to the XML report in `forecast_xml()` in `core/render.py`, and lo
 | `GET /api/macro_direction`, `/api/macro_calendar`, `/api/macro_news`, `/api/macro_ledger_full` | Macro tab data |
 | `GET /api/time_arbitrage`, `/api/arbitrage_history`, `/api/silver_eagle_prices`, `/api/inventory_data` | Silver arbitrage and COMEX inventory |
 | `GET /api/positions`, `POST /api/positions/<id>/star`, `DELETE /api/positions/<id>` | Engine positions |
-| `GET /run` | Starts a pipeline run |
+| `POST /run` | Starts a pipeline run |
 
 The server has no authentication. Keep it on a private network (for example Tailscale); do not expose it to the internet.
 

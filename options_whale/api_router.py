@@ -12,6 +12,7 @@ import warnings
 import subprocess
 import os
 import re
+from urllib.parse import urlparse
 import random
 import math
 import time
@@ -99,7 +100,21 @@ def add_header(response):
     return response
 
 
-CORS(app) # This allows your JS chart to talk to your API without security errors
+# Other origins may read GET data, but never change state: a DELETE/POST preflight from another site fails.
+CORS(app, methods=["GET", "HEAD", "OPTIONS"])
+
+
+@app.before_request
+def reject_cross_site_writes():
+    """The server has no login, so a page on any other site must not be able to make a browser send it a
+    state-changing request (start a run, star/stop a position). Browsers attach Origin (or at least Referer)
+    to such requests; refuse when it names a different host than the one being served."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    if source and urlparse(source).netloc != request.host:
+        return jsonify({"status": "error", "message": "cross-site request refused"}), 403
+    return None
 
 # --- CONFIGURATION ---
 from config import NTFY_URL          # phone alerts; empty = off
@@ -1439,7 +1454,6 @@ def api_help():
     <description>VISUAL: Serves a full-screen, high-contrast interactive dashboard using Chart.js to visualize physical COMEX silver inventory trends and vault drains.</description>
     <parameters />
   </endpoint>
-</api_documentation>
 
   <endpoint path="/api/vmri_history">
     <description>HISTORICAL: Dumps the last 500 records from the macro ledger as JSON for external analysis.</description>
@@ -1449,11 +1463,12 @@ def api_help():
   <endpoint path="/vmri_chart">
     <description>VISUAL: A "Mannarino-Style" historical trend chart for the VMRI. Shows risk escalation over time with color-coded threat zones.</description>
     <parameters />
-  </endpoint>"""
+  </endpoint>
+</api_documentation>"""
     
     return Response(help_xml, mimetype='application/xml')
 
-@app.route('/run', methods=['GET'])
+@app.route('/run', methods=['POST'])
 def run_dashboard():
     """Executes the local dashboard command script and returns the exact timestamp."""
     script_path = RUN_COMMAND
@@ -1465,7 +1480,7 @@ def run_dashboard():
     try:
         # Run the script. capture_output=True hides the terminal spam from the Flask console.
         # check=True forces Python to throw an error if the bash script fails or crashes.
-        subprocess.run(["bash", script_path], check=True, capture_output=True, text=True)
+        subprocess.run(["bash", script_path, "manual"], check=True, capture_output=True, text=True)
         
         # Grab the exact time down to the second
         exact_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

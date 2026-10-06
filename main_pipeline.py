@@ -199,6 +199,13 @@ def run(*, offline=False, deliver=True, upload=True, trigger="manual", use_brows
     from core import collect
     from core.sources import SourceSession
     from send_email import alphaflow_appendix, deliver as smtp_deliver, ntfy_brief, ntfy_push
+    if trigger == "scheduled":
+        from core.market_calendar import scheduled_run_skip_reason
+        skip = ("scheduled runs are off on this machine (SCHEDULED_RUNS=1 is not set in .env)"
+                if not config.SCHEDULED_RUNS else scheduled_run_skip_reason())
+        if skip:
+            print(f"⏭️  Scheduled run skipped: {skip}")
+            return 0
     config.ensure_data_dir()
     lock = RunLock()
     if not lock.acquire():

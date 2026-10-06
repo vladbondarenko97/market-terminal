@@ -41,4 +41,7 @@ def fetch_results():
 if __name__ == '__main__':
     print("🚀 Starting AlphaFlow Server on port 5001...")
     # Run on port 5001
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    # The debugger runs code from the browser, so it stays off unless asked for (ALPHAFLOW_DEBUG=1) and then
+    # only listens on this machine.
+    debug = os.environ.get("ALPHAFLOW_DEBUG") == "1"
+    app.run(host='127.0.0.1' if debug else '0.0.0.0', port=5001, debug=debug)
