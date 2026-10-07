@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import databento as db
 from dotenv import load_dotenv
 
-# Load env variables from Python2026/.env
+# Load env variables from the project's .env (one folder up)
 env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 load_dotenv(env_path)
 

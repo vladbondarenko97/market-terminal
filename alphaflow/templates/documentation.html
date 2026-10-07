@@ -57,34 +57,48 @@
         <h1>AlphaFlow Developer Handbook</h1>
         
         <h2>Overview</h2>
-        <p><strong>AlphaFlow</strong> is an isolated Flask application designed to scan historical OPRA data to identify anomalous institutional options flow (Smart Money Sweeps). It is built with complete separation from the legacy <code>options_whale</code> codebase, running on port <code>5001</code> to prevent conflicts.</p>
-        
+        <p><strong>AlphaFlow</strong> is a standalone Flask application that scans one past trading day of OPRA option trades for aggressive call buying in small and mid caps ("sweeps"). It is separate from the Market Terminal (<code>options_whale</code>) and runs on port <code>5001</code>. Its only link to the main pipeline is that the daily email appends the top results from <code>alphaflow.db</code> when that file exists.</p>
+
         <h2>System Architecture</h2>
         <ul>
-            <li><strong>Frontend (<code>templates/index.html</code>)</strong>: A visual node-based programming canvas built in Vanilla JS using <a href="https://github.com/jerosoler/Drawflow" style="color:var(--accent-color);">Drawflow</a>.</li>
-            <li><strong>Backend Server (<code>server.py</code>)</strong>: A lightweight Flask server exposing the REST API.</li>
-            <li><strong>Execution Engine (<code>engine.py</code>)</strong>: The core processing script that runs the historical logic, interacting with SQLite and Databento APIs.</li>
-            <li><strong>Database (<code>alphaflow.db</code>)</strong>: Local SQLite storage tracking detected swing setups.</li>
+            <li><strong>Frontend (<code>templates/index.html</code>)</strong>: A visual node-based canvas built in Vanilla JS using <a href="https://github.com/jerosoler/Drawflow" style="color:var(--accent-color);">Drawflow</a>.</li>
+            <li><strong>Backend Server (<code>server.py</code>)</strong>: A small Flask server: <code>GET /</code>, <code>GET /documentation</code>, <code>POST /api/scan</code> (JSON config: <code>scan_date</code>, <code>min_spend</code>, <code>vol_oi</code>) and <code>GET /api/results</code>. It listens on <code>0.0.0.0:5001</code> with no authentication; <code>ALPHAFLOW_DEBUG=1</code> turns on the Flask debugger and limits it to <code>127.0.0.1</code>.</li>
+            <li><strong>Execution Engine (<code>engine.py</code>)</strong>: Runs the scan against Databento and yfinance and writes results to SQLite.</li>
+            <li><strong>Universe cache (<code>cache_universe.py</code> &rarr; <code>small_caps.csv</code>)</strong>: Filters a fixed seed list of tickers to a $100M&ndash;$10B market cap via yfinance.</li>
+            <li><strong>Database (<code>alphaflow.db</code>)</strong>: Local SQLite file with the <code>swing_plays</code> table (not committed).</li>
         </ul>
 
         <h2>1. The Execution Engine (<code>engine.py</code>)</h2>
-        <p>The engine executes a simulated historical Databento scan to capture swing setups from the previous trading day.</p>
-        
+        <p>The engine scans the date given as <code>scan_date</code> (default: yesterday) and replaces the stored results with what it finds.</p>
+
         <h3>Universe Pre-Filter</h3>
-        <p>Running a heavy OPRA historical query against 8,000 tickers incurs immense data costs. Therefore, the engine first simulates gathering a target universe of small/mid-cap equities ($100M - $10B) via <code>yfinance</code>. See <code>get_yfinance_universe()</code>.</p>
-        
+        <p>An OPRA query across every listed ticker is expensive, so the scan only covers the tickers in <code>small_caps.csv</code>. Build that file with <code>python alphaflow/cache_universe.py</code>; it checks a fixed seed list against a $100M&ndash;$10B market-cap range. If the file is missing, <code>get_cached_universe()</code> falls back to three demo tickers.</p>
+
         <h3>The Databento Query</h3>
-        <p>In a live scenario, the engine utilizes the Databento Historical API using the OPRA <code>mbp-1</code> schema:</p>
+        <p>The engine reads <code>DATABENTO_API_KEY</code> from the project's <code>.env</code> and queries the OPRA <code>tcbbo</code> schema with parent symbology (<code>&lt;TICKER&gt;.OPT</code>). With no key, or on an API error, it returns no data and stores no results.</p>
         <pre><code>client = db.Historical(key=os.getenv('DATABENTO_API_KEY'))
 client.timeseries.get_range(
-    dataset='OPRA.PILLAR', 
-    schema='mbp-1', 
-    symbols=target_symbols, 
-    start='2026-05-18T00:00'
+    dataset='OPRA.PILLAR',
+    schema='tcbbo',
+    symbols=[f"{sym}.OPT" for sym in symbols],
+    stype_in='parent',
+    start=date,
+    end=f"{date}T23:59:00"
 )</code></pre>
-        
+
+        <h3>Detection</h3>
+        <ul>
+            <li>Keep call trades at or above the ask (when the ask is present).</li>
+            <li>Sum each contract's trades into 15-minute windows.</li>
+            <li>A window is a sweep when premium &ge; <code>min_spend</code> (default $50,000), volume &ge; 100, and volume &divide; open interest &ge; <code>vol_oi</code> (default 1.5). Open interest is fetched from yfinance only for windows that pass the first two tests.</li>
+        </ul>
+
         <div class="note">
-            <strong>Algorithmic Expiration Recommendation:</strong> During processing, the engine calculates a recommended contract expiration date (padding the required swing term with sufficient theta runway) and inserts it directly into the <code>expiration</code> column of the SQLite database.
+            <strong>Fixed placeholders:</strong> the stored <code>expiration</code> is always the scan date plus 44 days, <code>term</code> is always "Mid Term", <code>entry</code> is always "NEXT OPEN" and <code>max_risk</code> is always 500. They are not computed from the trade.
+        </div>
+
+        <div class="note">
+            <strong>Results do not persist:</strong> importing <code>engine.py</code> (every server start) drops and recreates <code>swing_plays</code>, and every scan deletes the previous rows before inserting new ones.
         </div>
 
         <h2>2. Modifying the Visual Canvas (<code>index.html</code>)</h2>
@@ -101,16 +115,18 @@ client.timeseries.get_range(
 editor.addNode('custom', 1, 1, 100, 200, 'custom', {}, customNodeHTML);</code></pre>
 
         <h2>3. Database Schema (SQLite)</h2>
-        <p>The <code>swing_plays</code> table is designed dynamically. If you add new parameters to the engine, you must modify the <code>init_db()</code> function to drop and recreate the table, or run an <code>ALTER TABLE</code> script.</p>
+        <p><code>init_db()</code> in <code>engine.py</code> defines the <code>swing_plays</code> table. Because it drops the table on every start, a new column only needs a change there and in the <code>INSERT</code> in <code>run_historical_scan()</code>.</p>
         <ul>
             <li><code>id</code>: Auto-increment primary key.</li>
-            <li><code>date</code>: The date of the execution.</li>
-            <li><code>ticker</code>: Target equity symbol.</li>
-            <li><code>contract</code>: Detected anomalous option leg.</li>
-            <li><code>expiration</code>: Algorithmic recommended exit date.</li>
-            <li><code>max_risk</code>: Computed maximum dollar risk per trade.</li>
+            <li><code>date</code>: The scanned trading day.</li>
+            <li><code>time_of_sweep</code>: Start of the 15-minute window.</li>
+            <li><code>ticker</code>: Underlying symbol.</li>
+            <li><code>contract</code>: OPRA option symbol.</li>
+            <li><code>volume</code>, <code>oi</code>: Window volume and the contract's open interest.</li>
+            <li><code>spend</code>: Window premium in dollars.</li>
+            <li><code>term</code>, <code>expiration</code>, <code>entry</code>, <code>max_risk</code>: Fixed placeholders (see above).</li>
         </ul>
-        
+
     </div>
 </body>
 </html>
