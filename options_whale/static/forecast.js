@@ -1,5 +1,5 @@
 // ==========================================================================================
-// FORECAST LAB — nine model cards for SPY / SLV (data: /api/forecast, from the committed v2 snapshot)
+// FORECAST LAB — eleven model cards, fc1..fc11 (data: /api/forecast, from the committed v2 snapshot; card 11 also /api/eia_history)
 // ==========================================================================================
 const FC = { ticker: 'SPY', data: null, charts: {}, h1: '1m' };
 const FC_COL = { blue: '#3987e5', orange: '#d95926', aqua: '#199e70', yellow: '#c98500', violet: '#9085e9',

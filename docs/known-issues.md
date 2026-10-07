@@ -34,6 +34,7 @@ Last checked against the code: October 2026.
 |---|---|---|
 | Export, ticket recording, forecast logging, rendering and delivery share one `try` block | `main_pipeline.run()` | An exception in `record_signal()` or `record_forecasts()` skips the files, the email and the upload. The run ends `completed_with_warnings` with exit code 0. |
 | Delivery failures do not change the exit code | `main_pipeline.run()` | A failed email makes the run `completed_with_warnings`; failed ntfy pushes and uploads are not even warnings. Launchd and the Run button cannot tell. Check `main_pipeline.py status`. |
+| Upload success is any HTTP 200 | `upload_data.py` `upload_files()` | A file the receiver rejected still counts as uploaded. The slim database copy is also built before the URL and token are checked, so an unconfigured upload still writes a full-size temporary copy. |
 | Only `run` takes the run lock | `main_pipeline.py` `RunLock` | `replay`, `resend`, `import-history`, `cme-login`, `download_volume.py` and `update_inventory.py` can overlap a run; `cme-login` and a run would share one Chromium profile. |
 | A killed run leaves `.v2_run_status.json` saying `running` | `main_pipeline.py` `set_status()` | `status` shows a run that no longer exists. The lock is the source of truth. |
 | An empty `NTFY_URL` is recorded as `failed`, not skipped; `ntfy-test` exits 0 when the push fails | `send_email.py` `ntfy_brief()`, `main_pipeline.main()` | Misleading delivery detail. |
@@ -43,6 +44,8 @@ Last checked against the code: October 2026.
 | `positions.backfill()` is never called | `core/positions.py` | Dead code. |
 | Horizon marks use the day's first recorded mark | `core/positions.py` `_market_mark()` | +1D/+1W/+2W values are opening-run prices, not closes. |
 | Snapshot immutability blocks `UPDATE` only | `core/lake.py` (trigger `v2_snapshots_immutable`) | A `DELETE` on `v2_snapshots` is not prevented. |
+| Providers missing from `PROVIDER_LIMITS` get no concurrency limit | `core/sources.py` `SourceSession.fetch()` | It creates a new `Semaphore(1)` on every call, so `ishares` and `federalreserve` requests are not bounded. |
+| An offline run replaces the day's files and becomes the latest snapshot | `main_pipeline.run()` | The terminal then shows the offline run until the next live one. Use a scratch `PORTFOLIO_DATA_DIR` for offline tests. |
 | `daily_market_report.txt` is imported although the code means to skip it | `core/importer.py` `import_history()` | The `.txt` test matches first, so the skip branch for rendered reports is unreachable. Each report is stored once as an extra payload; harmless. |
 | `lake.backup_database()` is never called | `core/lake.py` | There is no automatic local backup. Copy `CME_Data` by hand. |
 
@@ -57,6 +60,9 @@ Last checked against the code: October 2026.
 | `/api/option_calc` uses SPY's realised volatility for every ticker | `options_whale/quant_engine.py` `calculate_option_analytics()` | `hv_pct` and `iv_signal` are wrong for other tickers. |
 | `comex_spot` holds the `SI=F` futures price | `ebay.py` (XML attribute and `COMEX_Spot` ledger column) | The name suggests a COMEX spot quote. |
 | Invented fallback numbers in live routes | `api_router.py` `api_war_room()`, `get_time_arbitrage()`, `calculate_option()`; `options_whale/quant_engine.py` | When an input is missing these routes substitute constants (VIX 20, IV 0.20, rate 5%, realised vol 15%, zero gamma = spot × 0.995 …) instead of reporting missing. |
+| The macro ledger's `GEX` and `DIX` columns are always empty | `core/render.py` `ledger_rows()` | The Time Arbitrage Capacity Constraint Oscillator adds zero for both, so only VIX moves it (`quant_engine.calculate_z_score_oscillator()`). |
+| IV Premium Bleed and the Probability Matrix use the lowest strikes of the chain, not strikes near spot; the "Optimal Strike" text always says SPY | `api_router.py` `get_time_arbitrage()`; `app.js` `updateProbMatrix()` | Misleading panels for any ticker. |
+| Institutional Wishlist "Live Px" is the price saved when the contract was added | `app.js` `renderWatchlist()` | Change (%) is always 0.00. |
 | `/api/macro_direction` returns a constant `sentiment_bias: "NEUTRAL"` | `api_router.py` `get_macro_direction()` | The route is not used by the UI. |
 | Many routes return HTTP 200 on error | `/api/gex`, `/api/darkpool`, `/api/morning`, `/api/evening`, `/api/custom`, `/api/time_arbitrage`, `/api/macro_direction`, `/api/option_chain`, `/api/option_calc` | Clients must check `status` in the body. |
 | Several routes compute models or call providers at request time | see the Source column in [API](api.md) | Breaks the "models run in the pipeline" rule; the terminal shows live values next to snapshot values. |

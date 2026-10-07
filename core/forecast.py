@@ -1,4 +1,5 @@
-"""Forecast Lab: nine institutional-style models for SPY / SLV at 1 day, 1 week, 1 month and 1 year.
+"""Forecast Lab cards 1-9: institutional-style models for SPY / SLV at 1 day, 1 week, 1 month and 1 year.
+(Cards 10 and 11, diesel & refining and EIA inventories, are built in core/refining.py; the terminal shows all 11.)
 
 Every model consumes data the run already captured (option chains, daily OHLC, FRED, CFTC, iShares, Fed calendar);
 nothing here makes network requests. Outputs are plain dicts stored in the committed snapshot (ctx["forecast"]).
