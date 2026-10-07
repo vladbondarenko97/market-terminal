@@ -302,7 +302,8 @@ class T04Outputs(unittest.TestCase):
             def login(self, *a): pass
             def send_message(self, m): raise ConnectionResetError("dropped after DATA")
         with mock.patch.object(send_email, "EMAIL_SENDER", "a@b"), mock.patch.object(send_email, "EMAIL_PASSWORD", "x"), \
-                mock.patch("smtplib.SMTP", FlakySMTP):
+                mock.patch.object(send_email, "SMTP_SERVER", "smtp.invalid"), \
+                mock.patch.object(send_email, "RECIPIENT_EMAIL", "c@d"), mock.patch("smtplib.SMTP", FlakySMTP):
             status, detail = send_email.deliver(eml)
         self.assertEqual(status, "outcome_unknown")
         self.assertIn("not retried", detail)
