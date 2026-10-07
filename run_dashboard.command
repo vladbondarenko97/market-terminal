@@ -1,6 +1,6 @@
 #!/bin/zsh
 # v2 launcher: one coordinated run (collect -> capture -> snapshot -> files/charts -> email/NTFY/upload).
-# Rollback: `git checkout main` in this folder restores the legacy launcher.
+# Usage: run_dashboard.command [TRIGGER]  (default "scheduled", as launchd passes it: gated by SCHEDULED_RUNS and the NYSE calendar; use "manual" for a hand run, which also opens the dashboard)
 
 cd "$(dirname "$0")"
 # The project's own virtualenv (setup.sh) when there is one; otherwise the conda base env this script used before.

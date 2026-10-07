@@ -7,7 +7,8 @@
 #                                 at the open (09:31 ET) and before the close (15:45 ET)
 #   ./setup.sh --remove-schedule  stop scheduled runs on this Mac (run it on every Mac except the scheduler)
 #   ./setup.sh --no-menubar       skip SwiftBar / the menu bar icon
-#   ./setup.sh --uninstall        stop the server and the schedule, remove both services (keeps .env, .venv, data)
+#   ./setup.sh --uninstall        stop the server and the schedule, remove both services (keeps .env, .venv, data;
+#                                 only SCHEDULED_RUNS in .env is cleared)
 
 set -euo pipefail
 
@@ -33,7 +34,7 @@ for arg in "$@"; do
         --uninstall)  UNINSTALL=1 ;;
         --schedule)   SCHEDULE=1 ;;
         --remove-schedule) REMOVE_SCHEDULE=1 ;;
-        -h|--help)    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $arg (try --help)" >&2; exit 2 ;;
     esac
 done

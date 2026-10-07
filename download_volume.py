@@ -1,8 +1,10 @@
 """CME volume acquisition (bounded). Replaces the old open-ended Playwright loop.
 
-- Reads the logged-in CME FTP listing and downloads only trade dates missing from the lake (max N per call).
+- Reads the logged-in CME FTP listing and downloads trade dates newer than the latest one held (max N per call,
+  1-40). Older gaps are not filled.
 - Files are named by the trade date inside the workbook; existing archives are never overwritten.
-- No interactive prompt: if the saved session is missing/expired, it says so. Log in with:
+- If CME refuses a download it opens the login window and waits up to 15 minutes, like a run (no phone push).
+  To log in ahead of time:
       python main_pipeline.py cme-login
 """
 import sys

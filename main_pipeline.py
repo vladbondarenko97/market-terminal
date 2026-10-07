@@ -1,12 +1,19 @@
 """v2 run coordinator: acquire -> capture -> calculate -> commit snapshot -> export -> deliver.
 
-  python main_pipeline.py run [--offline] [--no-deliver] [--no-upload] [--trigger scheduled|manual] [--cme-max-files N]
+  python main_pipeline.py [run] [--offline] [--no-deliver] [--no-upload] [--skip-cme] [--no-cme-browser]
+                          [--cme-max-files N] [--login-wait MINUTES] [--trigger NAME]
+                                                                 # one run; `run` is the default command
   python main_pipeline.py cme-login                              # one-time CME login (MFA) for the volume FTP
   python main_pipeline.py replay [--run RUN_ID] [--out DIR]     # offline re-render of a saved run, no delivery
   python main_pipeline.py import-history                         # idempotent import of old files/tables
   python main_pipeline.py resend [--run RUN_ID]                  # explicit resend of a saved email.eml
   python main_pipeline.py catalog [--run RUN_ID]                 # variable catalog + lineage (Markdown)
-  python main_pipeline.py status
+  python main_pipeline.py status                                 # last 10 runs + the current run's status
+  python main_pipeline.py ntfy-test                              # send the latest run's phone brief to NTFY_URL
+
+Exit codes of `run`: 0 = finished (also with warnings, and also when a scheduled run is skipped), 75 = another run
+holds the run lock (nothing was started), 1 = failed before the snapshot was committed. Only `run` takes the lock.
+`resend` exits 0 when SMTP accepted the message, 2 when it did not, 1 when there is nothing to resend.
 """
 import argparse
 import csv
@@ -413,25 +420,35 @@ def status():
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd")
-    r = sub.add_parser("run")
-    r.add_argument("--offline", action="store_true", help="no provider/network requests")
-    r.add_argument("--no-deliver", action="store_true", help="save report + email.eml but do not send/notify/upload")
-    r.add_argument("--no-upload", action="store_true")
-    r.add_argument("--skip-cme", action="store_true", help="use saved CME history only")
-    r.add_argument("--no-cme-browser", action="store_true", help="plain HTTP only for CME (no browser window)")
+    r = sub.add_parser("run", help="one coordinated run: collect, snapshot, render, deliver (the default command)")
+    r.add_argument("--offline", action="store_true",
+                   help="no provider/network requests; implies --no-deliver and records no ledgers, positions or forecasts")
+    r.add_argument("--no-deliver", action="store_true",
+                   help="save report + email.eml but do not send, notify (ntfy) or upload; ledgers and positions are still recorded")
+    r.add_argument("--no-upload", action="store_true",
+                   help="skip both uploads (the report and the database/dashboard copy); email and ntfy still go out")
+    r.add_argument("--skip-cme", action="store_true",
+                   help="make no CME requests (volume or inventory); use saved CME history only")
+    r.add_argument("--no-cme-browser", action="store_true",
+                   help="CME inventory: plain HTTP only, no browser fallback. The volume listing still uses the browser "
+                        "window; use --skip-cme or --cme-max-files 0 to avoid it")
     r.add_argument("--cme-max-files", type=int, default=10,
-                   help="max missing CME volume workbooks to fetch this run (bounded backfill)")
-    r.add_argument("--trigger", default="manual")
-    r.add_argument("--login-wait", type=int, default=15, help="minutes to pause for a CME login if needed (0 = never)")
-    rp = sub.add_parser("replay")
-    rp.add_argument("--run")
-    rp.add_argument("--out")
-    sub.add_parser("import-history")
-    rs = sub.add_parser("resend")
-    rs.add_argument("--run")
-    c = sub.add_parser("catalog")
-    c.add_argument("--run")
-    sub.add_parser("status")
+                   help="max missing CME volume workbooks to fetch this run (default 10, capped at 40; 0 = skip the volume download)")
+    r.add_argument("--trigger", default="manual",
+                   help="label stored with the run (default manual). Only `scheduled` is special: that run is skipped "
+                        "unless SCHEDULED_RUNS=1 is set in .env and now is inside an NYSE trading day's session "
+                        "(09:20-16:00 ET); a skipped run exits 0 and records nothing")
+    r.add_argument("--login-wait", type=int, default=15,
+                   help="minutes to wait for you to finish a CME login when CME refuses a download (default 15; 0 = never wait)")
+    rp = sub.add_parser("replay", help="re-render a saved run offline (no network, no delivery)")
+    rp.add_argument("--run", help="run id to replay (default: the latest committed snapshot)")
+    rp.add_argument("--out", help="output folder (default: <data folder>/<day folder>/replay_<run id>)")
+    sub.add_parser("import-history", help="import old files and tables into the lake (idempotent)")
+    rs = sub.add_parser("resend", help="send a saved run's email.eml again (explicit; never automatic)")
+    rs.add_argument("--run", help="run id to resend (default: the latest committed snapshot)")
+    c = sub.add_parser("catalog", help="print the variable catalog + lineage (Markdown) for a run")
+    c.add_argument("--run", help="run id (default: the latest committed snapshot)")
+    sub.add_parser("status", help="print the last 10 runs and the current run's status")
     sub.add_parser("cme-login", help="log in to CME in a browser window (MFA) and save the session")
     sub.add_parser("ntfy-test", help="send the latest run's phone brief (summary + report attachment) to NTFY_URL")
     a = p.parse_args(argv)

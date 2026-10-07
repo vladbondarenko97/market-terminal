@@ -1,7 +1,6 @@
 """Compatibility renderer: tactical_ruling.txt from the latest committed v2 snapshot.
 
 Collection now happens once per run in main_pipeline.py (core/collect.py); this module no longer fetches data.
-The legacy implementation is in git history (main branch) for rollback.
 """
 import sys
 
