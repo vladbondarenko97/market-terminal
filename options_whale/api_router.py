@@ -30,7 +30,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from quant_engine import QuantEngine
 
 
-PYTHON_BIN = "/usr/local/Caskroom/miniconda/base/bin/python3"
+PYTHON_BIN = sys.executable   # subprocess routes use the server's own interpreter (the project .venv)
 RUN_COMMAND = str(_PROJECT_ROOT / "run_dashboard.command")
 
 OPTIONS_SCRIPT = str(_PROJECT_ROOT / "options_scanner.py")
@@ -1404,66 +1404,194 @@ def api_help():
     """Outputs the complete API documentation in XML format."""
     help_xml = """<?xml version="1.0" ?>
 <api_documentation>
-  <endpoint path="/api/morning">
-    <description>8:31 AM LOGIC: Hunts for urgent, short-term directional momentum.</description>
-    <defaults max_dte="14 days" min_vol_oi="1.5x" min_premium="$100,000" />
-    <parameters>
-      <param name="ticker" required="true" type="string" example="SPY" />
-    </parameters>
-  </endpoint>
-  
-  <endpoint path="/api/evening">
-    <description>2:00 PM LOGIC: Hunts for massive structural positioning and earnings bets.</description>
-    <defaults max_dte="ALL" min_vol_oi="1.0x" min_premium="$500,000" />
-    <parameters>
-      <param name="ticker" required="true" type="string" example="NVDA" />
-    </parameters>
-  </endpoint>
-  
-  <endpoint path="/api/custom">
-    <description>CUSTOM LOGIC: Dynamic scanner allowing user-defined overrides.</description>
-    <parameters>
-      <param name="ticker" required="true" type="string" example="TSLA" />
-      <param name="min_vol_oi" required="false" type="float" default="1.0" example="3.5" description="Minimum Volume to Open Interest ratio" />
-      <param name="min_premium" required="false" type="float" default="100000" example="1000000" description="Minimum estimated dollars spent" />
-      <param name="max_dte" required="false" type="int" default="None" example="5" description="Maximum days to expiration (Leave blank for ALL)" />
-    </parameters>
-  </endpoint>
+  <reference>Full reference with response shapes, error behavior and known issues: docs/api.md in the repository.</reference>
+  <notes>
+    <note>There is no authentication. Keep the server on a private network.</note>
+    <note>source="stored" reads pipeline output (SQLite, CSV ledgers, daily files). source="live" makes network calls while the request is open.</note>
+    <note>Several routes return HTTP 200 with status="error" in the JSON body when they fail, so check the body, not only the HTTP status.</note>
+    <note>POST and DELETE requests that carry an Origin or Referer for a different host are refused with 403.</note>
+  </notes>
 
-  <endpoint path="/run">
-    <description>SYSTEM: Triggers the local run_dashboard.command script on the Mac and returns the execution timestamp.</description>
-    <parameters />
-  </endpoint>
+  <group name="Terminal and system">
+    <endpoint method="GET" path="/" format="html">
+      <description>The web terminal (templates/terminal.html).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/help" format="xml">
+      <description>This page.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="POST" path="/run" format="xml" writes="pipeline run">
+      <description>Runs run_dashboard.command with the manual trigger and waits until the pipeline finishes (no timeout). Returns the finish time, or the error text if the script fails.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/dump" alias="/dump" format="xml" source="stored">
+      <description>The tactical_ruling.txt and volume_dashboard.txt of the newest folder in the data directory, merged into one XML document.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/static/{filename}" format="file">
+      <description>Terminal JavaScript and CSS (options_whale/static).</description>
+      <parameters />
+    </endpoint>
+  </group>
 
-  <endpoint path="/dump">
-    <description>DATA: Automatically locates the most recent CME_Data folder and dumps the tactical ruling and volume dashboard text files.</description>
-    <parameters />
-  </endpoint>
+  <group name="Macro and VMRI">
+    <endpoint method="GET" path="/vmri" format="xml" source="stored">
+      <description>The VMRI block from the newest tactical_ruling.txt, with the formulas and the four risk ranges.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/vmri_history" format="json" source="stored">
+      <description>The last 500 rows of the macro ledger: VMRI score, 10-period SMA, 5-period momentum, primary driver and context series (DXY, 10Y yield, VIX, gold, gold/silver ratio, HY OAS).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/vmri_chart" format="html" source="stored">
+      <description>VMRI chart page (loads /api/vmri_history).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET,POST" path="/api/war_room" format="json" source="stored">
+      <description>VMRI scenario: applies shifts to the latest ledger values and returns the current and hypothetical VMRI, tier, per-lever impact and where the scores sit in the ledger history. Parameters come from the query string (GET) or a JSON body (POST).</description>
+      <parameters>
+        <param name="dxy_shift" type="float" default="0" description="Added to DXY" />
+        <param name="tnx_shift" type="float" default="0" description="Added to the 10Y yield" />
+        <param name="oas_shift" type="float" default="0" description="Added to HY OAS" />
+        <param name="vix_shift_pct" type="float" default="0" description="VIX change in percent; takes priority when not 0" />
+        <param name="vix_shift" type="float" default="0" description="VIX change in points; used when vix_shift_pct is 0" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/macro_direction" format="json" source="stored">
+      <description>Latest VMRI score from the macro ledger. sentiment_bias is a fixed placeholder (NEUTRAL).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/macro_calendar" format="json" source="stored">
+      <description>Upcoming macro events (date, time, impact, title, forecast, previous) from the newest tactical_ruling.txt.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/macro_news" format="xml" source="live">
+      <description>Top 10 headlines from the Yahoo Finance RSS feed, each with a VADER sentiment score.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/macro_ledger_full" format="json" source="stored">
+      <description>Macro ledger series (VMRI, rates, volatility, commodities, silver and liquidity columns) as parallel arrays.</description>
+      <parameters>
+        <param name="limit" type="int" default="200" description="Number of most recent rows" />
+      </parameters>
+    </endpoint>
+  </group>
 
-  <endpoint path="/vmri">
-    <description>MACRO: Extracts the latest Vlad Macro Risk Index (VMRI) score, including live calculations, formulas, and the mechanics breakdown from the latest tactical ruling.</description>
-    <parameters />
-  </endpoint>
+  <group name="Options and flow">
+    <endpoint method="GET" path="/api/gex" format="json" source="live">
+      <description>Black-Scholes gamma exposure by strike from the three nearest expirations, within 10 percent of spot. zeroGamma is set to the spot price, not computed.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/darkpool" format="json" source="live">
+      <description>Block trades (size 10,000 or more) in the last completed trading session from Databento: volume, notional, VWAP, buy/sell bias and the 5 latest prints. Needs a Databento key.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/institutional_history" format="json" source="stored">
+      <description>Dark pool and GEX history for one ticker from the equities_darkpool_gex_ledger.csv ledger.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SLV" />
+        <param name="limit" type="int" default="100" description="Number of most recent rows" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/morning" format="json" source="live">
+      <description>Plain-text report (in the data field) of the highest-volume and highest-open-interest call and put for SPY and SLV, produced by options_scanner.py. The ticker is echoed back but does not change the report. No DTE, Vol/OI or premium filter is applied.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" description="Echoed only" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/evening" format="json" source="live">
+      <description>Same report and behavior as /api/morning.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" description="Echoed only" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/custom" format="xml" source="live">
+      <description>Unusual-activity scan of the option chains. Keeps contracts with volume x last price x 100 of at least $100,000 (fixed) and Vol/OI at or above min_vol_oi, expiring within max_dte days. Calls and puts, in or out of the money. Errors come back as HTTP 200 with an error attribute on the root element.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+        <param name="min_vol_oi" type="float" default="1.0" description="Minimum volume / open interest" />
+        <param name="max_dte" type="int" default="365" description="Maximum days to expiration; 0 or empty means no limit" />
+        <param name="min_premium" type="float" default="ignored" description="Accepted but not used; the floor is fixed at $100,000" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/option_chain" format="json" source="live">
+      <description>Calls and puts (strike, last, bid, ask, iv, oi, volume) for one expiration, plus the first 24 expirations and the spot price.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+        <param name="expiration" type="date" default="first expiration after today" description="YYYY-MM-DD; ignored if not listed" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/option_calc" format="json" source="live">
+      <description>Black-Scholes price, Greeks and probability for one contract, using the live chain implied volatility when found.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+        <param name="strike" type="float" default="0" description="Required in practice" />
+        <param name="expiration" type="date" default="empty" description="YYYY-MM-DD; required in practice" />
+        <param name="type" type="string" default="call" description="call or put" />
+        <param name="market_price" type="float" default="0" description="0 uses the last traded price from the chain" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/time_arbitrage" format="json" source="live">
+      <description>Options analytics for a ticker: z-score oscillator, gamma state, vanna and charm, IV bleed, strike probabilities, IV term structure and IV/HV spread. Reads the macro and dark pool ledgers and calls Yahoo Finance.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+      </parameters>
+    </endpoint>
+  </group>
 
-  <endpoint path="/api/inventory_data">
-    <description>DATA PROXY: Reads the master COMEX inventory history CSV and returns a JSON payload of Registered, Eligible, and Total volumes for time-series analysis.</description>
-    <parameters />
-  </endpoint>
+  <group name="Silver and arbitrage">
+    <endpoint method="GET" path="/api/silver_eagle_prices" format="xml" source="live" writes="appends a row to physical_arbitrage_ledger">
+      <description>Runs ebay.py: prices of tracked 1 oz Silver Eagle listings from the eBay Browse API, with premium over the silver futures price. Each successful call appends a row to the arbitrage ledger (CSV and SQLite). Needs eBay credentials.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/arbitrage_history" format="json" source="stored">
+      <description>Silver Eagle premium history from physical_arbitrage_ledger.csv, as parallel arrays.</description>
+      <parameters>
+        <param name="limit" type="int" default="50" description="Number of most recent rows" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/inventory_data" format="json" source="stored">
+      <description>COMEX registered, eligible and total silver inventory by date from comex_inventory_history.csv.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/inventory_chart" format="html" source="stored">
+      <description>COMEX inventory chart page (loads /api/inventory_data).</description>
+      <parameters />
+    </endpoint>
+  </group>
 
-  <endpoint path="/inventory_chart">
-    <description>VISUAL: Serves a full-screen, high-contrast interactive dashboard using Chart.js to visualize physical COMEX silver inventory trends and vault drains.</description>
-    <parameters />
-  </endpoint>
+  <group name="Engine positions">
+    <endpoint method="GET" path="/api/positions" format="json" source="stored and live">
+      <description>Tracked engine positions from the database, with live underlying and option prices and projected values.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="POST" path="/api/positions/{signal_id}/star" format="json" writes="toggles starred">
+      <description>Toggles the star on one position. 404 if the id is unknown.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="DELETE" path="/api/positions/{signal_id}" format="json" writes="stops tracking">
+      <description>Stops tracking a position (marks it deleted; the record is kept). 404 if the id is unknown or already stopped.</description>
+      <parameters />
+    </endpoint>
+  </group>
 
-  <endpoint path="/api/vmri_history">
-    <description>HISTORICAL: Dumps the last 500 records from the macro ledger as JSON for external analysis.</description>
-    <parameters />
-  </endpoint>
-
-  <endpoint path="/vmri_chart">
-    <description>VISUAL: A "Mannarino-Style" historical trend chart for the VMRI. Shows risk escalation over time with color-coded threat zones.</description>
-    <parameters />
-  </endpoint>
+  <group name="Forecast Lab">
+    <endpoint method="GET" path="/api/forecast" format="json" source="stored and live">
+      <description>The Forecast Lab cards of the latest committed snapshot plus the scorecard (graded with live daily closes). 404 until a pipeline run has produced a snapshot.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" description="SPY or SLV; anything else returns 400" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/eia_history" format="json" source="stored">
+      <description>Weekly EIA stock and days-of-supply history behind Forecast Lab card 11, built from files the pipeline captured.</description>
+      <parameters />
+    </endpoint>
+  </group>
 </api_documentation>"""
     
     return Response(help_xml, mimetype='application/xml')
@@ -1620,9 +1748,9 @@ def get_vmri():
         # Base Stress
         bs = ET.SubElement(mechanics_doc, "metric", name="Base Stress")
         bs_desc = ET.SubElement(bs, "description")
-        bs_desc.text = "The foundational risk score derived from interest rate volatility, 10-Year Treasury yields, and systemic liquidity."
+        bs_desc.text = "The dollar and rates component: the US Dollar Index (DXY) times the 10-Year Treasury yield, scaled by 1.61."
         bs_form = ET.SubElement(bs, "formula")
-        bs_form.text = "(DXY * 1.5) + (10Y Yield * 15) + (150 - ZN Futures) + (Reverse Repo * 10)"
+        bs_form.text = "(DXY * 10Y Yield) / 1.61"
         
         # Credit Multiplier
         cm = ET.SubElement(mechanics_doc, "metric", name="Credit Multiplier")
@@ -1644,10 +1772,10 @@ def get_vmri():
         
         # Ranges
         ranges = ET.SubElement(doc_node, "ranges")
-        ET.SubElement(ranges, "level", range="0 - 150", status="RISK ON", action="Maximize long exposure. Volatility is suppressed.")
-        ET.SubElement(ranges, "level", range="150 - 250", status="BASELINE", action="Normal market conditions. Standard position sizing.")
+        ET.SubElement(ranges, "level", range="0 - 150", status="LOW RISK", action="Maximize long exposure. Volatility is suppressed.")
+        ET.SubElement(ranges, "level", range="150 - 250", status="MODERATE RISK", action="Normal market conditions. Standard position sizing.")
         ET.SubElement(ranges, "level", range="250 - 350", status="ELEVATED RISK", action="Hedge triggers active. Reduce beta, increase cash.")
-        ET.SubElement(ranges, "level", range="350+", status="SEVERE STRESS", action="Liquidity event probable. Maximum defensive posture.")
+        ET.SubElement(ranges, "level", range="350+", status="SYSTEMIC THREAT", action="Liquidity event probable. Maximum defensive posture.")
 
         # Generate pretty XML
         xml_str = minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
@@ -2349,4 +2477,4 @@ def api_eia_history():
 
 if __name__ == "__main__":
     # Port 8080 unless OPTIONS_WHALE_PORT is set in .env (per-machine, never committed)
-    app.run(host='0.0.0.0', port=int(os.environ.get("OPTIONS_WHALE_PORT", "8080")))
+    app.run(host='0.0.0.0', port=int(os.environ.get("OPTIONS_WHALE_PORT") or 8080))
