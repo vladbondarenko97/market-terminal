@@ -153,7 +153,6 @@ Thin wrappers kept so old entry points still work. Each reads the latest snapsho
 | `deployment_engine.py`, `deployment_dashboard.html` | Capital-deployment sizing prototype (half-Kelly). Writes `deployment_payload.json`/`.js` for the static page. Contains placeholder data. |
 | `index.html`, `index.keys.example.js` | Static multi-asset price board that polls public APIs from the browser. Keys go in `index.keys.js` (not committed). |
 | `options_api.py`, `find_options.py` | Older option-lookup server and CLI. `options_api.py` also uses port 8080, so it cannot run next to the terminal. |
-| `imessage/` | Personal macOS Messages and ntfy helpers. Not related to market data. |
 
 ### Scratch
 

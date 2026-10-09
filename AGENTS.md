@@ -41,8 +41,8 @@ to the operator's database.
 Breaking one of these is a bug, even if the tests pass.
 
 1. **Never send or publish anything.** Do not run `main_pipeline.py run` without `--offline` or `--no-deliver`. Do
-   not run `resend`, `ntfy-test`, `upload_data.py`, `send_email.py` or `imessage/*`. They email, push to a phone or
-   upload to a web server.
+   not run `resend`, `ntfy-test`, `upload_data.py` or `send_email.py`. They email, push to a phone or upload to a web
+   server.
 2. **Never commit secrets.** `.env`, `index.keys.js`, `state.json` and anything under `CME_Data/` stay out of git.
    Read settings through `config.py`; never hardcode a path, key, token, phone number or email address.
 3. **Missing is not zero.** A model or source without inputs returns `{"status": "missing", "reason": "..."}`. Never
@@ -80,7 +80,7 @@ Breaking one of these is a bug, even if the tests pass.
 
 Leave the legacy compatibility scripts (`tactical_ruling.py`, `dump_data.py`, `market_reader.py`,
 `institutional_scanner.py`, `parse_volume.py`, `update_inventory.py`) as thin wrappers. Standalone tools
-(`alphaflow/`, `deployment_engine.py`, `index.html`, `options_api.py`, `find_options.py`, `imessage/`) are outside
+(`alphaflow/`, `deployment_engine.py`, `index.html`, `options_api.py`, `find_options.py`) are outside
 the pipeline; do not wire them in. The full list is in
 [docs/architecture.md](docs/architecture.md#repository-map).
 

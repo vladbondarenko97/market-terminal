@@ -108,7 +108,7 @@ port such as 465 does not). The message is always saved as `email.eml` first.
 
 | Variable | Default | Read by | When empty |
 |---|---|---|---|
-| `NTFY_URL` | `""` | `send_email.py` (daily brief, refinery alerts, CME login alert); `imessage/notify.py`. `options_whale/api_router.py` imports it, but only dead code uses it. | No pushes are sent. Event alerts are recorded as `skipped` (`NTFY_URL not configured`); the daily brief is recorded as `failed` (known issue, see [Known issues](known-issues.md)). `notify.py` exits with an error. Use the full topic URL, for example `https://ntfy.sh/<topic>`. |
+| `NTFY_URL` | `""` | `send_email.py` (daily brief, refinery alerts, CME login alert). `options_whale/api_router.py` imports it, but only dead code uses it. | No pushes are sent. Event alerts are recorded as `skipped` (`NTFY_URL not configured`); the daily brief is recorded as `failed` (known issue, see [Known issues](known-issues.md)). Use the full topic URL, for example `https://ntfy.sh/<topic>`. |
 | `DASHBOARD_URL` | `""` | `main_pipeline.py` through `config.optional_env` | The daily push has no **Dashboard** button. Set it to the address of your terminal that your phone can reach (for example a Tailscale address). |
 
 ### Upload
@@ -222,4 +222,4 @@ Known issues (places that break the first rule today). See [Known issues](known-
 | `upload_data.py` | Reads `UPLOAD_URL` again (config has an unused copy) and reads `UPLOAD_TOKEN` and `REPORT_UPLOAD` with `config.optional_env`; neither is a config constant |
 | `main_pipeline.py` | Reads `DASHBOARD_URL` with `config.optional_env`; it is not a config constant |
 | `setup.sh`, `menubar/optionswhale.10s.sh` | Parse `OPTIONS_WHALE_PORT` out of `.env` with `sed` (a shell script cannot import `config`); `setup.sh` also writes `SCHEDULED_RUNS` with `sed` |
-| `fix_csv.py`, `imessage/` | One-off scripts outside the pipeline. They hardcode a Desktop data path and a personal phone number. |
+| `fix_csv.py` | One-off script outside the pipeline. It hardcodes a Desktop data path. |

@@ -94,7 +94,6 @@ Last checked against the code: October 2026.
 | `find_options.py` uses the invalid `strptime` directive `%q` | `find_options.py` | Two-digit-year dates raise `ValueError`. |
 | `options_api.py` uses port 8080 (its comment says 5002) | `options_api.py` | It cannot run next to the terminal. |
 | AlphaFlow wipes its results on every start | `alphaflow/engine.py` `init_db()` | `DROP TABLE` at import; each scan also deletes previous rows. |
-| `imessage/` holds a hardcoded personal phone number and builds AppleScript from command-line text | `imessage/check_reply.py`, `imessage/delay_delivery.py` | Personal data in the repository; quoting is weak enough for command injection. |
 | `deployment_engine.py` mixes placeholder data into its output | `deployment_engine.py` | Its "active trades" and some inputs are hardcoded. |
 
 ## Tests
