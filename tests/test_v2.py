@@ -447,9 +447,14 @@ class T08Schedule(unittest.TestCase):
         at = lambda s: datetime.fromisoformat(s).replace(tzinfo=NEW_YORK)
         self.assertIsNone(scheduled_run_skip_reason(at("2026-10-06T09:31")))
         self.assertIsNone(scheduled_run_skip_reason(at("2026-10-06T15:45")))
-        self.assertIn("outside the regular session", scheduled_run_skip_reason(at("2026-10-06T19:00")))
+        # a fire is only valid close to a run slot (10 minutes before to 30 after), and never after the close
+        self.assertIn("outside the scheduled run windows", scheduled_run_skip_reason(at("2026-10-06T11:00")))
+        self.assertIn("after the 16:00 ET close", scheduled_run_skip_reason(at("2026-10-06T19:00")))
         self.assertIn("not an NYSE trading day", scheduled_run_skip_reason(at("2026-10-03T09:31")))
         self.assertIn("not an NYSE trading day", scheduled_run_skip_reason(at("2026-11-26T09:31")))
+        # the day after Thanksgiving closes at 13:00 ET: the morning run goes ahead, the afternoon run is skipped
+        self.assertIsNone(scheduled_run_skip_reason(at("2026-11-27T09:31")))
+        self.assertIn("after the 13:00 ET early close", scheduled_run_skip_reason(at("2026-11-27T15:45")))
 
     def test_scheduled_run_needs_opt_in(self):
         import main_pipeline

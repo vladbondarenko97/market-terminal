@@ -1,13 +1,17 @@
 import os
+import re
 import sqlite3
-import pandas as pd
+import sys
 from datetime import datetime, timedelta
-import databento as db
-from dotenv import load_dotenv
+from pathlib import Path
 
-# Load env variables from the project's .env (one folder up)
-env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-load_dotenv(env_path)
+import databento as db
+import pandas as pd
+import yfinance as yf
+
+# The project's settings live in config.py one folder up (it loads .env, honours the DB_API_KEY alias).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import config  # noqa: E402
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "alphaflow.db")
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "small_caps.csv")
@@ -15,7 +19,7 @@ CACHE_FILE = os.path.join(os.path.dirname(__file__), "small_caps.csv")
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("DROP TABLE IF EXISTS swing_plays")
+    # Create only: stored results survive a restart. A scan replaces them once it has fresh ones (see run_historical_scan).
     c.execute('''CREATE TABLE IF NOT EXISTS swing_plays
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   date TEXT,
@@ -47,18 +51,19 @@ def get_cached_universe():
     return df
 
 def fetch_actual_databento(symbols, date):
-    api_key = os.getenv('DATABENTO_API_KEY')
+    """OPRA trades for `symbols` on `date`. An empty frame means the query worked and found nothing; a missing
+    key or a failed request raises RuntimeError so the caller does not mistake it for 'no sweeps'."""
+    api_key = config.DATABENTO_API_KEY
     if not api_key or "YOUR" in api_key:
-        print("Valid DATABENTO_API_KEY not found in .env, simulating...")
-        return pd.DataFrame()
-        
+        raise RuntimeError("DATABENTO_API_KEY is not set in .env, so no scan was run")
+
     client = db.Historical(key=api_key)
-    
+
     # OPRA parent symbology requires the .OPT suffix (e.g., SPXS.OPT)
     formatted_symbols = [f"{sym}.OPT" for sym in symbols]
-    
+
     print(f"📡 Querying Databento OPRA (tcbbo) for {len(formatted_symbols)} parent symbols on {date}...")
-    
+
     try:
         data = client.timeseries.get_range(
             dataset='OPRA.PILLAR',
@@ -68,23 +73,20 @@ def fetch_actual_databento(symbols, date):
             start=date,
             end=f"{date}T23:59:00"
         )
-        df = data.to_df()
-        return df
+        return data.to_df()
     except Exception as e:
         print(f"Databento API error/limit reached: {e}")
-        return pd.DataFrame()
-
-import yfinance as yf
-import re
+        raise RuntimeError(f"Databento request failed ({type(e).__name__}); the stored results were kept") from e
 
 def get_exact_strike_oi(ticker, opra_symbol):
     """
     Lazy Evaluation: Fetches exact Open Interest for a specific option contract 
-    from Yahoo Finance on-the-fly.
+    from Yahoo Finance on-the-fly. Returns None when it is unknown (never a stand-in value).
     """
     try:
         match = re.search(r'(\d{6})([CP])(\d{8})', str(opra_symbol))
-        if not match: return 1
+        if not match:
+            return None
             
         yymmdd = match.group(1)
         opt_type = match.group(2)
@@ -100,18 +102,18 @@ def get_exact_strike_oi(ticker, opra_symbol):
         row = options_df[options_df['strike'] == strike_val]
         if not row.empty:
             oi = row['openInterest'].values[0]
-            return max(int(oi), 1) if pd.notna(oi) else 1
+            return int(oi) if pd.notna(oi) else None
     except Exception as e:
         print(f"Lazy OI fetch failed for {opra_symbol}: {e}")
-    return 1 
+    return None
 
-def run_historical_scan(config):
+def run_historical_scan(params):
     # Dynamic Date from UI
-    target_date = config.get("scan_date", (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
+    target_date = params.get("scan_date", (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))
     
     print(f"🔍 Starting Historical Scan for {target_date}...")
-    min_spend = float(config.get("min_spend", 50000))
-    min_vol_oi = float(config.get("vol_oi", 1.5))
+    min_spend = float(params.get("min_spend", 50000))
+    min_vol_oi = float(params.get("vol_oi", 1.5))
     
     universe_df = get_cached_universe()
     symbols = universe_df['Ticker'].tolist()
@@ -155,8 +157,11 @@ def run_historical_scan(config):
                         # 2. LAZY EVALUATION: Only fetch exact OI if it passes the massive baseline
                         exact_oi = get_exact_strike_oi(ticker, contract)
                         
-                        # 3. Final validation against exact strike OI
-                        if (total_vol / exact_oi) >= min_vol_oi:
+                        # 3. Final validation against exact strike OI. Unknown OI cannot be validated, so the
+                        #    window is skipped; OI 0 (a brand-new strike) passes any volume/OI threshold.
+                        if exact_oi is None:
+                            continue
+                        if exact_oi == 0 or (total_vol / exact_oi) >= min_vol_oi:
                             dte = 30 # Default assumption
                             rec_expiry = (datetime.strptime(target_date, '%Y-%m-%d') + timedelta(days=dte + 14)).strftime('%Y-%m-%d')
                             
@@ -174,8 +179,10 @@ def run_historical_scan(config):
                                 "max_risk": 500.0
                             })
     else:
-        print("Data is empty. Databento limits reached or invalid date. (Fallback removed per user request)")
+        print(f"Databento returned no trades for {target_date} (weekend, holiday or no activity in the universe).")
     
+    # Only a scan whose Databento query succeeded gets here (a failed one raised above), so the stored results
+    # are replaced by the latest scan's, including "nothing found". Rows from earlier scans are not kept.
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM swing_plays")

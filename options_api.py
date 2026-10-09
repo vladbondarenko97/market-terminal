@@ -109,5 +109,5 @@ def find_options():
     return Response(xml_str, mimetype='application/xml')
 
 if __name__ == "__main__":
-    # Listen on port 5002 
-    app.run(host='0.0.0.0', port=8080)
+    # Port 5002, so it can run next to the terminal (8080) and AlphaFlow (5001)
+    app.run(host='0.0.0.0', port=5002)

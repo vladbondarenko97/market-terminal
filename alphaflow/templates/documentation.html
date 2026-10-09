@@ -61,7 +61,7 @@
 
         <h2>System Architecture</h2>
         <ul>
-            <li><strong>Frontend (<code>templates/index.html</code>)</strong>: A visual node-based canvas built in Vanilla JS using <a href="https://github.com/jerosoler/Drawflow" style="color:var(--accent-color);">Drawflow</a>.</li>
+            <li><strong>Frontend (<code>templates/index.html</code>)</strong>: A visual node-based canvas built in Vanilla JS using <a href="https://github.com/jerosoler/Drawflow" style="color:var(--accent-color);">Drawflow</a> (pinned to version 0.0.60 on jsDelivr). It shows the stored results when the page loads.</li>
             <li><strong>Backend Server (<code>server.py</code>)</strong>: A small Flask server: <code>GET /</code>, <code>GET /documentation</code>, <code>POST /api/scan</code> (JSON config: <code>scan_date</code>, <code>min_spend</code>, <code>vol_oi</code>) and <code>GET /api/results</code>. It listens on <code>0.0.0.0:5001</code> with no authentication; <code>ALPHAFLOW_DEBUG=1</code> turns on the Flask debugger and limits it to <code>127.0.0.1</code>.</li>
             <li><strong>Execution Engine (<code>engine.py</code>)</strong>: Runs the scan against Databento and yfinance and writes results to SQLite.</li>
             <li><strong>Universe cache (<code>cache_universe.py</code> &rarr; <code>small_caps.csv</code>)</strong>: Filters a fixed seed list of tickers to a $100M&ndash;$10B market cap via yfinance.</li>
@@ -69,14 +69,14 @@
         </ul>
 
         <h2>1. The Execution Engine (<code>engine.py</code>)</h2>
-        <p>The engine scans the date given as <code>scan_date</code> (default: yesterday) and replaces the stored results with what it finds.</p>
+        <p>The engine scans the date given as <code>scan_date</code> (default: yesterday). When the Databento query succeeds, it replaces the stored results with what it finds. When the query cannot run, it keeps the stored results and reports why.</p>
 
         <h3>Universe Pre-Filter</h3>
         <p>An OPRA query across every listed ticker is expensive, so the scan only covers the tickers in <code>small_caps.csv</code>. Build that file with <code>python alphaflow/cache_universe.py</code>; it checks a fixed seed list against a $100M&ndash;$10B market-cap range. If the file is missing, <code>get_cached_universe()</code> falls back to three demo tickers.</p>
 
         <h3>The Databento Query</h3>
-        <p>The engine reads <code>DATABENTO_API_KEY</code> from the project's <code>.env</code> and queries the OPRA <code>tcbbo</code> schema with parent symbology (<code>&lt;TICKER&gt;.OPT</code>). With no key, or on an API error, it returns no data and stores no results.</p>
-        <pre><code>client = db.Historical(key=os.getenv('DATABENTO_API_KEY'))
+        <p>The engine reads <code>DATABENTO_API_KEY</code> (or its alias <code>DB_API_KEY</code>) through the project's <code>config.py</code>, which loads the project's <code>.env</code>, and queries the OPRA <code>tcbbo</code> schema with parent symbology (<code>&lt;TICKER&gt;.OPT</code>). With no key, or on an API error, the scan stops with an error message and the stored results stay as they were. A query that works but finds no trades (a holiday, for example) stores an empty result.</p>
+        <pre><code>client = db.Historical(key=config.DATABENTO_API_KEY)
 client.timeseries.get_range(
     dataset='OPRA.PILLAR',
     schema='tcbbo',
@@ -98,7 +98,7 @@ client.timeseries.get_range(
         </div>
 
         <div class="note">
-            <strong>Results do not persist:</strong> importing <code>engine.py</code> (every server start) drops and recreates <code>swing_plays</code>, and every scan deletes the previous rows before inserting new ones.
+            <strong>Results persist across restarts:</strong> <code>init_db()</code> only creates <code>swing_plays</code> when it is missing, so saved results survive a server restart. A completed scan replaces the previous scan's rows; earlier scans are not kept.
         </div>
 
         <h2>2. Modifying the Visual Canvas (<code>index.html</code>)</h2>
@@ -115,7 +115,7 @@ client.timeseries.get_range(
 editor.addNode('custom', 1, 1, 100, 200, 'custom', {}, customNodeHTML);</code></pre>
 
         <h2>3. Database Schema (SQLite)</h2>
-        <p><code>init_db()</code> in <code>engine.py</code> defines the <code>swing_plays</code> table. Because it drops the table on every start, a new column only needs a change there and in the <code>INSERT</code> in <code>run_historical_scan()</code>.</p>
+        <p><code>init_db()</code> in <code>engine.py</code> defines the <code>swing_plays</code> table with <code>CREATE TABLE IF NOT EXISTS</code>. The table is never dropped, so adding a column means changing <code>init_db()</code>, the <code>INSERT</code> in <code>run_historical_scan()</code> and also running an <code>ALTER TABLE swing_plays ADD COLUMN ...</code> on an existing <code>alphaflow.db</code>.</p>
         <ul>
             <li><code>id</code>: Auto-increment primary key.</li>
             <li><code>date</code>: The scanned trading day.</li>

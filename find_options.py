@@ -7,7 +7,7 @@ from xml.dom import minidom
 import warnings
 
 #How to use:
-# python find_options.py {ticker} {expiration, MM/DD/YYY}
+# python find_options.py {ticker} {expiration, MM/DD/YYYY or MM/DD/YY}
 
 # Suppress pandas FutureWarnings for clean CLI output
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -44,7 +44,7 @@ def main():
     if target_exp_input:
         try:
             # Convert MM/DD/YYYY to YYYY-MM-DD for Yahoo Finance
-            dt = datetime.strptime(target_exp_input, "%m/%d/%q" if len(target_exp_input) == 8 else "%m/%d/%Y")
+            dt = datetime.strptime(target_exp_input, "%m/%d/%y" if len(target_exp_input) == 8 else "%m/%d/%Y")
             target_exp_yf = dt.strftime("%Y-%m-%d")
         except ValueError:
             print_error_xml(f"Invalid date format: {target_exp_input}. Use MM/DD/YYYY.")

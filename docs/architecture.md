@@ -21,7 +21,7 @@ Both run on one Mac. Data lives in a folder outside the repository (`CME_Data/`,
 ```
  main_pipeline.run()
    │
-   ├─ gate      scheduled runs only: SCHEDULED_RUNS=1 and an NYSE trading session   core/market_calendar.py
+   ├─ gate      scheduled runs only: SCHEDULED_RUNS=1 and a run slot on a trading day   core/market_calendar.py
    ├─ lock      one run at a time (DATA_DIR/.v2_run.lock, exit 75 if busy)          RunLock
    │
    ├─ collect   collect.build_context(): quotes, option chains, Databento flow,      core/collect.py
@@ -91,7 +91,8 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/forecast.py` | Forecast Lab models (cards 1–9), forecast logging and grading |
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
-| `core/market_calendar.py` | NYSE holidays and the scheduled-run session gate |
+| `core/market_calendar.py` | NYSE holidays and early closes, the scheduled-run gate (`scheduled_run_skip_reason()`), and the local fire times `setup.sh --schedule` installs (`launchd_intervals()`) |
+| `core/runlock.py` | `RunLock`, the exclusive run lock (`DATA_DIR/.v2_run.lock`), and `lock_is_held()`, a non-blocking probe that never keeps the lock |
 | `core/catalog.py` | Metric catalog with lineage (`catalog` command) and chart definitions |
 | `core/render.py` | Tactical and dashboard XML, report text, email text, HTML dashboard, CSV |
 | `visualize_volume.py` | Draws the chart PNGs from `core/catalog.CHARTS` |
@@ -111,7 +112,6 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `options_whale/static/forecast.js` | Forecast Lab UI |
 | `options_whale/static/styles.css` | Styles |
 | `ebay.py` | eBay Browse API lookup of Silver Eagle listings; run as a subprocess by `/api/silver_eagle_prices` (also appends a ledger row) |
-| `options_scanner.py` | Top volume / open interest contracts for SPY and SLV; run as a subprocess by `/api/morning` and `/api/evening` |
 | `menubar/optionswhale.10s.sh` | SwiftBar plugin: server status, start, stop, restart. Keep only plugins in this folder. |
 
 ### Setup, tests and remote host
@@ -121,7 +121,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `setup.sh` | New-Mac setup: Homebrew, `.venv`, `.env`, server login service, optional schedule, menu bar icon |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Template for `.env`; see [Configuration](configuration.md) |
-| `tests/test_v2.py`, `tests/fixtures/` | Offline test suite (no network, no credentials) |
+| `tests/` (`support.py`, `test_*.py`, `fixtures/`) | Offline test suite (no network, no credentials). `tests/test_schedule.py` covers the schedule gate, early closes and the launchd fire times. |
 | `server/upload_receiver.php`, `server/.htaccess`, `server/README.md` | Receiver for uploads on your own web host |
 
 ### Maintenance scripts
@@ -130,6 +130,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 |---|---|
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
 | `scripts/backfill_crypto_metals.py` | Adds up to one year of BTC, silver and gold history to `crypto_metrics_history` |
+| `scripts/dump_spy_wicks.py` | Downloads SPY one-minute candles (last 5 days) to `spy_wicks_1m.json` in the repository root, where `import-history` picks them up. Uses the network; manual only. |
 | `download_volume.py` | Manual, bounded CME volume backfill (needs a saved CME session) |
 
 ### Legacy compatibility scripts
@@ -149,15 +150,10 @@ Thin wrappers kept so old entry points still work. Each reads the latest snapsho
 
 | Path | What it is |
 |---|---|
-| `alphaflow/` | AlphaFlow: separate Flask app on port 5001 that scans OPRA trades for small-cap call sweeps. Docs at `/documentation` (`alphaflow/templates/documentation.html`). The email appends its top results when `alphaflow/alphaflow.db` exists. |
-| `deployment_engine.py`, `deployment_dashboard.html` | Capital-deployment sizing prototype (half-Kelly). Writes `deployment_payload.json`/`.js` for the static page. Contains placeholder data. |
+| `alphaflow/` | AlphaFlow: separate Flask app on port 5001 that scans OPRA trades for small-cap call sweeps. It reads its settings through `config.py` and keeps its results in `alphaflow/alphaflow.db` across restarts. Docs at `/documentation` (`alphaflow/templates/documentation.html`). The email appends its top results when the database exists. |
+| `deployment_engine.py`, `deployment_dashboard.html` | Capital-deployment sizing prototype (half-Kelly). Reads `deployment_state.json` and writes `deployment_payload.json`/`.js` for the static page. An input it cannot read is `null` with a reason under `missing`; the page shows it as a dash. |
 | `index.html`, `index.keys.example.js` | Static multi-asset price board that polls public APIs from the browser. Keys go in `index.keys.js` (not committed). |
-| `options_api.py`, `find_options.py` | Older option-lookup server and CLI. `options_api.py` also uses port 8080, so it cannot run next to the terminal. |
-
-### Scratch
-
-`test.py`, `fix_csv.py` and `scratch/` are one-off scripts. They are not tests and not part of any flow. Do not
-run `fix_csv.py`: it writes made-up history rows to a hardcoded path.
+| `options_api.py`, `find_options.py` | Older option-lookup server (port 5002) and CLI. Both fetch live from Yahoo Finance. |
 
 ## Documentation map
 

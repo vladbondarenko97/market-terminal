@@ -59,8 +59,8 @@ Breaking one of these is a bug, even if the tests pass.
 8. **Do not work around the run lock** (exit code 75) or the scheduled-run gate (`SCHEDULED_RUNS`).
 9. **When a computed value changes meaning, record it**: bump the model's version constant and add a line to
    [docs/value-changes.md](docs/value-changes.md).
-10. **Do not run `fix_csv.py`, `test.py` or `scratch/*`.** They are one-off scripts; `fix_csv.py` writes made-up rows
-    to a hardcoded path.
+10. **Do not run `scripts/` without reading them first.** They are one-off maintenance tools that call providers or
+    write to the database (`scripts/dump_spy_wicks.py` writes `spy_wicks_1m.json` to the repository root).
 
 ## Where to make a change
 
