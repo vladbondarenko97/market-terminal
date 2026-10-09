@@ -5,6 +5,13 @@ from core import lake
 
 DDL = lake.SIGNALS_DDL
 
+# Version of the horizon (+1D/+1W/+2W) values. Positions are priced when the terminal asks, not stored in a
+# snapshot, so the version travels in the horizons dict (`_version`). Bump it when a value's meaning changes and add
+# a line to docs/value-changes.md.
+#   horizons_v1  the day's FIRST recorded mark
+#   horizons_v2  the day's LAST recorded mark (closest to the close)
+HORIZON_VERSION = "horizons_v2"
+
 
 def _mid(bid, ask, last):
     if bid and ask and bid > 0 and ask > 0:
@@ -39,7 +46,6 @@ def record_signal(conn, ctx):
     s = signal_from_ctx(ctx)
     if not s:
         return None
-    cols = list(s.keys())
     lake.migrate(conn)
     insert_signal(conn, s)
     return s
@@ -75,10 +81,12 @@ def _implied_vol(price, S, K, T, kind):
 
 
 def _market_mark(conn, contract, day):
-    """Real recorded mark for a contract on a given trading day (captured from a run's chain), if any."""
+    """Real recorded mark for a contract on a given trading day (captured from a run's chain), if any. When several
+    runs recorded one that day, the LAST is used: it is the closest to the close."""
     import json
     row = conn.execute("""SELECT value_json FROM v2_observations WHERE metric_id = 'position.mark' AND entity = ?
-                          AND substr(observed_at, 1, 10) = ? ORDER BY observed_at LIMIT 1""", (contract, day)).fetchone()
+                          AND substr(observed_at, 1, 10) = ? AND value_json IS NOT NULL
+                          ORDER BY observed_at DESC, obs_id DESC LIMIT 1""", (contract, day)).fetchone()
     return json.loads(row[0]) if row else None
 
 
@@ -100,6 +108,7 @@ def horizon_values(conn, r, closes):
         if iv is None and (r.get("entry_iv") or 0) > 0.05:
             iv = r["entry_iv"]
     out["_model_iv"] = iv
+    out["_version"] = HORIZON_VERSION
     for label, days in HORIZONS:
         target = entry_day + timedelta(days=days)
         day = next((d for d in dates if d >= target), None)
@@ -132,8 +141,9 @@ def horizon_values(conn, r, closes):
 def list_live(conn, underlying_quote, option_chain, daily_closes=None):
     """Tracked (not deleted) positions, newest first, with live prices and +1d/+1w/+2w values.
     underlying_quote(sym) -> float|None; option_chain(sym, exp) -> {"calls": df, "puts": df}|None;
-    daily_closes(sym) -> pandas Series of daily closes. All cached by the caller."""
-    lake.migrate(conn)
+    daily_closes(sym) -> pandas Series of daily closes. All cached by the caller.
+    Read-only: it runs no DDL or migration, so `conn` may be a `lake.connect_readonly()` connection. A database the
+    pipeline has not migrated yet raises sqlite3.OperationalError (no such table)."""
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM v2_trade_signals WHERE deleted_at IS NULL ORDER BY created_at DESC")]
     today = date.today().isoformat()
@@ -194,12 +204,19 @@ def stop_tracking(conn, signal_id):
 
 
 def backfill(conn):
-    """One-time: record signals from already-committed live snapshots."""
+    """Record the ticket of every committed live run that has none (runs from before tickets were tracked, or whose
+    recording failed). Idempotent: a run that already has a ticket is never touched, so a second call returns 0.
+    Offline, replay and failed runs are not eligible. Returns the number of tickets recorded."""
     import json
+    lake.migrate(conn)
     n = 0
-    for (cj,) in conn.execute("SELECT s.context_json FROM v2_snapshots s JOIN v2_runs r USING(run_id) "
-                              "WHERE r.mode = 'live' ORDER BY s.created_at").fetchall():
-        if record_signal(conn, json.loads(cj)):
+    for (cj,) in conn.execute(
+            """SELECT s.context_json FROM v2_snapshots s JOIN v2_runs r ON r.run_id = s.run_id
+               WHERE r.mode = 'live' AND r.status IN ('committed', 'completed', 'completed_with_warnings')
+               AND NOT EXISTS (SELECT 1 FROM v2_trade_signals t WHERE t.run_id = s.run_id)
+               ORDER BY s.created_at""").fetchall():
+        sig = signal_from_ctx(json.loads(cj))
+        if sig and insert_signal(conn, sig):
             n += 1
     return n
 

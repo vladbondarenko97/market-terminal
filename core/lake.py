@@ -1,8 +1,9 @@
 """v2 data lake inside the existing portfolio.db.
 
 Additive only: CREATE ... IF NOT EXISTS and ALTER TABLE ADD COLUMN. Nothing here drops, replaces
-or deletes existing tables or rows. All writes go through one process-wide lock and short
-transactions; no transaction is held open across network requests.
+or deletes existing tables, columns or rows. The one exception is the view v2_latest_snapshot, which holds no
+data: migrate() replaces it when its stored definition differs from LATEST_SNAPSHOT_VIEW_SQL. All writes go
+through one process-wide lock and short transactions; no transaction is held open across network requests.
 """
 import hashlib
 import io
@@ -150,10 +151,8 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_v2_snap_time ON v2_snapshots(created_at)",
     """CREATE TRIGGER IF NOT EXISTS v2_snapshots_immutable BEFORE UPDATE ON v2_snapshots
         BEGIN SELECT RAISE(ABORT, 'v2_snapshots rows are immutable'); END""",
-    """CREATE VIEW IF NOT EXISTS v2_latest_snapshot AS
-        SELECT s.* FROM v2_snapshots s JOIN v2_runs r ON r.run_id = s.run_id
-        WHERE r.status IN ('committed', 'completed', 'completed_with_warnings')
-        ORDER BY s.created_at DESC LIMIT 1""",
+    """CREATE TRIGGER IF NOT EXISTS v2_snapshots_no_delete BEFORE DELETE ON v2_snapshots
+        BEGIN SELECT RAISE(ABORT, 'v2_snapshots rows cannot be deleted'); END""",
     """CREATE TABLE IF NOT EXISTS v2_imports (
         import_id INTEGER PRIMARY KEY,
         path TEXT NOT NULL,
@@ -171,6 +170,14 @@ MIGRATIONS = [
         UNIQUE(path, sha256, parser_version)
     )""",
 ]
+
+
+# The snapshot every reader treats as "the latest": the newest committed LIVE run's, and only when no live run has
+# a committed snapshot, the newest of any other mode (offline). An offline test run therefore never hides a live one.
+LATEST_SNAPSHOT_VIEW_SQL = """CREATE VIEW v2_latest_snapshot AS
+        SELECT s.* FROM v2_snapshots s JOIN v2_runs r ON r.run_id = s.run_id
+        WHERE r.status IN ('committed', 'completed', 'completed_with_warnings')
+        ORDER BY (r.mode = 'live') DESC, s.created_at DESC LIMIT 1"""
 
 
 import re as _re
@@ -203,6 +210,32 @@ def connect(db_path, readonly=False):
     return conn
 
 
+def connect_readonly(db_path):
+    """Read-only connection (`mode=ro`) with the same row factory as `connect()`. It cannot create or change
+    anything: opening a database file that does not exist raises sqlite3.OperationalError, and so does reading a
+    table that has not been created yet (the pipeline's `migrate()` creates them). Readers that must not write
+    (the terminal's position and forecast reads) use this and never call `migrate()`."""
+    return connect(db_path, readonly=True)
+
+
+def _squash(sql):
+    return " ".join(str(sql or "").split())
+
+
+def _ensure_latest_snapshot_view(conn):
+    """Create v2_latest_snapshot, or replace it when the stored definition differs from LATEST_SNAPSHOT_VIEW_SQL.
+    A view holds no data, so replacing one is the only non-additive step here. It is atomic: readers see the old
+    or the new definition, never none."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'v2_latest_snapshot'").fetchone()
+    if row is not None and _squash(row[0]) == _squash(LATEST_SNAPSHOT_VIEW_SQL):
+        return
+    with conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP VIEW IF EXISTS v2_latest_snapshot")
+        conn.execute(LATEST_SNAPSHOT_VIEW_SQL)
+
+
 def migrate(conn):
     with _WRITE_LOCK:
         with conn:
@@ -210,6 +243,7 @@ def migrate(conn):
                 conn.execute(stmt)
             if "source" not in table_columns(conn, "v2_trade_signals"):   # additive column for existing installs
                 conn.execute("ALTER TABLE v2_trade_signals ADD COLUMN source TEXT NOT NULL DEFAULT 'engine_run'")
+        _ensure_latest_snapshot_view(conn)
 
 
 def sha256_bytes(data):

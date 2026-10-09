@@ -13,14 +13,22 @@ with two kinds of content:
 
 - **Legacy ledger tables.** The original append-only history (`macro_master_ledger`, `comex_inventory_history`
   and others). Most also exist as CSV files next to the database. See [Legacy ledgers](#legacy-ledgers).
-- **The v2 lake.** Eight `v2_*` tables, one view, one trigger and three indexes that keep every raw provider
+- **The v2 lake.** Eight `v2_*` tables, one view, two triggers and three indexes that keep every raw provider
   response, typed observations, run records and one immutable snapshot per run. See
   [SQLite: v2 lake](#sqlite-v2-lake).
 
 The lake is additive. `lake.migrate()` in `core/lake.py` runs `CREATE ... IF NOT EXISTS` and `ALTER TABLE ADD
-COLUMN`; it never drops or rewrites anything. Every writer calls `migrate()` first, so the schema appears on first
+COLUMN`; it never drops or rewrites a table, a column or a row. The one exception is the view
+`v2_latest_snapshot`, which holds no data: `migrate()` replaces it, atomically, when the definition stored in the
+database differs from the one in the code. Every writer calls `migrate()` first, so the schema appears on first
 use. All lake writes take one process-wide lock and use short transactions; none is held open across a network
 call. The code never sets `journal_mode`: a new database uses SQLite's default rollback journal.
+
+**Read-only reads.** `lake.connect_readonly(path)` opens the database with `mode=ro` and the same row factory as
+`lake.connect()`. It cannot write or create anything: a missing file or a missing table raises
+`sqlite3.OperationalError`. The terminal's `/api/positions` and `/api/forecast` use it, and `positions.list_live()`
+and `forecast.scorecard()` run no DDL, so on a database no pipeline run has migrated yet they raise
+`OperationalError` (the routes turn that into a 503) instead of creating tables from a GET request.
 
 ## SQLite: v2 lake
 
@@ -35,11 +43,12 @@ Defined in `core/lake.py` (`MIGRATIONS`). Timestamps are ISO-8601 text.
 | `ix_v2_obs_metric`, `ix_v2_obs_run` | index | `v2_observations` on (`metric_id`, `entity`, `observed_at`) and on `run_id` | created by `migrate()` |
 | `v2_snapshots` | table | One immutable report document per run: `context_json`, `context_sha256`, `schema_version` (`v2.1`). `run_id` is unique. | `lake.commit_snapshot()` |
 | `ix_v2_snap_time` | index | `v2_snapshots(created_at)` | created by `migrate()` |
-| `v2_snapshots_immutable` | trigger | Aborts any `UPDATE` on `v2_snapshots` (`v2_snapshots rows are immutable`). `DELETE` is not blocked. | created by `migrate()` |
-| `v2_latest_snapshot` | view | The newest snapshot whose run has status `committed`, `completed` or `completed_with_warnings` (one row, newest `created_at`). `lake.load_snapshot()` and the terminal read this. | created by `migrate()` |
+| `v2_snapshots_immutable` | trigger | Aborts any `UPDATE` on `v2_snapshots` (`v2_snapshots rows are immutable`). | created by `migrate()` |
+| `v2_snapshots_no_delete` | trigger | Aborts any `DELETE` on `v2_snapshots` (`v2_snapshots rows cannot be deleted`). | created by `migrate()` |
+| `v2_latest_snapshot` | view | One row: the newest snapshot of a **live** run whose status is `committed`, `completed` or `completed_with_warnings`. Only when no live run has such a snapshot does it fall back to the newest of any other mode (an offline run), so an offline test run never hides a live one. Ordered by (`mode = 'live'` first, then newest `created_at`). `lake.load_snapshot()`, `replay`, `resend`, `catalog`, the legacy wrapper scripts and the terminal read this. | created (or replaced when its definition changed) by `migrate()` |
 | `v2_imports` | table | Log of imported files: `path`, `sha256`, size, `kind`, `parser_version`, `status`, rows. Unique on (`path`, `sha256`, `parser_version`), which makes `import-history` idempotent. | `importer._record_import()`; also `acquire_cme()` for files it archives |
 | `v2_trade_signals` | table | One engine ticket per live run, including CASH: contract, entry bid/ask/last/mid, entry IV, volume, open interest, score, bias, `starred`, `deleted_at` (hidden, not removed), `source` (`engine_run` or `email_archive`). `run_id` is unique (`email:<Message-ID>` for recovered emails). | `positions.record_signal()` and `insert_signal()` (live runs; `scripts/import_email_positions.py`); `toggle_star()` and `stop_tracking()` from the terminal |
-| `v2_forecasts` | table | One row per logged forecast (`run_id`, symbol, model, horizon, `target_date`, spot, `p_up`, 68% range, direction, vol). Unique on (`run_id`, `symbol`, `model`, `horizon`). Graded by `forecast.scorecard()` once the target date passes. | `forecast.record_forecasts()` (live runs only) |
+| `v2_forecasts` | table | One row per logged forecast (`run_id`, symbol, model, horizon, `target_date`, spot, `p_up`, 68% range, direction, vol). Unique on (`run_id`, `symbol`, `model`, `horizon`). Graded by `forecast.scorecard()` once the target date passes. | `forecast.record_forecasts()` (live runs only); the table itself is created by `migrate()` |
 
 Nothing else in the project creates a `v2_*` object. Refinery outages, EIA series, option-position marks and the
 SLV trust are not separate tables; they are observations and payloads (below).
@@ -92,7 +101,7 @@ existing table with `ALTER TABLE ADD COLUMN`; if a table is missing it is create
 
 | Ledger | CSV in the data folder | Appended | Columns |
 |---|---|---|---|
-| `macro_master_ledger` | `macro_master_ledger.csv` | 1 row per live run | `Datetime`, `VMRI_Score`, `Threat_Tier`, `DXY`, `DXY_Change`, `10Y_Yield`, `ZN_Futures`, `High_Yield_OAS`, `VIX`, `VIX_Change`, `WTI_Crude`, `Brent_Crude`, `Gold_Price`, `Gold_Silver_Ratio`, `SHFE_Silver_USD`, `COMEX_Silver`, `SHFE_Premium`, `GEX`, `DIX`, `Reverse_Repo_BN`, `Fed_Balance_Sheet_BN`, `Retail_Silver_Cheapest`, `Retail_Silver_Avg`, `Silver_OI`, `Paper_Physical_Ratio` (25; `GEX` and `DIX` are always empty) |
+| `macro_master_ledger` | `macro_master_ledger.csv` | 1 row per live run | `Datetime`, `VMRI_Score`, `Threat_Tier`, `DXY`, `DXY_Change`, `10Y_Yield`, `ZN_Futures`, `High_Yield_OAS`, `VIX`, `VIX_Change`, `WTI_Crude`, `Brent_Crude`, `Gold_Price`, `Gold_Silver_Ratio`, `SHFE_Silver_USD`, `COMEX_Silver`, `SHFE_Premium`, `GEX`, `DIX`, `Reverse_Repo_BN`, `Fed_Balance_Sheet_BN`, `Retail_Silver_Cheapest`, `Retail_Silver_Avg`, `Silver_OI`, `Paper_Physical_Ratio` (25). `GEX` is SPY's net dealer gamma from the run's snapshot (`options.SPY.gex.net_gex`: gamma x open interest x 100 x spot, in USD of delta change per $1 move, dealer-long-calls convention; the same figure as `institutional_ledger.Net_Gamma`), empty when the run could not compute it. Rows before the fix hold no `GEX`. `DIX` is always empty: no data source supplies it. |
 | `equities_darkpool_gex_ledger` | `equities_darkpool_gex_ledger.csv` | 2 rows per live run (SPY, SLV) | `Date`, `Ticker`, `Spot_Price`, `DP_Sentiment`, `DP_Total_Vol`, `DP_Notional_USD`, `DP_Largest_Block`, `DP_VWAP`, `DP_Bull_Vol`, `DP_Bear_Vol`, `GEX_Call_Wall`, `GEX_Put_Wall`, `GEX_Zero_Gamma` |
 | `institutional_ledger` | `institutional_ledger.csv` | 1 row (SPY) per live run | `Date`, `Ticker`, `Spot_Price`, `Net_Gamma`, `Max_Pain`, `Call_Wall`, `Put_Wall`, `DP_*` fields, `Tech_*` fields, `VIX_Spot`, `VIX_3M`, `VIX_Term_Struct`, `Breadth_Condition`, daily percent moves for SPY, RSP, NVDA, AAPL, MSFT |
 | `physical_arbitrage_ledger` | `physical_arbitrage_ledger.csv` | 1 row per live run, only when eBay returned prices and a benchmark exists; also by `ebay.py` (below) | `Datetime`, `COMEX_Spot`, `Cheapest_Eagle`, `Average_Eagle`, `Cheapest_Premium_Dollars`, `Cheapest_Premium_Percent`, `Average_Premium_Dollars`, `Average_Premium_Percent`, `Dealers_Scanned` |
@@ -117,10 +126,9 @@ Rules that hold for all of them:
 - `import-history` copies every row of every existing legacy table into `v2_observations` as
   `legacy.<table>.row`, and imports the ledger CSVs as payloads. It leaves the tables unchanged.
 
-Known issue: the terminal's `/api/silver_eagle_prices` route runs `ebay.py` as a subprocess, and `ebay.py` appends a
-row to `physical_arbitrage_ledger` (CSV and SQLite) on every scan, using the machine's local time and a fixed
-header. This happens outside the pipeline and also on offline machines that still reach eBay. See
-[Known issues](known-issues.md).
+The terminal's `POST /api/silver_eagle_prices` route (POST only, because it writes) runs `ebay.py` as a subprocess,
+and `ebay.py` appends a row to `physical_arbitrage_ledger` (CSV and SQLite) on every scan. This happens outside the
+pipeline, so a scan adds a row even when no run did.
 
 ## Data folder layout
 
@@ -134,6 +142,7 @@ CME_Data/
 ├── daily_volume_YYYYMMDD.xlsx        archived CME volume workbooks
 ├── silver_stocks_YYYY-MM-DD.xls      archived COMEX inventory workbooks
 ├── _rejected_downloads/              downloads that failed validation
+├── backups/                          portfolio-<UTC time>.db copies made before import-history
 ├── macro_master_ledger.csv  ...      the five ledger CSVs
 └── Sep-29-26/                        one folder per Chicago day (see Daily folder)
 ```
@@ -146,6 +155,8 @@ CME_Data/
 | `.cme_browser_profile/` | Chromium profile (cookies, local storage, the Duo "remember me" data). **Sensitive.** Ignored by the importer because the name starts with a dot. | `cme.open_persistent_context()` |
 | `daily_volume_YYYYMMDD.xlsx` | CME volume workbook, named by the **trade date inside the file** (CME's own file name uses the next business day). If an older file already has that name with different content, the new one is saved as `daily_volume_YYYYMMDD_r<8 hex>.xlsx`. Never overwritten. | `acquire_cme()` in `core/collect.py` |
 | `silver_stocks_YYYY-MM-DD.xls` (or `.xlsx`) | COMEX silver inventory workbook, named by its report date | `acquire_cme()` |
+| `.v2_manual_run.log` | stdout and stderr of runs started by the terminal's Run button, appended | `POST /run` in `options_whale/api_router.py` |
+| `backups/portfolio-<UTC time>.db` | Consistent copy of `portfolio.db` (SQLite backup API plus an integrity check) taken before `import-history`, unless `--no-backup` | `main_pipeline.backup_database_file()` |
 | `_rejected_downloads/<kind>_<UTC time>.bin` | A download that was not a valid workbook (for example a login page), kept as evidence | `acquire_cme()` |
 | `<ledger>.csv` | The five CSV ledgers above | `main_pipeline._csv_append()`, `ebay.py` |
 | `<Mon-DD-YY>/` | Output of the runs of one day | `main_pipeline.render_outputs()` |
@@ -157,15 +168,13 @@ CSVs and `portfolio.db` are appended in place.
 
 `import-history` (`core/importer.py`) reads the root workbooks, the ledger CSVs, the legacy tables and each daily
 folder's `.txt` and `.xml` files and `master_market_data.csv`. It skips `state.json`, `.env`, hidden items,
-`*.db`, PNGs, and the rendered HTML, JSON and `email.eml` files. It also reads `spy_wicks_1m.json`,
-`deployment_payload.json` and `deployment_state.json` from the repository root. Known issue: the intended skip of
-`daily_market_report.txt` is unreachable because every `.txt` file is imported first
-(`import_history()`), which is harmless because the lake de-duplicates by hash. See
-[Known issues](known-issues.md).
+`*.db`, PNGs, the rendered HTML, JSON and `email.eml` files, the rendered `daily_market_report.txt` (checked
+before the generic `.txt` rule) and the `offline_<run_id>/` and `replay_<run_id>/` folders inside a daily folder.
+It also reads `spy_wicks_1m.json`, `deployment_payload.json` and `deployment_state.json` from the repository root.
 
-Known issue: the terminal's `/api/dump` route picks the newest folder in the data folder by modification time
-(`dump_data()` in `options_whale/api_router.py`). That folder can be `.cme_browser_profile` or
-`_rejected_downloads` instead of a daily folder, which returns an empty dump. See [Known issues](known-issues.md).
+The terminal's `/api/dump` route (`dump_data()` in `options_whale/api_router.py`) picks the newest daily folder by
+the date in its name; only folders named like `Sep-29-26` count, so `.cme_browser_profile`, `_rejected_downloads`
+and `backups` are never chosen.
 
 ## Daily folder
 
@@ -189,13 +198,14 @@ the report text, `email.eml` and the whole snapshot of every run are stored in t
 | `run_manifest.json` | Run id, output folder, SHA-256 of each file, outcome of each chart | `render_outputs()` |
 | `chart*.png` (up to 18) | `chart1_es_conviction_{7d,30d}`, `chart2_si_conviction_{7d,30d}`, `chart3_silver_divergence_{7d,30d}`, `chart4_spy_options_flow_{7d,30d}`, `chart5_macro_10y_yields_{7d,30d}`, `chart6_comex_inventory_30d`, `chart7_crypto_ratios_{30d,1y}`, `chart8_metals_price_{30d,1y}`, `chart9_es_divergence_30d`, `chart10_yield_contagion_30d`, `chart11_physical_squeeze_30d` | `visualize_volume.render_charts()` |
 | `replay_<run_id>/` | A full set of the files above from `main_pipeline.py replay` (no `--out`). It keeps replays out of the shared day files. | `replay()` |
+| `offline_<run_id>/` | The full set of files from an `--offline` run. An offline run never writes the shared day files. | `run()` |
 
 - A chart is written only when its inputs exist. Charts are never deleted: if a chart fails in a later run, the PNG
   from the earlier run stays in the folder. `run_manifest.json` records what the latest run produced, and the
   email and dashboard use only charts the manifest marks `generated` or `stale_input`.
-- Offline runs (`--offline`) write the same shared folder. Known issue: an offline run overwrites the day's files
-  and its snapshot becomes `v2_latest_snapshot`, so the terminal then shows the offline run. See
-  [Known issues](known-issues.md).
+- Offline runs (`--offline`) write to `offline_<run_id>/` inside the day folder, so they never replace the day's
+  files. Their snapshot is committed like any other, but `v2_latest_snapshot` prefers the newest live run, so the
+  terminal keeps showing the last live run and an offline run is shown only while no live snapshot exists.
 - `dump_data.py` (a legacy wrapper) rewrites only `volume_dashboard.txt`, in the folder named by the latest
   snapshot.
 - During a write you may see `.<name>.tmp`, `email.eml.tmp` or `<chart>.png.tmp.png`.
@@ -217,26 +227,26 @@ only, so the server never receives the raw-payload archive, the snapshots or the
 database is opened read-only and is not changed. Because `backup()` produces a consistent copy, the file is
 complete whatever the journal mode is. The temp file is deleted afterwards.
 
-Known issue: the copy is built from the whole database before the URL and token are checked, so a delivered run
-with no upload configured still writes a temporary copy as large as the full database, then reports `failed`.
-Known issue: `upload_files()` reports `uploaded` for any HTTP 200 and does not read the receiver's per-file
-status, so a file the receiver rejected still counts as uploaded. See [Known issues](known-issues.md).
+`upload_files()` checks the URL and token first and builds no copy when they are missing: neither set reports
+`skipped`, only one set reports `failed`. It reports `uploaded` only when the receiver's JSON reply says `ok` for
+every file sent (`check_reply()`); an HTTP 200 alone is not enough.
 
 ## Outside CME_Data
 
 | Path | What | Notes |
 |---|---|---|
-| `alphaflow/alphaflow.db` | Table `swing_plays` for AlphaFlow | Gitignored. `alphaflow/engine.py` drops and recreates the table whenever it is imported. `send_email.alphaflow_appendix()` reads it read-only for the email appendix. |
-| `deployment_state.json`, `deployment_payload.json`, `deployment_payload.js` | Input and output of `deployment_engine.py` | Repository root, gitignored. |
-| `spy_wicks_1m.json` | Minute candles written by `test.py` into the current directory | Gitignored. `import-history` captures it if it is in the repository root. |
+| `alphaflow/alphaflow.db` | Table `swing_plays` for AlphaFlow | Gitignored. `alphaflow/engine.py` creates the table only if it is missing (`CREATE TABLE IF NOT EXISTS`), so importing it keeps earlier results; a scan replaces the rows only after its query succeeds. `send_email.alphaflow_appendix()` reads it read-only for the email appendix. |
+| `deployment_state.json`, `deployment_payload.json`, `deployment_payload.js` | Input and output of `deployment_engine.py` | Repository root, gitignored. A value the script cannot read or compute is `null` in the payload, with the reason under a `missing` object; there are no placeholder numbers. |
+| `spy_wicks_1m.json` | Five days of SPY one-minute candles written by `scripts/dump_spy_wicks.py` into the project root | Gitignored. `import-history` captures it if it is in the repository root. |
 | `.env`, `.venv/`, `index.keys.js` | Settings, virtual environment, browser keys | Gitignored. |
 | `~/Library/Logs/optionswhale.log`, `~/Library/Logs/marketdashboard.log` | Terminal and schedule logs | See [Operations](operations.md). |
 | `portfolio_upload_*.db` in the system temp folder | The slim upload copy while an upload runs | Removed afterwards. |
 
 ## Backups
 
-The project makes **no automatic local backup**. `lake.backup_database()` (a consistent copy with an integrity
-check) exists but nothing calls it. The receiver on your web host keeps timestamped copies of each uploaded
+The pipeline makes **no scheduled local backup**. `main_pipeline.py import-history` copies `portfolio.db` to
+`backups/portfolio-<UTC time>.db` first (`lake.backup_database()`: a consistent copy with an integrity check)
+unless you pass `--no-backup`; if that copy fails, the import does not start. Nothing else calls it. The receiver on your web host keeps timestamped copies of each uploaded
 `portfolio.db` (legacy tables only), which cannot restore the `v2_*` tables; see [server/README.md](../server/README.md).
 
 Before an import, a risky change or a move to another Mac, copy the whole `CME_Data` folder by hand while no run is

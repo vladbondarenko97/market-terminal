@@ -302,11 +302,13 @@ def import_history(data_dir=None, db_path=None, verbose=True):
         if p.is_dir():
             if re.fullmatch(r"[A-Z][a-z]{2}-\d{2}-\d{2}", p.name):
                 for f in sorted(p.iterdir()):
-                    if f.suffix in (".txt", ".xml") or f.name == "master_market_data.csv":
+                    if f.is_dir() and f.name.startswith(("offline_", "replay_")):
+                        continue  # re-rendered / offline-run output, reproducible from snapshots
+                    if f.name in ("report_snapshot.json", "run_manifest.json", "daily_market_report.txt",
+                                  "email.eml") or f.suffix in (".png", ".html"):
+                        continue  # rendered artifacts; reproducible from snapshots/history. Checked before the .txt rule.
+                    elif f.suffix in (".txt", ".xml") or f.name == "master_market_data.csv":
                         import_daily_file(conn, f, report)
-                    elif f.name in ("report_snapshot.json", "run_manifest.json", "daily_market_report.txt",
-                                    "email.eml") or f.suffix in (".png", ".html"):
-                        continue  # rendered artifacts; reproducible from snapshots/history
                     else:
                         report["not_imported"].append({"path": f"{p.name}/{f.name}", "reason": "unknown file type"})
             continue

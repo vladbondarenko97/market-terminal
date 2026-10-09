@@ -109,8 +109,12 @@ def _same_week_stats(s, years=5):
             "vs_avg_5y_pct": (last / float(np.mean(vals)) - 1) * 100, "change_1w": last - float(s.iloc[-2]) if len(s) > 1 else None}
 
 
+def _has(s):
+    return s is not None and len(s) > 0
+
+
 def eia_fundamentals(series):
-    if series.get("util_us") is None and series.get("dist_stocks") is None:
+    if not _has(series.get("util_us")) and not _has(series.get("dist_stocks")):
         return {"status": "missing", "reason": "EIA weekly data unavailable"}
     out = {"status": "fresh", "source": "EIA Weekly Petroleum Status Report (public history files)"}
     for k in EIA_SERIES:
@@ -118,7 +122,7 @@ def eia_fundamentals(series):
         if s is not None and len(s) > 60:
             out[k] = _same_week_stats(s)
     ds, sup = series.get("dist_stocks"), series.get("dist_supplied")
-    if ds is not None and sup is not None and len(sup) > 4:
+    if _has(ds) and sup is not None and len(sup) > 4:
         dem4 = float(sup.tail(4).mean())
         out["distillate_days_of_supply"] = float(ds.iloc[-1]) / dem4 if dem4 else None
         out["distillate_demand_4w_avg"] = dem4

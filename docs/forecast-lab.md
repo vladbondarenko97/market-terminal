@@ -89,9 +89,16 @@ Every model returns a dict with a `status` key. The browser treats anything othe
 | Level | Values | Meaning |
 |---|---|---|
 | A model or block (cards 1 to 9, card 11, and blocks inside them) | `"fresh"`, `"missing"` | `fresh` carries the numbers and a `model` string. `missing` carries a `reason` and nothing else to rely on. |
-| Inside a model | `"fresh"`, `"missing"` per item | For example `implied.horizons[k]` (one horizon can fail while the others work), and `positioning.silver` / `positioning.sp500` (the top `positioning` status stays `fresh`). |
+| Inside a model | `"fresh"`, `"missing"` per item | For example `implied.horizons[k]` (one horizon can fail while the others work), and `positioning.silver` / `positioning.sp500`. The top `positioning` status is `fresh` while any of silver, S&P 500 or the SLV trust reading has data, and `missing` (with a `reason` joining the three) when none does; the two groups stay in the block either way so the card can print each reason. |
 | The wrapper blocks `forecast` and `refining` | `"fresh"`, `"partial"`, `"error"` | `partial`: the model code ran but some inputs could not be fetched; `source_errors` names them. `error`: the whole build raised; the block holds `reason` and a redacted `trace` and nothing else. |
 | Parts of the refining block | `"fresh"`, `"missing"`, and `"partial"` for `fundamentals` | `partial` means some EIA series were missing; `reason` lists them. |
+
+**Absent inputs never raise.** `build()` is written to run on whatever the lake has: with no price history at all
+(an offline run on an empty lake), no option chains or no FRED series, every card comes out `missing` with a
+`reason` (`need >= 300 daily bars`, `no option chains or spot`, `T10Y3M unavailable` ...) and the wrapper is
+`partial` with the failed sources in `source_errors`, not `error`. The same holds for the refining functions: a
+series that is absent, empty or too short gives `missing` (or `partial` for `fundamentals`), never an exception.
+`tests/test_core_fixes.py` covers both.
 
 Rules for authors:
 
@@ -104,12 +111,12 @@ Rules for authors:
   `cftc:ulsd`, `tceq:feed`). The terminal shows the forecast block's count in the status line.
 - Renderers follow `if (!x || x.status !== 'fresh') { el.innerHTML = missing(x); return; }`. `missing()` prints
   `Unavailable: <reason>`, or plain `Unavailable` when the key is absent.
-- `/api/forecast` returns HTTP 404 with `status: "error"` when there is no snapshot or the forecast wrapper is `error`.
-  Cards 10 and 11 are then unavailable too, because the whole response is an error.
+- `/api/forecast` returns HTTP 404 with `status: "error"` when there is no snapshot or the forecast wrapper is `error`,
+  and HTTP 503 when the database has not been initialised (no pipeline run yet). Cards 10 and 11 are then unavailable
+  too, because the whole response is an error.
 
-Known issue: `renderDiesel()` (card 10) only checks that the refining block exists, so a refining wrapper in the
-`error` state draws empty KPIs and no reason. Card 11 shows "available after the next pipeline run" in that case. See
-[Known issues](known-issues.md).
+Cards 4, 9 and 10 treat a block whose status is `error` or `missing` as unavailable and print its `reason`
+(`fcFailed()` in `forecast.js`); that is why `positioning` carries a top-level `reason` when it has nothing.
 
 ## Scorecard
 
@@ -120,7 +127,9 @@ Card 9 grades the forecasts the pipeline logged.
   models: `implied` (all horizons), `har_vol` (all horizons), `trend` (when LONG or SHORT), `calendar` (1W, when an event
   is within 7 days), `positioning` (1M, when the COT index is 90 or above, or 10 or below), `fair_value` (SLV, 1M and 1Y,
   when the gap is 1 standard deviation or more).
-- **Grading.** `scorecard()` in `core/forecast.py` runs on every `/api/forecast` request. For each row whose target
+- **Grading.** `scorecard()` in `core/forecast.py` runs on every `/api/forecast` request, on a read-only connection
+  (`lake.connect_readonly()`): it runs no DDL, and raises `sqlite3.OperationalError` if `v2_forecasts` does not exist yet
+  (`migrate()` creates it). For each row whose target
   date has passed it takes the first daily close on or after that date, using live yfinance closes (cached for 60 s), not
   stored data. Hit rate is the share of correct directions, coverage is the share of closes inside the 68% range
   (ideal 0.68), and Brier is the squared error of the stated probability (lower is better; 0.25 is a coin flip).
@@ -248,10 +257,12 @@ Use the helpers already in the file:
 
 Escape every string that comes from data with `fcEsc`. `kpi()` does not escape `value` or `sub`.
 
-### 6. Test it: `tests/test_v2.py`
+### 6. Test it: `tests/test_core_fixes.py` or `tests/test_v2.py`
 
 Feed the function a synthetic series with a known answer, and check the `missing` path. Inline synthetic data is fine
-(the existing `T06ForecastLab` tests do this); tests must not touch the network or need keys.
+(`T06ForecastLab` in `tests/test_v2.py` and `ForecastModels` in `tests/test_core_fixes.py` do this, with seeded random
+walks and a Black-Scholes option chain); tests must not touch the network or need keys. Also check that
+`F.build()` still returns `missing` for the new card when its inputs are absent (`ForecastBuildOnMissingInputs`).
 
 ```python
 def test_rsi_all_gains_is_100_and_short_history_is_missing(self):
