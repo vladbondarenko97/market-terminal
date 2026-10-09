@@ -11,7 +11,8 @@ Start the server (see [Operations](operations.md)), then open `http://localhost:
 `OPTIONS_WHALE_PORT` (default 8080); see [Configuration](configuration.md). The server listens on all network
 interfaces and has no login, so keep it on a private network.
 
-The page loads Tailwind CSS and Chart.js from public CDNs, so the browser needs internet access.
+The page loads Tailwind CSS (3.4.17) and Chart.js (4.4.1) from public CDNs, so the browser needs internet access. Both
+are pinned to an exact version in `terminal.html`, so a new upstream release cannot change the page.
 
 Two kinds of panel exist:
 
@@ -20,8 +21,11 @@ Two kinds of panel exist:
 - **Live** panels make network calls (yfinance, Databento, Yahoo RSS, eBay) while the request is open. They can be
   slow, can fail, and need the keys described in [Configuration](configuration.md).
 
-Routes and response shapes are in [API](api.md). Several routes return HTTP 200 with `status: "error"` in the body, so a
-panel that shows nothing usually has an error line in the console pane.
+Routes and response shapes are in [API](api.md). A route that fails answers with an error status and a short message.
+The scripts read that body, whatever the status, and show the message in the panel or as an error line in the console
+pane; a reply that is not JSON at all (a proxy error page, for example) shows as `HTTP <status>`. A value a live route
+cannot compute arrives as `null` with a reason, and the panel shows `—` (the reason is in a tooltip or beside it), never
+a stand-in number.
 
 ## Layout
 
@@ -38,43 +42,60 @@ mobile:   bottom bar (Panels, Console)
 ### Header
 
 - **REMOTE API: ONLINE** (green dot) means `GET /help` answered. It is checked every 30 seconds. When the request
-  fails the label becomes `OFFLINE (CHECK HOST)`. A non-OK answer leaves the label unchanged.
+  fails the label becomes `OFFLINE (CHECK HOST)`; when the server answers with an error status it reads
+  `ERROR (HTTP <status>)`.
 - The host name (upper case) and a clock. The clock shows the browser's local time.
-
-Known issue: the status check and the clock are each started twice in `app.js`, so two timers run for each. See
-[Known issues](known-issues.md).
 
 ### Sidebar: Macro Triggers
 
 | Control | What it does | Route |
 |---|---|---|
-| RE-SCAN ALL DATA | Runs the whole pipeline on the server Mac and waits for it to finish. It is a normal delivered run: email, push and upload happen as for any run, and the dashboard HTML opens on the server Mac. The browser request has no timeout. When it ends the console prints the result and the VMRI and COMEX inventory frames reload. No other panel reloads. | `POST /run` |
-| SCAN SILVER EAGLES | Looks up Silver Eagle listings through the eBay Browse API (up to 2 minutes), prints the XML in the console, and appends a row to the `physical_arbitrage_ledger`. | `GET /api/silver_eagle_prices` |
-| DUMP ALL DATA | Fetches 15 routes from the browser, trims them, and shows one JSON summary in the Copy dialog (also copied to the clipboard). | many, see `dumpAllData()` in `app.js` |
-| 8:31 AM FLOW | Prints the highest-volume and highest-open-interest calls and puts for SPY and SLV to the console. The Target Ticker is sent but ignored, and no filters apply. | `GET /api/morning` |
-| 2:00 PM FLOW | Identical to 8:31 AM FLOW. | `GET /api/evening` |
+| RE-SCAN ALL DATA | Starts the whole pipeline on the server Mac and follows it; see [RE-SCAN ALL DATA](#re-scan-all-data). It is a normal delivered run: email, push and upload happen as for any run, and the dashboard HTML opens on the server Mac. | `POST /run`, then `GET /api/run_status` |
+| SCAN SILVER EAGLES | Looks up Silver Eagle listings through the eBay Browse API (up to 2 minutes), prints the XML in the console, and appends a row to the `physical_arbitrage_ledger`. Because it writes, it is a POST, and a second click while a scan is running is refused. | `POST /api/silver_eagle_prices` |
+| DUMP ALL DATA | Fetches 14 routes from the browser, trims them, and shows one JSON summary in the Copy dialog (also copied to the clipboard). A route that failed is listed with its message under `_meta.failed_sources`. It does not run the Silver Eagle scan; the ledger it writes is already in the dump as `arbitrage_history`. | many, see `dumpAllData()` in `app.js` |
+| 8:31 AM FLOW | A filtered whale scan of the Target Ticker (SPY if empty): expiries within 14 days, volume/open interest of at least 1.5, premium of at least $100,000. Printed like the custom hunt. | `GET /api/morning` |
+| 2:00 PM FLOW | The same scan with no expiry limit, volume/open interest of at least 1.0 and premium of at least $500,000. | `GET /api/evening` |
 
-The two FLOW buttons run `options_scanner.py` on the server with a 30 second limit. Known issue: they ignore the ticker and the morning/evening settings (`api_morning()`, `api_evening()` in `options_whale/api_router.py`). See [Known issues](known-issues.md).
+The FLOW buttons use the fixed presets above and ignore the Max DTE, Min Vol/OI and Min Premium fields; INJECT
+PARAMETERS below is the scan with your own filters. The FLOW scans send no phone alert.
+
+#### RE-SCAN ALL DATA
+
+The pipeline takes minutes, so the page does not hold one request open for it. `rescanAll()` in `app.js`:
+
+1. Reads `GET /api/run_status` and remembers the `run_id` of the last run.
+2. Sends `POST /run`. The server answers at once: `202` (started), or `409` when a run already holds the run lock. A
+   `409` prints `busy` with the running run's id and stage, and nothing starts. Any other error prints its message
+   (for example the `404` when `run_dashboard.command` is missing).
+3. Reads `/api/run_status` every 5 seconds until a `run_id` it has not seen appears and `lock_held` is false. The console
+   prints when the new run appears and each time its stage changes.
+4. Prints how the run ended: `completed` (green), `completed_with_warnings` (yellow, with the error text),
+   `failed` or `interrupted` (red, with the error text). Then it reloads the VMRI and COMEX inventory frames. No other
+   panel reloads.
+
+If no new run appears within 90 seconds the console says it probably did not start and points at `.v2_manual_run.log` in
+the server's data folder, where the launcher's output goes. After 45 minutes the page stops waiting (the run may still
+be going; use `main_pipeline.py status` on the server). While it follows a run the button reads `RE-SCANNING...` and is
+disabled. Closing the page does not stop the run.
 
 ### Sidebar: Custom Whale Hunter
 
 | Field | Default | Used |
 |---|---|---|
-| Target Ticker | empty (placeholder TSLA) | yes. Also the ticker for the 8:31 and 2:00 flows and for the Time Arbitrage tab. |
+| Target Ticker | empty (placeholder TSLA) | yes. Also the ticker for the 8:31 and 2:00 flows (SPY if empty) and for the Time Arbitrage tab. |
 | Min Vol/OI | 1.5 | yes |
 | Max DTE | 14 | yes |
-| Min Premium ($) | 100000 | **no** |
+| Min Premium ($) | 100000 | yes |
 
 INJECT PARAMETERS calls `GET /api/custom` and prints the contracts in the console, largest premium first, with
-call and put premium totals. The server ignores Min Premium: the floor is fixed at $100,000.
-
-Known issue: the Min Premium field has no effect (`api_custom()` and `execute_xml_whale_hunt()` in
-`options_whale/api_router.py`). See [Known issues](known-issues.md).
+call and put premium totals.
 
 ### Console Engine v2.0
 
-- Every action writes a time-stamped line. Whale-hunt and Silver Eagle XML are drawn as readable rows; anything else
-  is plain text.
+- Every action writes a time-stamped line. Whale-hunt and Silver Eagle XML are drawn as readable rows; an `<error>`
+  reply from a scan route is printed as an error line; anything else is plain text (shown as text, never interpreted as
+  HTML). Load-time lines (the panels scanning on page load) are logged as `info`; a line you caused by pressing a button
+  is logged as `cmd`.
 - **[Minimize]** / **[Expand]** collapses the console to its title bar. **Data Dump** prints `GET /dump`
   (the newest tactical and volume XML). **Clear** empties the log.
 - Drag the thin bar above the console to resize the panel area (minimum 200 px for panels, 150 px for the console).
@@ -84,8 +105,9 @@ Known issue: the Min Premium field has no effect (`api_custom()` and `execute_xm
 ### Mobile layout
 
 On narrow screens (about 768 px or less) the sidebar sits above the panels, panel dragging is off, and a bottom bar switches between
-**Panels** and **Console**. The switch hides or shows the Macro Direction grid and the console only. Every console
-message switches the view to Console, including messages written while panels load. The tab bar still switches tabs.
+**Panels** and **Console**. The switch hides or shows the Macro Direction grid and the console only. A command you
+start (a `cmd` line, such as pressing a scan button) switches the view to Console; messages written while panels load,
+background refreshes and tab changes do not. The tab bar still switches tabs.
 
 ## Macro Direction tab
 
@@ -99,7 +121,7 @@ Fifteen panels in a three-column grid (two on medium screens, one on phones). Na
 | 4 | COMEX PAPER:PHYSICAL RATIO | Paper silver claims per ounce of registered silver. Gauge scale 0 to 50. Under 25 reads MARKET NOMINAL, 25 and over DELIVERY STRESS, 40 and over CRITICAL LEVERAGE. | `GET /api/dump` (the `leverage_ratio` in `comex_default_risk`) | stored; re-read every 5 minutes |
 | 5 | PHYSICAL ARB LEDGER | eBay Silver Eagle prices against COMEX spot, last 50 ledger points. Toggles: Spot vs Physical, Premium %, Premium $. | `/api/arbitrage_history?limit=50` | stored (`physical_arbitrage_ledger`) |
 | 6 | DEALER MAP (GEX) | Spot, Zero Gamma, Call Wall, Put Wall and net dealer gamma by strike. Ticker box (SPY) and SCAN. | `/api/gex` | live (yfinance, 3 nearest expirations, within 10% of spot) |
-| 7 | DARK POOL TAPE | VWAP Anchor, Notional Value, Block Vol, Max Block, Bias and the latest block prints (Time, Block Size, Execution Price, Condition). Ticker box (SLV) and SCAN. | `/api/darkpool` | live (Databento, last completed session, blocks of 10,000 shares or more) |
+| 7 | DARK POOL TAPE | VWAP Anchor, Notional Value, Block Vol, Max Block, Bias (with how it was worked out) and the latest block prints (Time, Block Size, Execution Price, Side). Ticker box (SLV) and SCAN. | `/api/darkpool` | live (Databento, last completed session, blocks of 10,000 shares or more) |
 | 8 | DARK POOL VISUALIZER | Bubble chart of the prints loaded by panel 7. The Min Size slider (10k to 500k) filters them in the browser. | none (reuses panel 7's response) | live |
 | 9 | SLV INSTITUTIONAL FLOW | Sentiment, VWAP, Call Wall, Put Wall. Chart toggles: Sentiment, Block Vol, GEX Walls. | `/api/institutional_history?ticker=SLV&limit=100` | stored (`equities_darkpool_gex_ledger`) |
 | 10 | SLV DEALER MAP (GEX) | Same as panel 6 for SLV. SCAN button. | `/api/gex?ticker=SLV` | live |
@@ -115,15 +137,14 @@ Notes:
   themselves afterwards (see [Refresh timing](#refresh-timing)). Panels 5, 9, 13 and 14 have no refresh
   button; reload the page to update them.
 - Panel 8 and panel 7 show at most the 5 latest block prints, so the Min Size slider can only remove some of 5 bubbles.
-- Panels 6 and 10 show **Zero Gamma equal to the spot price**. The live route does not compute a zero-gamma level;
-  the pipeline does (`zero_gamma` in the snapshot), but these panels do not read it. Call Wall and Put Wall are the
-  strikes with the largest positive and negative net gamma.
-  Known issue: `get_gex_profile()` in `options_whale/api_router.py` sets `zeroGamma` to spot. See
-  [Known issues](known-issues.md).
+- Panels 6 and 10 show **Zero Gamma** as the spot level where aggregate net gamma changes sign, worked out the way the
+  pipeline does it. When there is no sign change within 10% of spot the server sends `null` and the box shows `—`; hover
+  it for the reason. Call Wall and Put Wall are the strikes with the largest positive and negative net gamma.
+- Panel 7's **Side** column and the Bias follow the exchange feed's trade side: `BUY` (buy aggressor), `SELL` (sell
+  aggressor) or `UNKNOWN` (no side given), exactly as the server sends them. The line under Bias says how it was
+  worked out: `AGGRESSOR SIDE` (from the sides) or `VWAP HEURISTIC` (the feed gave no sides for most of the volume, so
+  it is a guess from where the blocks printed against the VWAP). Hover it for the explanation.
 - There is no panel named "macro ledger". The macro ledger (`macro_master_ledger`) feeds panels 1, 3, 13 and 14.
-- The terminal does not call `/api/macro_direction`, which returns only the VMRI score and a fixed `NEUTRAL`.
-  Known issue: `get_macro_direction()` in `options_whale/api_router.py` returns a placeholder bias. See
-  [Known issues](known-issues.md).
 
 ### War Room
 
@@ -137,6 +158,9 @@ panel posts the four shifts to `/api/war_room` (120 ms after the last move) and 
 | HY OAS | -2 to +15 points | 0.1 |
 | VIX | -50% to +300% of its live level | 5 |
 
+If the ledger lacks one of the four inputs the server answers `503` with the name of the input, and the panel shows
+that message in place of the tier (and a dash for the score until a good answer has arrived).
+
 Presets: **1970s**, **2008**, **2020**. **Reset to live** sets every lever to zero. **? Guide** explains the score. The
 bar shows the four tiers: below 150 Low, 150 to 250 Moderate, 250 to 350 Elevated, 350 and above Systemic. The histogram
 at the bottom shows where the live and scenario scores sit among the VMRI scores recorded in the ledger (it needs at
@@ -149,32 +173,38 @@ the Target Ticker in the sidebar (SPY if empty). It loads when the tab opens and
 open**; leaving the tab stops the polling. Each call makes several live yfinance requests. Panels 1 to 9 each have a
 **?** button that opens a short help dialog.
 
+Every number on the tab can be missing. The server then sends `null` with a reason in `data.missing`, and the panel
+shows `—` instead of a number (hover a dash, or read the text in the panel, for the reason). A line above the panels lists
+every missing value with its reason. If the whole request fails, the line shows the error message and the panels are
+blanked, so numbers from an earlier answer (or another ticker) never sit next to an error.
+
 | # | Panel | Shows | Source |
 |---|---|---|---|
-| 1 | CAPACITY CONSTRAINT OSCILLATOR | A -100 to +100 gauge. Scores of 75 or more in size read "STRATEGIC EDGE DETECTED" (bullish or bearish); anything smaller reads "CASH POSITION - NO STRUCTURAL EDGE". | live VIX against the macro ledger's last 30 days |
-| 2 | DEALER TRAPDOOR | Spot against zero gamma (distance, percent), approach velocity, aggregate Vanna and Charm, and a "Gamma Neutral" or "SHORT GAMMA SQUEEZE" state. | zero gamma from the newest `equities_darkpool_gex_ledger` row for the ticker, else a fallback; chain is live |
-| 3 | IV PREMIUM BLEED | Strike, Live IV, Hist. Avg and Bleed % for 15 call strikes. "Hist. Avg" is the 20-day realized volatility. | live |
-| 4 | ASYMMETRIC PROBABILITY MATRIX | Log-normal probability that each of 5 strikes expires in the money in 3, 5 and 7 days, plus an "Optimal Strike Selection" line. | live |
+| 1 | CAPACITY CONSTRAINT OSCILLATOR | A -100 to +100 gauge. Scores of 75 or more in size read "STRATEGIC EDGE DETECTED" (bullish or bearish); anything smaller reads "CASH POSITION - NO STRUCTURAL EDGE". With no score it reads "NO READING" and the reason. The line under the gauge says which factors the score was built from and why any other was left out. | live VIX (and the GEX and DIX columns) against the macro ledger's recent values |
+| 2 | DEALER TRAPDOOR | Spot against zero gamma (distance, percent), approach velocity, aggregate Vanna and Charm, and a "Gamma Neutral" or "SHORT GAMMA SQUEEZE" state. Without a zero-gamma level it reads "No Gamma Reading" and the reason. | spot and zero gamma from the newest `equities_darkpool_gex_ledger` row for the ticker; chain is live |
+| 3 | IV PREMIUM BLEED | Strike, Live IV, Hist. Avg and Bleed % for the 15 call strikes nearest the spot price. "Hist. Avg" is the 20-day realized volatility. | live |
+| 4 | ASYMMETRIC PROBABILITY MATRIX | Log-normal probability that each of the 5 strikes nearest the spot price expires in the money in 3, 5 and 7 days, plus an "Optimal Strike Selection" line that names the ticker being scanned. | live |
 | 5 | DEALER PIN MAP | Vanna and Charm by strike. | live |
 | 6 | VOLATILITY TERM STRUCTURE | At-the-money IV for the expirations nearest 7, 30, 90 and 180 days. | live (cached 60 s) |
 | 7 | IV / HV SPREAD | 20-Day Realized HV against Front-Month ATM IV, with an overpriced or underpriced verdict (a gap of more than 5 points is flagged). | live |
-| 8 | LIVE OPTION EXPLORER | Chain browser: Ticker (Enter loads), Expiration, CALL or PUT, LOAD CHAIN. Click a row for the Black-Scholes fair price, probability ITM/OTM, Delta, Gamma, Theta, Vega, Rho, breakeven, expected move, intrinsic and extrinsic value, and IV against HV. | live: `/api/option_chain`, `/api/option_calc` |
-| 9 | INSTITUTIONAL WISHLIST | Contracts saved from the Explorer: Contract, Added Px, Live Px, Change (%), Date Added, Details and Remove. | the browser only (`localStorage`) |
+| 8 | LIVE OPTION EXPLORER | Chain browser: Ticker (Enter loads), Expiration, CALL or PUT, LOAD CHAIN. Click a row for the Black-Scholes fair price, probability ITM/OTM, Delta, Gamma, Theta, Vega, Rho, breakeven, expected move, intrinsic and extrinsic value, and IV against HV. A quote the feed did not give shows `—`. When the chain has no implied volatility for the contract the route answers `422` and the panel shows that message in place of the figures. When realized volatility is missing, the IV/HV banner gives the reason. | live: `/api/option_chain`, `/api/option_calc` |
+| 9 | INSTITUTIONAL WISHLIST | Contracts saved from the Explorer: Contract, Added Px, Live Px, Change (%), Date Added, Details and Remove. REFRESH fetches the live prices again. | the browser (`localStorage`) for the list; `/api/option_calc` for Live Px |
 
 Things to know:
 
 - The wishlist is stored in this browser under `optionsWatchlist`. It is not shared between browsers or machines and is
   lost if site data is cleared.
-  Known issue: **Live Px** is the price saved when the contract was added, not a live price, so Change (%) is always
-  0.00 (`renderWatchlist()` in `app.js`). See [Known issues](known-issues.md).
-- Known issue: the oscillator also uses GEX and DIX z-scores, but the pipeline writes those two ledger columns empty
-  (`core/render.py`, macro ledger row), so they add zero and only VIX moves the gauge
-  (`calculate_z_score_oscillator()` in `options_whale/quant_engine.py`). See [Known issues](known-issues.md).
-- Known issue: panels 3 and 4 use the first rows of the call chain (the lowest strikes), not strikes near spot; the
-  "Optimal Strike Selection" text always says "SPY". See [Known issues](known-issues.md).
-- Known issue: the route substitutes made-up values when data is missing (VIX 20, ATM IV 0.20, zero gamma 0.5% below spot),
-  against the rule in [Architecture](architecture.md#design-rules). Location: `get_time_arbitrage()` in
-  `options_whale/api_router.py`. See [Known issues](known-issues.md).
+- **Live Px** is the chain's last price for the contract now. While the Time Arbitrage tab is open the page asks
+  `GET /api/option_calc` with `market_price=0` for each saved contract, one at a time, when the tab opens, after each
+  60-second poll, when a contract is added, and when you press REFRESH. An answer younger than a minute is reused. The
+  rows fill in as the answers arrive. **Change (%)** is Live Px against **Added Px**. A contract whose price is not
+  available (the request failed, the chain has no price for it, or it has expired) shows `—` for both, with the reason
+  as a tooltip; Added Px stays. The prices are only fetched while the tab is open, so the column shows `—` until you
+  open it.
+- The Added Px of a contract is the chain price when you saved it. If the chain had no price then, Added Px is `—` and
+  Change (%) stays `—`.
+- The oscillator uses only the factors that have data. The line under the gauge names them; for example
+  `Built from VIX. Left out: GEX (no recent GEX values in the macro ledger).`
 
 ## Forecast Lab tab
 
@@ -184,6 +214,9 @@ Eleven model cards (full reference: [Forecast Lab](forecast-lab.md)). Controls a
 - The status line reads `TICKER · run <run id> · <time>` and adds `· N source issue(s)` when the run could not fetch some inputs.
 - The data loads every time the tab is opened and on each button press. There is no automatic refresh.
 - Each card has **?** (help), **⛶** (full screen) and **COPY**. Esc closes help or leaves full screen.
+- A card whose data is missing or failed shows `Unavailable: <reason>`. That includes cards 4, 9 and 10 when the pipeline
+  recorded an error for their block, and card 11 when the whole refining block failed. If `/api/forecast` itself fails
+  (for example `503` before the first run), every card shows the server's message.
 
 ## Engine Positions
 
@@ -227,10 +260,10 @@ Other behavior:
 |---|---|---|
 | Drag a panel header | Macro Direction panels | Swaps the panel with the one you drop it on. Desktop only. The order is not saved: reload restores the default. Time Arbitrage panels and Forecast cards cannot be dragged. |
 | **-** / **+** | Macro Direction panels | Zoom from 0.8 to 1.25 in steps of 0.1. Saved per panel. Frame panels reload when the zoom changes. |
-| COPY | Macro Direction panels | Opens the Copy dialog with the panel's data and puts it on the clipboard at once. The dialog's own COPY copies again. Panels 1 and 2 copy the text returned by the last console command (Data Dump or RE-SCAN ALL DATA), or a note if none ran yet. |
+| COPY | Macro Direction panels | Opens the Copy dialog with the panel's data and puts it on the clipboard at once. The dialog's own COPY copies again. Panels 1 and 2 copy the text returned by the last Data Dump, or a note if none ran yet. The Copy dialog sits at page level, so it opens on every tab (also for DUMP ALL DATA and the Forecast Lab COPY buttons). |
 | [MAX] / [MIN] | Panels 1 to 6 and 9 to 15 (not 7 or 8) | Full-screen the panel. Click the dark backdrop or [MIN] to return. Esc does not close it. |
 | REFRESH, SCAN | Panels 1, 2, 11, 12, 15 (REFRESH); 6, 7, 10 (SCAN) | Reload that panel. SCAN reads the ticker box next to it. |
-| **?** | Time Arbitrage panels | Opens a help dialog. |
+| **?** | Time Arbitrage panels | Opens a help dialog. The Macro Direction panels have no help button. |
 
 Keyboard: Esc closes the War Room guide, closes the Forecast Lab help dialog, and leaves Forecast Lab full screen.
 Enter in the Option Explorer's Ticker box loads the chain. There are no other shortcuts.
@@ -251,17 +284,9 @@ Browser storage (`localStorage`, per browser and per origin):
 | Engine Positions | 3.4 s after load, then every 60 s |
 | COMEX paper:physical ratio (panel 4) | on load, then every 5 minutes |
 | Time Arbitrage tab | on open, then every 60 s while the tab is open |
-| API status | every 30 s (two timers) |
-| Clock | every second (two timers) |
+| API status | every 30 s |
+| Clock | every second |
+| RE-SCAN ALL DATA | `/api/run_status` every 5 s while a run is followed, for up to 45 minutes |
+| Wishlist Live Px | with each Time Arbitrage poll while the tab is open (an answer is reused for 60 s), and on REFRESH |
 | Forecast Lab | each time the tab opens, and on SPY, SLV or REFRESH |
 | Everything else | once at load, or on its own REFRESH or SCAN button |
-
-### Known issues in the controls
-
-- Known issue: the Copy dialog sits inside the Macro Direction tab (`#copyDataModal` in `terminal.html`), and hidden
-  tabs are `display: none`. On the other two tabs the dialog may be hidden, although the text is still copied to the
-  clipboard. This is from reading the code; it has not been tested in a browser. It also affects DUMP ALL DATA and the
-  Forecast Lab COPY button. See [Known issues](known-issues.md).
-- Known issue: `panelHelp` in `app.js` has entries for Macro Direction panels that no button opens, and their
-  numbering and titles no longer match the panels. Only the Time Arbitrage entries are reachable. See
-  [Known issues](known-issues.md).

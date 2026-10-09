@@ -5,10 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VladHQ | Market Terminal</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="icon" href="data:,">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
 </head>
 
 <body class="h-screen flex flex-col overflow-hidden relative">
@@ -35,9 +35,9 @@
             <section>
                 <h3 class="text-xs font-bold text-zinc-500 uppercase mb-4 tracking-widest">Macro Triggers</h3>
                 <div class="flex flex-col gap-2">
-                    <button onclick="triggerAction('/run')"
-                        class="btn-action w-full py-2 text-xs font-bold text-red-500 border-red-500">RE-SCAN ALL
-                        DATA</button>
+                    <button onclick="rescanAll()" id="btnRescan"
+                        class="btn-action w-full py-2 text-xs font-bold text-red-500 border-red-500"><span
+                            id="rescanBtnText">RE-SCAN ALL DATA</span></button>
                     <button onclick="triggerPhysicalArbScan()"
                         class="btn-action w-full py-2 text-xs font-bold text-blue-400 border-blue-500">SCAN SILVER
                         EAGLES</button>
@@ -117,38 +117,6 @@
             </nav>
 
             <div id="macro-tab" class="tab-content flex-1 flex flex-col overflow-hidden">
-                <!-- Copy Data Modal -->
-                <div id="copyDataModal" class="fixed inset-0 z-[10000] hidden flex items-center justify-center p-4">
-                    <div class="bg-zinc-950 border border-zinc-700 rounded-lg w-full max-w-2xl shadow-[0_0_60px_rgba(0,0,0,0.9)] flex flex-col"
-                        style="max-height:85vh">
-                        <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-                            <div class="flex items-center gap-2">
-                                <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                                <span id="copyModalTitle"
-                                    class="text-[11px] font-bold text-zinc-300 uppercase tracking-widest">Panel
-                                    Data</span>
-                            </div>
-                            <div class="flex items-center gap-3">
-                                <button id="copyModalBtn" onclick="doCopyText()"
-                                    class="text-[10px] font-bold bg-green-600 hover:bg-green-400 text-black px-3 py-1 rounded transition-all tracking-widest uppercase">COPY</button>
-                                <button onclick="closeCopyModal()"
-                                    class="text-zinc-500 hover:text-white text-lg leading-none font-bold transition-colors">&times;</button>
-                            </div>
-                        </div>
-                        <div class="flex-1 overflow-hidden p-3 min-h-0">
-                            <textarea id="copyModalText"
-                                class="w-full h-full min-h-[300px] bg-zinc-900 border border-zinc-800 rounded p-3 text-[11px] font-mono text-green-400 leading-relaxed resize-none outline-none focus:border-zinc-600 terminal-scroll"
-                                spellcheck="false" readonly></textarea>
-                        </div>
-                        <div class="px-4 py-2 border-t border-zinc-800 flex items-center justify-between">
-                            <span id="copyModalMeta"
-                                class="text-[9px] text-zinc-600 uppercase tracking-widest">Ready</span>
-                            <span id="copyModalStatus"
-                                class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest"></span>
-                        </div>
-                    </div>
-                </div>
-
                 <div id="panelContainer"
                     class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4 overflow-y-auto auto-rows-[minmax(320px,auto)] flex-1 h-full">
                     <!-- Panel 1 to 14 ... (omitted for brevity in this tool call but preserved in the file) -->
@@ -591,6 +559,7 @@
                                 <div>
                                     <div class="text-[9px] text-zinc-500 uppercase tracking-widest mb-1">Bias</div>
                                     <div id="dpBias" class="text-zinc-400 font-bold text-lg tracking-widest">---</div>
+                                    <div id="dpBiasMethod" class="text-[7px] text-zinc-600 uppercase tracking-widest mt-1 cursor-help"></div>
                                 </div>
                             </div>
 
@@ -601,7 +570,7 @@
                                     <div class="pl-2">Time</div>
                                     <div class="text-right">Block Size</div>
                                     <div class="text-right">Execution Price</div>
-                                    <div class="text-right pr-4">Condition</div>
+                                    <div class="text-right pr-4" title="BUY or SELL is the side that started the trade; UNKNOWN means the feed gave no side">Side</div>
                                 </div>
                                 <div id="dpTapeContainer"
                                     class="flex-1 overflow-y-auto p-1 font-mono text-[11px] terminal-scroll space-y-1">
@@ -965,6 +934,8 @@
             </div> <!-- End of macro-tab -->
 
             <div id="arbitrage-tab" class="tab-content hidden flex-1 flex flex-col overflow-hidden">
+                <!-- Shown when the route fails or leaves values out: lists each missing value with its reason -->
+                <div id="arbMissingNote" class="hidden"></div>
                 <div id="arbitragePanelContainer"
                     class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4 p-4 overflow-y-auto terminal-scroll pb-24 auto-rows-[minmax(350px,auto)] flex-1 h-full">
 
@@ -1013,6 +984,7 @@
                                 class="bg-zinc-950 border border-zinc-800 px-4 py-2 rounded text-[11px] font-bold text-zinc-400 uppercase tracking-[0.2em] animate-pulse">
                                 CASH POSITION - NO STRUCTURAL EDGE
                             </div>
+                            <div id="oscillatorComponents" class="text-[9px] text-zinc-600 text-center max-w-md leading-snug"></div>
                         </div>
                     </div>
 
@@ -1343,7 +1315,11 @@
                                 <span class="text-green-500 font-bold tracking-widest">INSTITUTIONAL WISHLIST</span>
                                 <button onclick="openHelpModal('arbPanel9')" class="text-zinc-500 hover:text-white transition-colors cursor-help">?</button>
                             </div>
-                            <span class="text-[8px] text-zinc-500 uppercase">Live Tracking & Yield Monitoring</span>
+                            <div class="flex items-center gap-3">
+                                <span class="text-[8px] text-zinc-500 uppercase">Live Tracking & Yield Monitoring</span>
+                                <button onclick="refreshWatchlistPrices(true)" class="text-zinc-500 hover:text-white transition-colors"
+                                    title="Fetch the current price of every saved contract again">REFRESH</button>
+                            </div>
                         </div>
                         <div class="flex-1 p-4 overflow-x-auto terminal-scroll">
                             <table class="w-full text-left">
@@ -1572,6 +1548,38 @@
             </div>
         </div>
     </main>
+
+    <!-- Copy Data Modal: at body level, so it shows on every tab (a hidden tab is display:none and would hide it) -->
+    <div id="copyDataModal" class="fixed inset-0 z-[10000] hidden flex items-center justify-center p-4">
+        <div class="bg-zinc-950 border border-zinc-700 rounded-lg w-full max-w-2xl shadow-[0_0_60px_rgba(0,0,0,0.9)] flex flex-col"
+            style="max-height:85vh">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+                <div class="flex items-center gap-2">
+                    <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                    <span id="copyModalTitle"
+                        class="text-[11px] font-bold text-zinc-300 uppercase tracking-widest">Panel
+                        Data</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button id="copyModalBtn" onclick="doCopyText()"
+                        class="text-[10px] font-bold bg-green-600 hover:bg-green-400 text-black px-3 py-1 rounded transition-all tracking-widest uppercase">COPY</button>
+                    <button onclick="closeCopyModal()"
+                        class="text-zinc-500 hover:text-white text-lg leading-none font-bold transition-colors">&times;</button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-hidden p-3 min-h-0">
+                <textarea id="copyModalText"
+                    class="w-full h-full min-h-[300px] bg-zinc-900 border border-zinc-800 rounded p-3 text-[11px] font-mono text-green-400 leading-relaxed resize-none outline-none focus:border-zinc-600 terminal-scroll"
+                    spellcheck="false" readonly></textarea>
+            </div>
+            <div class="px-4 py-2 border-t border-zinc-800 flex items-center justify-between">
+                <span id="copyModalMeta"
+                    class="text-[9px] text-zinc-600 uppercase tracking-widest">Ready</span>
+                <span id="copyModalStatus"
+                    class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest"></span>
+            </div>
+        </div>
+    </div>
 
     <!-- Mobile Bottom Navigation -->
     <nav id="mobileNav" class="md:hidden flex h-12 border-t border-zinc-800 bg-black shrink-0 w-full z-[100]">

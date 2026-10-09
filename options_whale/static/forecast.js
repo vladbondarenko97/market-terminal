@@ -25,7 +25,9 @@ const fcBig = v => {
 };
 const fcEsc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const kpi = (l, v, s = '', cls = '') => `<div class="fc-kpi"><div class="l">${l}</div><div class="v ${cls}">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
-const missing = (sec) => `<div class="fc-muted">Unavailable${sec && sec.reason ? ': ' + fcEsc(sec.reason) : ''}</div>`;
+const missing = (sec) => { const why = sec && (sec.reason || sec.message); return `<div class="fc-muted">Unavailable${why ? ': ' + fcEsc(why) : ''}</div>`; };
+// A block the pipeline could not build: absent, or status error / missing (a card's own detail may still be "partial")
+const fcFailed = sec => !sec || sec.status === 'error' || sec.status === 'missing';
 
 function fcChart(id, cfg) {
     if (FC.charts[id]) FC.charts[id].destroy();
@@ -45,8 +47,8 @@ async function loadForecast(ticker) {
     if (ticker) FC.ticker = ticker;
     ['SPY', 'SLV'].forEach(t => document.getElementById(`fcBtn${t}`)?.classList.toggle('active', t === FC.ticker));
     try {
-        const res = await fetch(`${API_BASE}/api/forecast?ticker=${FC.ticker}`);
-        const json = await res.json();
+        // fetchJson (app.js) returns the body of a 404 or 503 too, so its message reaches the cards
+        const json = await fetchJson(`${API_BASE}/api/forecast?ticker=${FC.ticker}`);
         if (json.status !== 'success') throw new Error(json.message || 'load failed');
         FC.data = json;
         const r = json.run || {};
@@ -171,7 +173,7 @@ function cotBlock(name, st) {
 }
 function renderPositioning(j) {
     const p = j.positioning, el = document.getElementById('fc4');
-    if (!p) { el.innerHTML = missing(); return; }
+    if (fcFailed(p)) { el.innerHTML = missing(p); return; }
     const silver = FC.ticker === 'SLV';
     const grp = silver ? p.silver : p.sp500;
     const main = silver ? grp?.managed_money : grp?.leveraged_funds;
@@ -306,6 +308,7 @@ function renderFlows(j) {
 // ---------------------------------------------------------------- 9. scorecard
 function renderScorecard(j) {
     const s = j.scorecard, el = document.getElementById('fc9'), d = j.data || {};
+    if (fcFailed(s)) { el.innerHTML = missing(s || { reason: 'no scorecard in this response' }); return; }
     const graded = (s?.graded || []).slice().sort((a, b) => a.model.localeCompare(b.model) || H_ORDER.indexOf(a.horizon) - H_ORDER.indexOf(b.horizon)).map(r => `<tr><td>${r.model}</td><td>${H_LABEL[r.horizon] || r.horizon}</td><td>${r.n}</td>
         <td>${r.hit_rate == null ? '—' : fcPctF(r.hit_rate, 0)}</td><td>${r.coverage68 == null ? '—' : fcPctF(r.coverage68, 0)}</td>
         <td>${r.brier == null ? '—' : fcNum(r.brier, 3)}</td></tr>`).join('');
@@ -329,6 +332,7 @@ function renderScorecard(j) {
 function renderDiesel(j) {
     const r = j.refining, el = document.getElementById('fc10');
     if (!r) { el.innerHTML = missing({ reason: 'no refining data in this run yet (runs after the next pipeline run)' }); return; }
+    if (fcFailed(r)) { el.innerHTML = missing(r); return; }
     const m = r.margins || {}, f = r.fundamentals || {}, mt = r.maintenance || {}, o = r.outages || {}, u = r.ulsd_positioning || {};
     const d = m.diesel || {}, t = m.three_two_one || {};
     const ds = f.dist_stocks || {}, us = f.util_us || {};
@@ -404,7 +408,7 @@ async function loadInvHistory() {
     if (FC.inv.state !== 'idle') return;
     FC.inv.state = 'loading';
     try {
-        const json = await (await fetch(`${API_BASE}/api/eia_history`)).json();
+        const json = await fetchJson(`${API_BASE}/api/eia_history`);
         if (json.status !== 'success') throw new Error(json.message || 'load failed');
         Object.assign(FC.inv, { hist: json, state: 'ready' });
     } catch (e) {
@@ -432,7 +436,11 @@ function invWindow(h) {
 
 function renderInventories(j) {
     const inv = j.refining?.inventories, el = document.getElementById('fc11');
-    if (!inv || inv.status !== 'fresh') { el.innerHTML = missing(inv || { reason: 'available after the next pipeline run' }); return; }
+    if (!inv || inv.status !== 'fresh') {
+        // when the whole refining block failed its reason is on the block, not on the inventories
+        el.innerHTML = missing(inv || (j.refining && j.refining.reason ? j.refining : { reason: 'available after the next pipeline run' }));
+        return;
+    }
     loadInvHistory();
     const st = FC.inv, mode = INV_MODES[st.mode], full = st.state === 'ready';
     const h = full ? st.hist : invFromSnapshot(inv);

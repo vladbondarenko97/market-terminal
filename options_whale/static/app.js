@@ -8,15 +8,57 @@ function formatDate(dateStr) {
 
 // 2. HELPER: Convert large numbers to Millions/Thousands
 function formatCompact(valStr) {
-    const num = parseFloat(valStr.replace(/[$,]/g, ''));
-    if (num >= 1000000) return (num / 1000000).toFixed(2) + "M";
-    if (num >= 1000) return (num / 1000).toFixed(1) + "K";
+    const num = parseFloat(String(valStr).replace(/[$,]/g, ''));
+    if (!Number.isFinite(num)) return DASH;
+    const sign = num < 0 ? '-' : '', abs = Math.abs(num);
+    if (abs >= 1000000) return sign + (abs / 1000000).toFixed(2) + "M";
+    if (abs >= 1000) return sign + (abs / 1000).toFixed(1) + "K";
     return num.toFixed(2);
+}
+
+// HELPERS: a value that is missing (null, undefined, NaN) is shown as a dash, never as 0 (the server sends null with a reason)
+const DASH = '—';
+const toNum = v => ((typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v))) ? Number(v) : null;
+const isNum = v => toNum(v) !== null;
+function fmt(v, d = 2, prefix = '', suffix = '') {
+    const n = toNum(v);
+    return n === null ? DASH : `${prefix}${n.toFixed(d)}${suffix}`;
+}
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Fetches a JSON route and always hands back the parsed body, also for 4xx/5xx answers (the routes send
+// {"status":"error","message":...} with a real status code). A body that is not JSON becomes an error body that names
+// the HTTP status, so callers show a message instead of throwing on res.json(). body.http holds the status code.
+async function fetchJson(url, options) {
+    const res = await fetch(url, options);
+    let body = null;
+    try { body = await res.json(); } catch (e) { body = null; }
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        body = { status: 'error', message: res.ok ? 'unexpected response (not JSON)' : `HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}` };
+    } else if (!res.ok) {
+        if (body.status === undefined || body.status === 'success') body.status = 'error';
+        if (!body.message) body.message = `HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`;
+    }
+    Object.defineProperty(body, 'http', { value: res.status, enumerable: false, configurable: true });
+    return body;
+}
+
+// Text of an <error>...</error> XML body (the XML routes send one with a 4xx/5xx status), or null when the text is not one.
+function xmlErrorText(text) {
+    try {
+        const doc = new DOMParser().parseFromString(String(text), 'text/xml');
+        const root = doc.documentElement;
+        if (root && root.nodeName === 'error') return (root.textContent || '').trim();
+    } catch (e) { /* not XML */ }
+    return null;
 }
 
 // 3. MAIN TERMINAL LOGGER
 function log(content, type = 'info') {
-    if (typeof switchMobileTab === 'function') switchMobileTab('console');
+    // On a phone only a command line the user started brings the console forward; load-time and background messages do not
+    if (type === 'cmd' && typeof switchMobileTab === 'function') switchMobileTab('console');
     const consoleLog = document.getElementById('consoleLog');
     const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
     
@@ -26,6 +68,7 @@ function log(content, type = 'info') {
     let color = "text-zinc-500";
     if (type === 'success') color = "text-green-500 font-bold";
     if (type === 'error') color = "text-red-500 font-bold";
+    if (type === 'warn') color = "text-yellow-500 font-bold";
     if (type === 'cmd') color = "text-blue-400";
     
     entry.innerHTML = `<div class="text-[9px] mb-1"><span class="text-zinc-700">[${time}]</span> <span class="${color} uppercase">${type}</span></div>`;
@@ -70,19 +113,19 @@ function log(content, type = 'info') {
                     <div class="flex justify-between items-start">
                         <div class="text-[12px]">
                             <span class="${accent} font-bold">${type === 'CALL' ? '🔥' : '🩸'} ${type}:</span>
-                            <span class="text-white ml-1 font-bold">${formatDate(c.getAttribute('expiration'))}</span>
+                            <span class="text-white ml-1 font-bold">${esc(formatDate(c.getAttribute('expiration')))}</span>
                             <span class="text-zinc-500 mx-1">/</span>
-                            <span class="text-zinc-200">$${c.getAttribute('strike')} Strike</span>
+                            <span class="text-zinc-200">$${esc(c.getAttribute('strike'))} Strike</span>
                             <span class="text-zinc-600 mx-2">—</span>
-                            <span class="text-white font-bold">$${formatCompact(premRaw)} premium</span>
+                            <span class="text-white font-bold">$${esc(formatCompact(premRaw))} premium</span>
                         </div>
                     </div>
                     
                     <div class="grid grid-cols-4 gap-2 mt-3 pt-2 border-t border-zinc-900 text-[9px] group-hover:border-zinc-700">
-                        <div><span class="text-zinc-600 block uppercase">Intensity</span><span class="text-blue-400">${c.getAttribute('vol_oi_ratio')}</span></div>
-                        <div><span class="text-zinc-600 block uppercase">Vol/OI</span><span class="text-zinc-400">${c.getAttribute('volume')} / ${c.getAttribute('open_interest')}</span></div>
-                        <div><span class="text-zinc-600 block uppercase">Expectation</span><span class="text-orange-400">${c.getAttribute('implied_volatility')} IV</span></div>
-                        <div><span class="text-zinc-600 block uppercase">Slippage</span><span class="text-zinc-500">${c.getAttribute('spread')} Spread</span></div>
+                        <div><span class="text-zinc-600 block uppercase">Intensity</span><span class="text-blue-400">${esc(c.getAttribute('vol_oi_ratio'))}</span></div>
+                        <div><span class="text-zinc-600 block uppercase">Vol/OI</span><span class="text-zinc-400">${esc(c.getAttribute('volume'))} / ${esc(c.getAttribute('open_interest'))}</span></div>
+                        <div><span class="text-zinc-600 block uppercase">Expectation</span><span class="text-orange-400">${esc(c.getAttribute('implied_volatility'))} IV</span></div>
+                        <div><span class="text-zinc-600 block uppercase">Slippage</span><span class="text-zinc-500">${esc(c.getAttribute('spread'))} Spread</span></div>
                     </div>
                 </div>`;
         });
@@ -110,10 +153,10 @@ function log(content, type = 'info') {
         // Build Pretty Summary Header for Arbitrage
         let summaryHtml = `
             <div class="flex gap-4 mb-4 bg-zinc-900/40 p-3 rounded border border-zinc-800">
-                <div><span class="text-zinc-500 text-[10px] block uppercase">COMEX Spot</span><span class="text-blue-400 font-bold">${comexSpot}</span></div>
+                <div><span class="text-zinc-500 text-[10px] block uppercase">COMEX Spot</span><span class="text-blue-400 font-bold">${esc(comexSpot)}</span></div>
                 <div class="border-r border-zinc-800"></div>
                 <div><span class="text-zinc-500 text-[10px] block uppercase">Dealers Scanned</span><span class="text-white font-bold">${listings.length}</span></div>
-                <div class="ml-auto text-right"><span class="text-zinc-500 text-[10px] block uppercase">Engine Timestamp</span><span class="text-zinc-400 font-bold">${timestamp.split(' ')[1]}</span></div>
+                <div class="ml-auto text-right"><span class="text-zinc-500 text-[10px] block uppercase">Engine Timestamp</span><span class="text-zinc-400 font-bold">${esc((timestamp || '').split(' ')[1] || timestamp || DASH)}</span></div>
             </div>
             <div class="grid grid-cols-1 gap-2">`;
         
@@ -124,7 +167,7 @@ function log(content, type = 'info') {
             const shipping = l.getAttribute("shipping");
             const premDollars = l.getAttribute("premium_dollars");
             const premPercent = l.getAttribute("premium_percent");
-            const status = l.getAttribute("status");
+            const status = l.getAttribute("status") || "";
             
             // Format Status Colors
             let statusColor = "text-zinc-500";
@@ -133,23 +176,23 @@ function log(content, type = 'info') {
 
             // CHANGED: Wrapped the card in an <a> tag pointing to the eBay listing
             summaryHtml += `
-                <a href="https://www.ebay.com/itm/${itemId}" target="_blank" class="block bg-zinc-950 border border-zinc-900 p-3 rounded hover:border-blue-900 transition-all group cursor-pointer text-left">
+                <a href="https://www.ebay.com/itm/${encodeURIComponent(itemId || '')}" target="_blank" rel="noopener noreferrer" class="block bg-zinc-950 border border-zinc-900 p-3 rounded hover:border-blue-900 transition-all group cursor-pointer text-left">
                     <div class="flex justify-between items-start">
                         <div class="text-[12px] truncate w-3/4 pr-4">
                             <span class="text-blue-400 font-bold">🪙 RETAIL:</span>
-                            <span class="text-zinc-200 ml-1 group-hover:text-blue-400 transition-colors" title="${name}">${name}</span>
+                            <span class="text-zinc-200 ml-1 group-hover:text-blue-400 transition-colors" title="${esc(name)}">${esc(name)}</span>
                         </div>
                         <div class="text-right w-1/4">
-                            <div class="text-white font-bold tracking-tighter group-hover:text-blue-400 transition-colors">${totalCost}</div>
+                            <div class="text-white font-bold tracking-tighter group-hover:text-blue-400 transition-colors">${esc(totalCost)}</div>
                             <div class="text-[9px] text-zinc-600 uppercase">Total Cost</div>
                         </div>
                     </div>
                     
                     <div class="grid grid-cols-4 gap-2 mt-3 pt-2 border-t border-zinc-900 text-[9px] group-hover:border-blue-900/50">
-                        <div><span class="text-zinc-600 block uppercase">Premium %</span><span class="text-orange-400 font-bold">+${premPercent}</span></div>
-                        <div><span class="text-zinc-600 block uppercase">Premium $</span><span class="text-orange-400">+${premDollars}</span></div>
-                        <div><span class="text-zinc-600 block uppercase">Shipping</span><span class="text-zinc-400">${shipping}</span></div>
-                        <div><span class="text-zinc-600 block uppercase">Status</span><span class="${statusColor}">${status}</span></div>
+                        <div><span class="text-zinc-600 block uppercase">Premium %</span><span class="text-orange-400 font-bold">+${esc(premPercent)}</span></div>
+                        <div><span class="text-zinc-600 block uppercase">Premium $</span><span class="text-orange-400">+${esc(premDollars)}</span></div>
+                        <div><span class="text-zinc-600 block uppercase">Shipping</span><span class="text-zinc-400">${esc(shipping)}</span></div>
+                        <div><span class="text-zinc-600 block uppercase">Status</span><span class="${statusColor}">${esc(status)}</span></div>
                     </div>
                 </a>`;
         });
@@ -159,81 +202,68 @@ function log(content, type = 'info') {
     } 
     else {
         // Fallback for standard text/error logs
-        entry.innerHTML += `<div class="text-zinc-300 whitespace-pre-wrap">${content}</div>`;
+        entry.innerHTML += `<div class="text-zinc-300 whitespace-pre-wrap">${esc(content)}</div>`;
     }
 
     consoleLog.appendChild(entry);
     consoleLog.scrollTop = consoleLog.scrollHeight;
 }
 
-// Function to handle physical arbitrage scans
-async function triggerPhysicalArbScan() {
-    log(`Initializing Physical Arbitrage Engine (Silver Eagles)...`, 'cmd');
-    try {
-        const res = await fetch(`${API_BASE}/api/silver_eagle_prices`);
-        const contentType = res.headers.get("content-type");
-        
-        if (contentType && contentType.includes("application/xml")) {
-             const xmlText = await res.text();
-             log(xmlText, 'success'); 
-        } else {
-             const text = await res.text();
-             log(`Error fetching data: ${text}`, 'error');
-        }
-    } catch (e) { log(`System Error: ${e.message}`, 'error'); }
+// Prints the answer of a scan route. The scans answer XML (<whale_hunt> or <physical_arbitrage>); a failure is
+// <error>text</error> with a 4xx/5xx status, or a JSON error body such as the 403 from the cross-site guard.
+async function logScanResponse(res) {
+    const type = (res.headers.get('content-type') || '').toLowerCase();
+    const text = await res.text();
+    if (type.includes('xml')) {
+        const err = xmlErrorText(text);
+        if (err !== null) log(err || `HTTP ${res.status}`, 'error');
+        else if (!res.ok) log(`HTTP ${res.status}: ${text.slice(0, 200)}`, 'error');
+        else log(text, 'success');   // XML is passed on as it is: log() draws it
+        return;
+    }
+    let msg = text;
+    try { const j = JSON.parse(text); msg = j.message || j.data || text; } catch (e) { /* plain text */ }
+    log(msg || `HTTP ${res.status}`, res.ok ? 'success' : 'error');
 }
 
-// Logic to run standard morning/evening hunts
+// Silver Eagle scan. It writes a ledger row, so the server accepts it only as a POST, and a second click while
+// the first scan runs (up to 2 minutes) is refused here instead of writing a second row.
+let _silverScanBusy = false;
+async function triggerPhysicalArbScan() {
+    if (_silverScanBusy) { log('A Silver Eagle scan is already running.', 'info'); return; }
+    _silverScanBusy = true;
+    log(`Initializing Physical Arbitrage Engine (Silver Eagles)...`, 'cmd');
+    try {
+        const res = await fetch(`${API_BASE}/api/silver_eagle_prices`, { method: 'POST' });
+        await logScanResponse(res);
+    } catch (e) { log(`System Error: ${e.message}`, 'error'); }
+    finally { _silverScanBusy = false; }
+}
+
+// Logic to run standard morning/evening hunts. Both are filtered scans of the Target Ticker and answer the same XML as /api/custom.
 async function runPredefined(mode) {
     log(`Broadcasting ${mode.toUpperCase()} position hunt...`, 'cmd');
-    const ticker = document.getElementById('scanTicker').value || "SPY";
+    const ticker = (document.getElementById('scanTicker').value || "SPY").trim().toUpperCase();
     try {
-        const res = await fetch(`${API_BASE}/api/${mode}?ticker=${ticker}`);
-        const result = await res.json();
-        if (result.status === "success") log(result.data, 'success');
-        else log(result.message, 'error');
-    } catch (e) { log(e.message, 'error'); }
+        const res = await fetch(`${API_BASE}/api/${mode}?ticker=${encodeURIComponent(ticker)}`);
+        await logScanResponse(res);
+    } catch (e) { log(`Network Error: ${e.message}`, 'error'); }
 }
 
 // Logic to run the Custom XML-based scan
 async function runCustomScan() {
-    const ticker = document.getElementById('scanTicker').value || "AMD";
+    const ticker = (document.getElementById('scanTicker').value || "AMD").trim().toUpperCase();
     const vol = document.getElementById('scanVol').value;
     const dte = document.getElementById('scanDTE').value;
     const premium = document.getElementById('scanPremium').value;
     
-    log(`Initiating Custom Whale Scan for $${ticker.toUpperCase()}...`, 'cmd');
+    log(`Initiating Custom Whale Scan for $${ticker}...`, 'cmd');
     
     try {
-        const url = `${API_BASE}/api/custom?ticker=${ticker}&min_vol_oi=${vol}&min_premium=${premium}&max_dte=${dte}`;
+        const url = `${API_BASE}/api/custom?ticker=${encodeURIComponent(ticker)}&min_vol_oi=${encodeURIComponent(vol)}&min_premium=${encodeURIComponent(premium)}&max_dte=${encodeURIComponent(dte)}`;
         const res = await fetch(url);
-        const contentType = res.headers.get("content-type");
-
-        if (contentType && contentType.includes("application/xml")) {
-            const xmlText = await res.text();
-            // CRITICAL FIX: Pass xmlText directly, DO NOT escape it here
-            log(xmlText, 'success'); 
-        } else {
-            const result = await res.json();
-            log(result.data || result.message, result.status === 'success' ? 'success' : 'error');
-        }
+        await logScanResponse(res);
     } catch (e) { log(`Network Error: ${e.message}`, 'error'); }
-}
-
-// Function to handle physical arbitrage scans (placeholder for future use)
-async function triggerPhysicalArbScan() {
-    log(`Initializing Physical Arbitrage Engine...`, 'cmd');
-    try {
-        const res = await fetch(`${API_BASE}/api/silver_eagle_prices`);
-        const contentType = res.headers.get("content-type");
-        
-        if (contentType && contentType.includes("application/xml")) {
-             const xmlText = await res.text();
-             log(xmlText, 'success'); // Requires adding an XML parser specifically for the arb data in the log function
-        } else {
-            log("Error fetching physical arbitrage data.", 'error');
-        }
-    } catch (e) { log(e.message, 'error'); }
 }
 
 // Status checker
@@ -244,6 +274,11 @@ async function checkStatus() {
             document.getElementById('apiStatus').innerText = "ONLINE";
             document.getElementById('apiStatus').className = "text-green-500";
             document.getElementById('statusDot').className = "w-2 h-2 bg-green-500 rounded-full status-pulse";
+        } else {
+            // the server answered, but with an error
+            document.getElementById('apiStatus').innerText = `ERROR (HTTP ${res.status})`;
+            document.getElementById('apiStatus').className = "text-red-500";
+            document.getElementById('statusDot').className = "w-2 h-2 bg-red-500 rounded-full";
         }
     } catch (e) {
         document.getElementById('apiStatus').innerText = `OFFLINE (CHECK ${location.host.toUpperCase()})`;
@@ -537,13 +572,13 @@ function toggleFullscreen(panelId) {
 document.addEventListener('DOMContentLoaded', () => {
     const panels = document.querySelectorAll('.draggable-panel');
 
-    // Load Default Panels
-    setTimeout(() => loadDarkPoolProfile(), 2000);
-    setTimeout(() => loadDealerMap(), 1600);
+    // Load Default Panels. `true` marks a load the page started itself: it is logged as info, not as a command the user typed.
+    setTimeout(() => loadDarkPoolProfile(true), 2000);
+    setTimeout(() => loadDealerMap(true), 1600);
     setTimeout(() => loadArbitrageLedger(), 1800);
     // Load Phase 1 Panels
     setTimeout(() => loadSlvInstitutionalFlow(), 2200);
-    setTimeout(() => loadSlvGexMap(), 2400);
+    setTimeout(() => loadSlvGexMap(true), 2400);
     setTimeout(() => loadMacroCalendar(), 2600);
     setTimeout(() => loadMacroNews(), 2800);
     setTimeout(() => loadFedLiquidity(), 3000);
@@ -630,12 +665,12 @@ async function updateWarRoom() {
     const isLive = Object.values(payload).every(v => v === 0);
 
     try {
-        const res = await fetch(`${API_BASE}/api/war_room`, {
+        // a 503 means the ledger lacks one of the four inputs; the body names it and is shown in the panel
+        const data = await fetchJson(`${API_BASE}/api/war_room`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        const data = await res.json();
         if (data.status !== 'success') throw new Error(data.message || 'calculation failed');
 
         warRoomData = data;
@@ -653,6 +688,7 @@ async function updateWarRoom() {
         const tierEl = document.getElementById('warTier');
         tierEl.innerText = tier.name;
         tierEl.className = `text-[9px] font-bold uppercase tracking-widest ${tier.css}`;
+        tierEl.title = '';
         set('warLiveVmri', cur.vmri.toFixed(1));
         const deltaEl = document.getElementById('warDelta');
         deltaEl.innerText = isLive ? 'no scenario applied' : `Scenario ${warSigned(data.impact.vmri_delta)} (${warSigned(data.impact.vmri_delta_pct, 0)}%)`;
@@ -704,7 +740,14 @@ async function updateWarRoom() {
         statusEl.innerText = "API ERROR";
         const tierEl = document.getElementById('warTier');
         tierEl.innerText = `API ERROR: ${e.message}`;
-        tierEl.className = "text-[9px] font-bold uppercase tracking-widest text-red-500";
+        tierEl.className = "text-[9px] font-bold tracking-wide text-red-500 normal-case";
+        tierEl.title = e.message;
+        // nothing valid to show: do not leave the numbers of an earlier answer next to the error
+        if (!warRoomData) {
+            document.getElementById('warVmriScore').innerText = DASH;
+            document.getElementById('warLiveVmri').innerText = DASH;
+            document.getElementById('warDelta').innerText = 'no scenario available';
+        }
     }
 }
 
@@ -756,27 +799,129 @@ document.addEventListener('DOMContentLoaded', () => {
     if (document.getElementById('shiftDxy')) updateWarRoom();
 });
 
-// Initialize UI
-setInterval(checkStatus, 30000); 
-checkStatus();
-setInterval(() => document.getElementById('clock').innerText = new Date().toLocaleTimeString(), 1000);
+function reloadFrame(id) {
+    const frame = document.getElementById(id);
+    if (frame) frame.src += '';
+}
 
 function refreshFrame(id) { 
-    document.getElementById(id).src += ''; 
+    reloadFrame(id);
     log(`Refreshed ${id}`, 'cmd'); 
 }
 
+// Data Dump (GET /dump): prints the newest tactical and volume XML and keeps the text for the COPY button of panels 1 and 2.
 async function triggerAction(endpoint) {
     log(`System Command: ${endpoint}`, 'cmd');
     try { 
-        // /run changes state, so the server accepts it only as a POST
-        const res = await fetch(`${API_BASE}${endpoint}`, endpoint === '/run' ? { method: 'POST' } : undefined); 
+        const res = await fetch(`${API_BASE}${endpoint}`); 
         const t = await res.text();
-        window._lastXmlDump = t; // Cache for copy-data on panel1/panel2
-        log(t, 'success'); 
-        refreshFrame('vmriFrame'); 
-        refreshFrame('comexFrame');
+        if (res.ok) window._lastXmlDump = t; // Cache for copy-data on panel1/panel2
+        const err = res.ok ? null : xmlErrorText(t);
+        log(err !== null ? (err || `HTTP ${res.status}`) : t, res.ok ? 'success' : 'error');
     } catch (e) { log(e.message, 'error'); }
+}
+
+// ==========================================
+// --- RE-SCAN ALL DATA: start a pipeline run on the server and follow it ---
+// ==========================================
+// POST /run answers at once (202 started, 409 busy). The run itself takes minutes, so the page reads GET /api/run_status
+// until a run_id it has not seen before shows up with lock_held false, then prints how it ended.
+const RUN_POLL_MS = 5000;                   // how often /api/run_status is read
+const RUN_START_WAIT_MS = 90 * 1000;        // a new run_id must appear within this time
+const RUN_MAX_WAIT_MS = 45 * 60 * 1000;     // stop following after this long
+let _rescanActive = false;
+const _sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function setRescanButton(active) {
+    const btn = document.getElementById('btnRescan'), txt = document.getElementById('rescanBtnText');
+    if (btn) { btn.disabled = active; btn.classList.toggle('opacity-50', active); btn.classList.toggle('cursor-wait', active); }
+    if (txt) txt.innerText = active ? 'RE-SCANNING...' : 'RE-SCAN ALL DATA';
+}
+
+async function readRunStatus() {
+    const body = await fetchJson(`${API_BASE}/api/run_status`);
+    if (body.status !== 'success' || !body.data) throw new Error(body.message || 'run status unavailable');
+    return body.data;
+}
+
+async function rescanAll() {
+    if (_rescanActive) { log('A re-scan is already being followed in this window.', 'info'); return; }
+    _rescanActive = true;
+    setRescanButton(true);
+    log('System Command: RE-SCAN ALL DATA (starts a pipeline run on the server)', 'cmd');
+    try {
+        let beforeId = null;
+        try { beforeId = (await readRunStatus()).run_id || null; }
+        catch (e) { log(`Run status not readable before the start (${e.message}); starting anyway.`, 'info'); }
+
+        const started = await fetchJson(`${API_BASE}/run`, { method: 'POST' });
+        if (started.status === 'busy' || started.http === 409) {
+            const where = started.run_id ? ` (run ${started.run_id}${started.stage ? ', stage ' + started.stage : ''})` : (started.stage ? ` (${started.stage})` : '');
+            const why = started.message && !/^HTTP \d/.test(started.message) ? started.message : 'a run is already in progress';
+            log(`busy: ${why}${where}. Nothing was started.`, 'info');
+            return;
+        }
+        if (started.status !== 'started') {
+            log(`The run did not start: ${started.message || 'HTTP ' + started.http}`, 'error');
+            return;
+        }
+        log(`Run started on the server (pid ${started.pid ?? '?'}). Checking progress every ${RUN_POLL_MS / 1000} s...`, 'info');
+        await followRun(beforeId);
+    } catch (e) {
+        log(`Re-scan failed: ${e.message}`, 'error');
+    } finally {
+        _rescanActive = false;
+        setRescanButton(false);
+    }
+}
+
+// Polls until the new run has ended (resolves), or gives up with a message. Deadlines use the clock, not a count of polls,
+// because a hidden browser tab slows its timers down.
+async function followRun(beforeId) {
+    const t0 = Date.now();
+    let runId = null, lastStage = null, lastPollError = null;
+    for (;;) {
+        await _sleep(RUN_POLL_MS);
+        let st = null;
+        try {
+            st = await readRunStatus();
+            if (lastPollError) { log('Run status is readable again.', 'info'); lastPollError = null; }
+        } catch (e) {
+            if (e.message !== lastPollError) { lastPollError = e.message; log(`Run status check failed (${e.message}); still trying.`, 'info'); }
+        }
+        if (st) {
+            if (st.run_id && st.run_id !== beforeId && st.run_id !== runId) {
+                runId = st.run_id;
+                lastStage = st.stage || null;
+                log(`Run ${runId} is under way${st.stage ? ` (stage ${st.stage})` : ''}.`, 'info');
+            } else if (runId && st.run_id === runId && st.stage && st.stage !== lastStage) {
+                lastStage = st.stage;
+                log(`Run ${runId}: stage ${st.stage}`, 'info');
+            }
+            if (runId && st.run_id === runId && st.lock_held === false) {
+                const state = st.state || 'unknown';
+                const took = isNum(st.elapsed_s) ? ` after ${Math.round(st.elapsed_s)} s` : '';
+                const why = st.error ? `: ${st.error}` : '';
+                if (state === 'completed') log(`Run ${runId} completed${took}.`, 'success');
+                else if (state === 'completed_with_warnings') log(`Run ${runId} completed with warnings${took}${why}. Run "main_pipeline.py status" on the server for the detail.`, 'warn');
+                else if (state === 'interrupted') log(`Run ${runId} was interrupted: the process ended before it finished${why}`, 'error');
+                else log(`Run ${runId} ${state}${took}${why}`, 'error');
+                reloadFrame('vmriFrame');
+                reloadFrame('comexFrame');
+                log('VMRI and COMEX inventory frames reloaded.', 'info');
+                return;
+            }
+        }
+        const waited = Date.now() - t0;
+        if (!runId && waited > RUN_START_WAIT_MS) {
+            log(`No new run appeared within ${RUN_START_WAIT_MS / 1000} s, so it probably did not start. The launcher output is in .v2_manual_run.log in the server's data folder.`, 'error');
+            return;
+        }
+        if (waited > RUN_MAX_WAIT_MS) {
+            log(`Stopped waiting after ${RUN_MAX_WAIT_MS / 60000} minutes; run ${runId} may still be going. Check "main_pipeline.py status" on the server.`, 'warn');
+            return;
+        }
+    }
 }
 
 // ==========================================
@@ -947,8 +1092,8 @@ async function syncComexModule() {
             const ratioStr = ratioNode.textContent.split(':')[0]; 
             const ratio = parseFloat(ratioStr);
             
-            // Push the live data to the UI
-            updateComexRatioUI(ratio);
+            // Push the live data to the UI (a ratio that did not parse is left out, not drawn as NaN)
+            if (Number.isFinite(ratio)) updateComexRatioUI(ratio);
         }
     } catch (e) { 
         console.error("Failed to sync COMEX module:", e); 
@@ -1010,7 +1155,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(syncComexModule, 300000);
 });
 
-// Initialize UI Clocks/Status
+// Initialize UI: API status (every 30 s) and the clock. Started once, here.
 setInterval(checkStatus, 30000); 
 checkStatus();
 setInterval(() => {
@@ -1024,19 +1169,29 @@ setInterval(() => {
 
 let gexChartInstance = null;
 
-async function loadDealerMap() {
-    const ticker = document.getElementById('gexTickerInput').value.toUpperCase() || 'SPY';
+// Fills the four stat boxes of a Dealer Map panel. Zero gamma is null (shown as a dash, with the reason as the
+// tooltip) when the server could not compute it; it is never replaced by the spot price.
+function setGexStats(ids, data) {
+    const set = (id, v) => { const el = document.getElementById(id); el.innerText = fmt(v, 2, '$'); el.title = ''; return el; };
+    set(ids.spot, data.spot);
+    const zero = set(ids.zero, data.zeroGamma);
+    if (!isNum(data.zeroGamma)) zero.title = data.zeroGammaReason || 'zero gamma could not be computed';
+    set(ids.call, data.callWall);
+    set(ids.put, data.putWall);
+}
+
+async function loadDealerMap(auto = false) {
+    const ticker = document.getElementById('gexTickerInput').value.trim().toUpperCase() || 'SPY';
     document.getElementById('gexTickerInput').value = ticker;
     
-    log(`Scanning Dealer Options chain for ${ticker}...`, 'cmd');
+    log(`Scanning Dealer Options chain for ${ticker}...`, auto ? 'info' : 'cmd');
 
     try {
         // --- REAL DATA PIPELINE ---
-        const res = await fetch(`${API_BASE}/api/gex?ticker=${ticker}`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/gex?ticker=${encodeURIComponent(ticker)}`);
         
-        if (json.status !== 'success') {
-            log(`GEX Error: ${json.message}`, 'error');
+        if (json.status !== 'success' || !json.data) {
+            log(`GEX Error: ${json.message || 'no data'}`, 'error');
             return;
         }
         
@@ -1044,10 +1199,7 @@ async function loadDealerMap() {
         window._lastGexData = { ticker, ...data }; // Cache for copy-data feature
         
         // --- UPDATE UI STATS ---
-        document.getElementById('gexSpot').innerText = `$${data.spot.toFixed(2)}`;
-        document.getElementById('gexZero').innerText = `$${data.zeroGamma.toFixed(2)}`;
-        document.getElementById('gexCallWall').innerText = `$${data.callWall.toFixed(2)}`;
-        document.getElementById('gexPutWall').innerText = `$${data.putWall.toFixed(2)}`;
+        setGexStats({ spot: 'gexSpot', zero: 'gexZero', call: 'gexCallWall', put: 'gexPutWall' }, data);
 
         // --- RENDER CHART ---
         const ctx = document.getElementById('gexChart').getContext('2d');
@@ -1089,8 +1241,7 @@ async function loadDealerMap() {
                         intersect: false,
                         callbacks: {
                             label: function(context) {
-                                let val = context.raw;
-                                return `Net Gamma: ${formatCompact(val.toString())}`;
+                                return `Net Gamma: ${formatCompact(context.raw)}`;
                             }
                         }
                     },
@@ -1112,7 +1263,7 @@ async function loadDealerMap() {
                 scales: {
                     y: {
                         grid: { color: 'rgba(255, 255, 255, 0.1)' },
-                        ticks: { color: '#a1a1aa', font: { size: 9 }, callback: (v) => formatCompact(v.toString()) }
+                        ticks: { color: '#a1a1aa', font: { size: 9 }, callback: (v) => formatCompact(v) }
                     },
                     x: {
                         grid: { display: false },
@@ -1172,8 +1323,7 @@ window.arbData = null; // Global store to prevent re-fetching on toggle
 // 1. Fetcher
 async function loadArbitrageLedger() {
     try {
-        const res = await fetch(`${API_BASE}/api/arbitrage_history?limit=50`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/arbitrage_history?limit=50`);
         
         if (json.status === 'success') {
             window.arbData = json.data;
@@ -1349,17 +1499,22 @@ function renderArbChart(view) {
 // --- DARK POOL PROFILE ENGINE ---
 // ==========================================
 
-async function loadDarkPoolProfile() {
+// How the Bias was worked out, as the server reports it in sentiment.method
+const DP_METHODS = {
+    aggressor: { label: 'AGGRESSOR SIDE', tip: 'Bias from the side that started each block trade, as the exchange feed reports it (buy aggressor = bullish, sell aggressor = bearish). Prints with no side are UNKNOWN and carry no weight.' },
+    vwap_heuristic: { label: 'VWAP HEURISTIC', tip: 'The feed gave no trade sides, so the bias is a guess from where the blocks printed against the VWAP.' },
+};
+
+async function loadDarkPoolProfile(auto = false) {
     const inputEl = document.getElementById('dpTickerInput');
-    const ticker = inputEl.value.toUpperCase() || 'SLV';
+    const ticker = inputEl.value.trim().toUpperCase() || 'SLV';
     inputEl.value = ticker; // Auto-format to uppercase
     
-    log(`Intercepting Dark Pool prints for $${ticker}...`, 'cmd');
+    log(`Intercepting Dark Pool prints for $${ticker}...`, auto ? 'info' : 'cmd');
 
     try {
         // Hit the existing Python API endpoint
-        const res = await fetch(`${API_BASE}/api/darkpool?ticker=${ticker}`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/darkpool?ticker=${encodeURIComponent(ticker)}`);
         
         if (json.status !== 'success' || !json.data) {
             log(`Dark Pool Error: ${json.message || 'No data found'}`, 'error');
@@ -1367,25 +1522,32 @@ async function loadDarkPoolProfile() {
         }
         
         const data = json.data;
+        const sentiment = data.sentiment || {};
 
         // --- 1. POPULATE THE DASHBOARD STATS ---
-        document.getElementById('dpVwap').innerText = `$${data.vwap_price.toFixed(2)}`;
+        document.getElementById('dpVwap').innerText = fmt(data.vwap_price, 2, '$');
         
         // Format Notional to Millions/Billions for clean reading
-        let notionalStr = data.total_notional_usd >= 1e9 
-            ? `$${(data.total_notional_usd / 1e9).toFixed(2)}B` 
-            : `$${(data.total_notional_usd / 1e6).toFixed(2)}M`;
+        const notional = toNum(data.total_notional_usd);
+        let notionalStr = notional === null ? DASH
+            : notional >= 1e9 ? `$${(notional / 1e9).toFixed(2)}B` : `$${(notional / 1e6).toFixed(2)}M`;
         document.getElementById('dpNotional').innerText = notionalStr;
         
-        document.getElementById('dpVol').innerText = data.total_block_volume.toLocaleString();
-        document.getElementById('dpMax').innerText = data.largest_single_block.toLocaleString();
+        document.getElementById('dpVol').innerText = isNum(data.total_block_volume) ? Number(data.total_block_volume).toLocaleString() : DASH;
+        document.getElementById('dpMax').innerText = isNum(data.largest_single_block) ? Number(data.largest_single_block).toLocaleString() : DASH;
         
-        // Set Sentiment Color
+        // Set Sentiment Color (the bias is shown as the server gives it)
         const biasEl = document.getElementById('dpBias');
-        biasEl.innerText = data.sentiment.bias;
-        if (data.sentiment.bias === 'BULLISH') biasEl.className = "text-green-500 font-bold text-lg tracking-widest drop-shadow-[0_0_5px_rgba(34,197,94,0.5)]";
-        else if (data.sentiment.bias === 'BEARISH') biasEl.className = "text-red-500 font-bold text-lg tracking-widest drop-shadow-[0_0_5px_rgba(239,68,68,0.5)]";
+        biasEl.innerText = sentiment.bias || DASH;
+        if (sentiment.bias === 'BULLISH') biasEl.className = "text-green-500 font-bold text-lg tracking-widest drop-shadow-[0_0_5px_rgba(34,197,94,0.5)]";
+        else if (sentiment.bias === 'BEARISH') biasEl.className = "text-red-500 font-bold text-lg tracking-widest drop-shadow-[0_0_5px_rgba(239,68,68,0.5)]";
         else biasEl.className = "text-zinc-400 font-bold text-lg tracking-widest";
+        const methodEl = document.getElementById('dpBiasMethod');
+        if (methodEl) {
+            const m = DP_METHODS[sentiment.method];
+            methodEl.innerText = sentiment.method ? (m ? m.label : String(sentiment.method).replace(/_/g, ' ').toUpperCase()) : '';
+            methodEl.title = m ? m.tip : '';
+        }
 
         // --- 2. BUILD THE TAPE ---
         const tapeContainer = document.getElementById('dpTapeContainer');
@@ -1393,23 +1555,23 @@ async function loadDarkPoolProfile() {
         
         if (data.recent_prints && data.recent_prints.length > 0) {
             data.recent_prints.forEach(print => {
-                // Determine row highlight based on side (if known)
+                // The side is BUY, SELL or UNKNOWN, exactly as the server sends it
                 let sideColor = "text-zinc-500";
                 if (print.side === "BUY") sideColor = "text-green-400 font-bold";
                 if (print.side === "SELL") sideColor = "text-red-400 font-bold";
                 
                 // Highlight massive prints in purple
-                let sizeClass = print.size >= data.largest_single_block * 0.8 
+                let sizeClass = isNum(print.size) && isNum(data.largest_single_block) && print.size >= data.largest_single_block * 0.8 
                     ? "text-purple-400 font-bold drop-shadow-[0_0_3px_rgba(168,85,247,0.5)]" 
                     : "text-white";
 
                 const row = document.createElement('div');
                 row.className = "grid grid-cols-4 px-2 py-1.5 hover:bg-zinc-800/50 rounded transition-colors border-b border-zinc-900/50";
                 row.innerHTML = `
-                    <div class="text-zinc-400">${print.time}</div>
-                    <div class="text-right ${sizeClass}">${print.size.toLocaleString()}</div>
-                    <div class="text-right text-blue-300">$${print.price.toFixed(4)}</div>
-                    <div class="text-right pr-2 ${sideColor}">${print.side}</div>
+                    <div class="text-zinc-400">${esc(print.time)}</div>
+                    <div class="text-right ${sizeClass}">${isNum(print.size) ? Number(print.size).toLocaleString() : DASH}</div>
+                    <div class="text-right text-blue-300">${fmt(print.price, 4, '$')}</div>
+                    <div class="text-right pr-2 ${sideColor}">${esc(print.side || DASH)}</div>
                 `;
                 tapeContainer.appendChild(row);
             });
@@ -1417,7 +1579,7 @@ async function loadDarkPoolProfile() {
             tapeContainer.innerHTML = `<div class="p-3 text-center text-zinc-600 text-[10px] uppercase tracking-widest">No institutional prints detected today.</div>`;
         }
 
-        log(`Dark Pool profile loaded for ${ticker}. VWAP: $${data.vwap_price.toFixed(2)}`, 'success');
+        log(`Dark Pool profile loaded for ${ticker}. VWAP: ${fmt(data.vwap_price, 2, '$')}`, 'success');
         // --- ADD THESE LINES TO HOOK PANEL 8 ---
         window.currentDpData = data;
         
@@ -1446,7 +1608,8 @@ function renderDarkPoolChart(data, minSize = 10000) {
     if (dpChartInstance) dpChartInstance.destroy();
 
     // 1. Filter Prints by the Slider Value
-    const filteredPrints = data.recent_prints.filter(p => p.size >= minSize);
+    const filteredPrints = data.recent_prints.filter(p => isNum(p.size) && isNum(p.price) && typeof p.time === 'string' && p.size >= minSize);
+    const maxBlock = toNum(data.largest_single_block) || Math.max(...filteredPrints.map(p => p.size), 1);
 
     // 2. Map Time Strings ("14:50:50") to decimal hours for the X-Axis
     let minTime = 24, maxTime = 0;
@@ -1459,7 +1622,7 @@ function renderDarkPoolChart(data, minSize = 10000) {
         return {
             x: xVal,
             y: p.price,
-            r: Math.max(4, (p.size / data.largest_single_block) * 25), // Scale bubble radius
+            r: Math.max(4, (p.size / maxBlock) * 25), // Scale bubble radius
             raw: p // Save original print for tooltip
         };
     });
@@ -1473,8 +1636,8 @@ function renderDarkPoolChart(data, minSize = 10000) {
         type: 'line',
         label: 'VWAP Anchor',
         data: [
-            { x: minTime, y: data.vwap_price },
-            { x: maxTime, y: data.vwap_price }
+            { x: minTime, y: toNum(data.vwap_price) },
+            { x: maxTime, y: toNum(data.vwap_price) }
         ],
         borderColor: 'rgba(255, 255, 255, 0.4)',
         borderDash: [4, 4],
@@ -1521,7 +1684,7 @@ function renderDarkPoolChart(data, minSize = 10000) {
                                 `Price: $${p.price.toFixed(3)}`,
                                 `Size: ${p.size.toLocaleString()}`,
                                 `Time: ${p.time}`,
-                                `Side: ${p.side}`
+                                `Side: ${p.side || DASH}`
                             ];
                         }
                     }
@@ -1594,13 +1757,13 @@ function copyPanelData(panelId) {
 
     try {
         if (panelId === 'panel1' || panelId === 'panel2') {
-            // iFrame panels — read last known XML dump from API
+            // iFrame panels — the text of the last Data Dump (GET /dump)
             const lastDump = window._lastXmlDump || null;
             if (lastDump) {
                 payload = lastDump;
                 format = 'xml';
             } else {
-                payload = JSON.stringify({ note: 'No cached data. Click RE-SCAN ALL DATA first.', panel: PANEL_LABELS[panelId] }, null, 2);
+                payload = JSON.stringify({ note: 'No cached data. Click Data Dump in the console bar first.', panel: PANEL_LABELS[panelId] }, null, 2);
             }
         }
 
@@ -1781,10 +1944,11 @@ window._slvFlowData = null;
 
 async function loadSlvInstitutionalFlow() {
     try {
-        const res = await fetch(`${API_BASE}/api/institutional_history?ticker=SLV&limit=100`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/institutional_history?ticker=SLV&limit=100`);
         
-        if (json.status === 'success' && json.data) {
+        if (json.status !== 'success' || !json.data) {
+            log(`SLV Institutional Flow Error: ${json.message || 'no data'}`, 'error');
+        } else {
             window._slvFlowData = json.data;
             
             // Update header stats with latest values
@@ -1813,7 +1977,7 @@ async function loadSlvInstitutionalFlow() {
             log('SLV Institutional Flow ledger loaded.', 'success');
         }
     } catch (e) {
-        console.error('SLV Flow Error:', e);
+        log(`SLV Institutional Flow Error: ${e.message}`, 'error');
     }
 }
 
@@ -1942,15 +2106,14 @@ function renderSlvFlowChart(view) {
 let slvGexChartInstance = null;
 window._slvGexLiveData = null;
 
-async function loadSlvGexMap() {
-    log('Scanning SLV Dealer Options chain...', 'cmd');
+async function loadSlvGexMap(auto = false) {
+    log('Scanning SLV Dealer Options chain...', auto ? 'info' : 'cmd');
     
     try {
-        const res = await fetch(`${API_BASE}/api/gex?ticker=SLV`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/gex?ticker=SLV`);
         
-        if (json.status !== 'success') {
-            log(`SLV GEX Error: ${json.message}`, 'error');
+        if (json.status !== 'success' || !json.data) {
+            log(`SLV GEX Error: ${json.message || 'no data'}`, 'error');
             return;
         }
         
@@ -1958,10 +2121,7 @@ async function loadSlvGexMap() {
         window._slvGexLiveData = { ticker: 'SLV', ...data };
         
         // Update stats
-        document.getElementById('slvGexSpot').innerText = `$${data.spot.toFixed(2)}`;
-        document.getElementById('slvGexZero').innerText = `$${data.zeroGamma.toFixed(2)}`;
-        document.getElementById('slvGexLiveCallWall').innerText = `$${data.callWall.toFixed(2)}`;
-        document.getElementById('slvGexLivePutWall').innerText = `$${data.putWall.toFixed(2)}`;
+        setGexStats({ spot: 'slvGexSpot', zero: 'slvGexZero', call: 'slvGexLiveCallWall', put: 'slvGexLivePutWall' }, data);
         
         // Render chart (identical to SPY GEX chart pattern)
         const ctx = document.getElementById('slvGexChart').getContext('2d');
@@ -1993,14 +2153,14 @@ async function loadSlvGexMap() {
                         mode: 'index',
                         intersect: false,
                         callbacks: {
-                            label: function(context) { return `Net Gamma: ${formatCompact(context.raw.toString())}`; }
+                            label: function(context) { return `Net Gamma: ${formatCompact(context.raw)}`; }
                         }
                     }
                 },
                 scales: {
                     y: {
                         grid: { color: 'rgba(255, 255, 255, 0.1)' },
-                        ticks: { color: '#a1a1aa', font: { size: 9 }, callback: (v) => formatCompact(v.toString()) }
+                        ticks: { color: '#a1a1aa', font: { size: 9 }, callback: (v) => formatCompact(v) }
                     },
                     x: {
                         grid: { display: false },
@@ -2051,12 +2211,13 @@ window._calendarData = null;
 
 async function loadMacroCalendar() {
     try {
-        const res = await fetch(`${API_BASE}/api/macro_calendar`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/macro_calendar`);
         
         const container = document.getElementById('calendarContainer');
         
-        if (json.status === 'success' && json.events && json.events.length > 0) {
+        if (json.status !== 'success') {
+            container.innerHTML = `<div class="text-red-400 text-center text-[10px] tracking-widest py-6">Calendar unavailable: ${esc(json.message || 'error')}</div>`;
+        } else if (json.events && json.events.length > 0) {
             window._calendarData = json.events;
             container.innerHTML = '';
             
@@ -2089,7 +2250,7 @@ async function loadMacroCalendar() {
             container.innerHTML = '<div class="text-zinc-600 text-center text-[10px] uppercase tracking-widest py-6">No scheduled high-impact events.</div>';
         }
     } catch (e) {
-        console.error('Calendar Error:', e);
+        log(`Calendar Error: ${e.message}`, 'error');
     }
 }
 
@@ -2109,8 +2270,11 @@ async function loadMacroNews() {
         const articles = Array.from(xmlDoc.getElementsByTagName('article'));
         
         const container = document.getElementById('newsContainer');
+        const newsError = xmlErrorText(xmlText);
         
-        if (articles.length > 0) {
+        if (newsError !== null || !res.ok) {
+            container.innerHTML = `<div class="text-red-400 text-center text-[10px] tracking-widest py-6">News unavailable: ${esc(newsError || 'HTTP ' + res.status)}</div>`;
+        } else if (articles.length > 0) {
             window._newsData = articles.map(a => ({
                 title: a.getAttribute('title'),
                 published: a.getAttribute('published'),
@@ -2150,7 +2314,7 @@ async function loadMacroNews() {
             container.innerHTML = '<div class="text-zinc-600 text-center text-[10px] uppercase tracking-widest py-6">No headlines available.</div>';
         }
     } catch (e) {
-        console.error('News Error:', e);
+        log(`News Error: ${e.message}`, 'error');
     }
 }
 
@@ -2163,10 +2327,11 @@ window._liquidityData = null;
 
 async function loadFedLiquidity() {
     try {
-        const res = await fetch(`${API_BASE}/api/macro_ledger_full?limit=200`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/macro_ledger_full?limit=200`);
         
-        if (json.status === 'success' && json.data) {
+        if (json.status !== 'success' || !json.data) {
+            log(`Fed Liquidity Error: ${json.message || 'no data'}`, 'error');
+        } else {
             const d = json.data;
             window._liquidityData = { labels: d.labels, rrp: d.reverse_repo_bn, walcl: d.fed_balance_sheet_bn };
             
@@ -2249,7 +2414,7 @@ async function loadFedLiquidity() {
             });
         }
     } catch (e) {
-        console.error('Liquidity Error:', e);
+        log(`Fed Liquidity Error: ${e.message}`, 'error');
     }
 }
 
@@ -2262,10 +2427,11 @@ window._arbSpreadData = null;
 
 async function loadShfeArbSpread() {
     try {
-        const res = await fetch(`${API_BASE}/api/macro_ledger_full?limit=200`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/macro_ledger_full?limit=200`);
         
-        if (json.status === 'success' && json.data) {
+        if (json.status !== 'success' || !json.data) {
+            log(`Shanghai-COMEX Arb Error: ${json.message || 'no data'}`, 'error');
+        } else {
             const d = json.data;
             window._arbSpreadData = { labels: d.labels, shfe: d.shfe_silver_usd, comex: d.comex_silver, premium: d.shfe_premium };
             
@@ -2363,7 +2529,7 @@ async function loadShfeArbSpread() {
             });
         }
     } catch (e) {
-        console.error('Arb Spread Error:', e);
+        log(`Shanghai-COMEX Arb Error: ${e.message}`, 'error');
     }
 }
 
@@ -2438,7 +2604,8 @@ function _flattenDarkPool(dpData) {
     return {
         ticker: d.ticker,
         sentiment: d.sentiment?.bias,
-        vwap: Math.round((d.vwap_price || 0) * 100) / 100,
+        sentiment_method: d.sentiment?.method,
+        vwap: isNum(d.vwap_price) ? Math.round(d.vwap_price * 100) / 100 : null,
         total_block_volume: d.total_block_volume,
         total_notional_usd: d.total_notional_usd,
         largest_single_block: d.largest_single_block,
@@ -2461,7 +2628,8 @@ function _flattenGex(gexData) {
         spot: d.spot,
         call_wall: d.callWall,
         put_wall: d.putWall,
-        zero_gamma: d.zeroGamma,
+        zero_gamma: isNum(d.zeroGamma) ? d.zeroGamma : null,
+        zero_gamma_reason: isNum(d.zeroGamma) ? undefined : (d.zeroGammaReason || 'not available'),
         regime: d.spot > d.callWall ? 'ABOVE_CALL_WALL' : d.spot < d.putWall ? 'BELOW_PUT_WALL' : 'BETWEEN_WALLS',
         top_positive_gamma: topPositive,
         top_negative_gamma: topNegative
@@ -2481,21 +2649,6 @@ function _parseNewsXml(xmlText) {
     } catch { return []; }
 }
 
-// Helper: parse Eagle prices XML
-function _parseEaglesXml(xmlText) {
-    try {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(xmlText, 'text/xml');
-        return Array.from(doc.getElementsByTagName('listing')).slice(0, 10).map(node => ({
-            seller: node.getAttribute('seller'),
-            price: node.getAttribute('price'),
-            premium: node.getAttribute('premium'),
-            shipping: node.getAttribute('shipping'),
-            link: node.getAttribute('link')
-        }));
-    } catch { return []; }
-}
-
 async function dumpAllData() {
     const btnText = document.getElementById('dumpBtnText');
     const progress = document.getElementById('dumpProgress');
@@ -2506,7 +2659,8 @@ async function dumpAllData() {
     progress.style.width = '0%';
     log('Initiating full system data dump — aggregating ALL sources...', 'cmd');
     
-    // Define all fetch targets
+    // Define all fetch targets. The Silver Eagle scan is not one of them: it writes a ledger row and is a POST;
+    // the ledger itself (arbitrage_history) is already included.
     const fetches = [
         { key: 'macro_ledger_full', url: '/api/macro_ledger_full?limit=500', type: 'json' },
         { key: 'vmri_history', url: '/api/vmri_history', type: 'json' },
@@ -2522,7 +2676,6 @@ async function dumpAllData() {
         { key: 'war_room_live', url: '/api/war_room', type: 'json_post', body: { dxy_shift: 0, tnx_shift: 0, oas_shift: 0, vix_shift_pct: 0 } },
         { key: 'tactical_ruling_xml', url: '/api/dump', type: 'text' },
         { key: 'macro_news', url: '/api/macro_news', type: 'xml' },
-        { key: 'silver_eagle_prices', url: '/api/silver_eagle_prices', type: 'xml' },
     ];
     
     let completed = 0;
@@ -2546,12 +2699,22 @@ async function dumpAllData() {
             completed++;
             progress.style.width = `${(completed / total) * 100}%`;
             
+            // A 4xx/5xx answer is a failed source whose message is kept, not data
             if (f.type === 'text' || f.type === 'xml') {
                 const text = await res.text();
+                if (!res.ok) {
+                    rawResults[f.key] = { data: { error: xmlErrorText(text) || `HTTP ${res.status}`, http_status: res.status }, format: 'error' };
+                    return f.key;
+                }
                 rawResults[f.key] = { data: text, format: f.type };
                 return f.key;
             } else {
-                const json = await res.json();
+                let json = null;
+                try { json = await res.json(); } catch (e) { json = null; }
+                if (!res.ok || !json || json.status === 'error') {
+                    rawResults[f.key] = { data: { error: (json && json.message) || `HTTP ${res.status}`, http_status: res.status }, format: 'error' };
+                    return f.key;
+                }
                 rawResults[f.key] = { data: json, format: 'json' };
                 return f.key;
             }
@@ -2576,7 +2739,8 @@ async function dumpAllData() {
             dump_timestamp: new Date().toISOString(),
             purpose: "LATEST system state snapshot for LLM analysis. All values are the most recent readings from live infrastructure.",
             sources_succeeded: successCount,
-            sources_failed: errorCount
+            sources_failed: errorCount,
+            failed_sources: Object.fromEntries(Object.entries(rawResults).filter(([, r]) => r.format === 'error').map(([k, r]) => [k, r.data.error]))
         }
     };
     
@@ -2660,7 +2824,7 @@ async function dumpAllData() {
     
     // --- 10. WAR ROOM (live environment snapshot) ---
     const wr = rawResults.war_room_live?.data;
-    if (wr) {
+    if (wr) {    // on a failure this is the error message (for example the ledger input that is missing)
         // The war room response has a nested structure, extract the key fields
         clean.war_room = wr.data || wr;
     }
@@ -2671,16 +2835,11 @@ async function dumpAllData() {
     }
     
     // --- 12. MACRO NEWS (parsed to clean array) ---
-    if (rawResults.macro_news?.data) {
+    if (rawResults.macro_news?.format === 'xml') {
         clean.macro_news = _parseNewsXml(rawResults.macro_news.data);
     }
     
-    // --- 13. SILVER EAGLE PRICES ---
-    if (rawResults.silver_eagle_prices?.data) {
-        clean.silver_eagle_listings = _parseEaglesXml(rawResults.silver_eagle_prices.data);
-    }
-    
-    // --- 14. CACHED UI STATE ---
+    // --- 13. CACHED UI STATE ---
     clean.ui_state = {
         paper_physical_ratio: document.getElementById('livePaperRatio')?.innerText || null,
         paper_physical_status: document.getElementById('liveRatioStatusBanner')?.innerText || null,
@@ -2732,58 +2891,120 @@ function switchTab(tabName) {
 }
 
 // --- TIME ARBITRAGE ENGINE ---
+// Every number of this tab can be null: the server sends null plus a reason in data.missing ({"field": "reason"})
+// when it cannot compute a value. A null is shown as a dash with the reason, never as 0.
+let _arbMissing = {};
+
 async function loadTimeArbitrageData() {
-    const ticker = document.getElementById('scanTicker').value || "SPY";
+    const ticker = (document.getElementById('scanTicker').value || "SPY").trim().toUpperCase();
     try {
-        const res = await fetch(`${API_BASE}/api/time_arbitrage?ticker=${ticker}`);
-        const result = await res.json();
+        const result = await fetchJson(`${API_BASE}/api/time_arbitrage?ticker=${encodeURIComponent(ticker)}`);
         
         if (result.status === 'success') {
-            updateArbitrageUI(result.data);
+            updateArbitrageUI(result.data, ticker);
+        } else {
+            showArbError(result.message || 'Time Arbitrage data unavailable');
         }
     } catch (e) {
-        console.error("Failed to load Time Arbitrage data:", e);
+        showArbError(`Failed to load Time Arbitrage data: ${e.message}`);
     }
+    refreshWatchlistPrices();   // the wishlist's Live Px column, at most once a minute per contract
 }
 
-function updateArbitrageUI(data) {
+// The tab-wide note: an error from the route, or every reason in data.missing
+function showArbNote(html, isError) {
+    const el = document.getElementById('arbMissingNote');
+    if (!el) return;
+    el.innerHTML = html;
+    el.className = `${html ? '' : 'hidden '}px-5 pt-3 text-[10px] leading-snug ${isError ? 'text-red-400' : 'text-amber-400'}`;
+}
+function showArbError(message) {
+    console.error('Time Arbitrage:', message);
+    showArbNote(`Time Arbitrage unavailable: ${esc(message)}`, true);
+    // blank the panels: numbers of an earlier answer (maybe for another ticker) must not stay next to the error
+    _arbMissing = {};
+    updateOscillator(null, message);
+    updateTrapdoor(null, null, message);
+    updateIvBleed(null, message);
+    updateProbMatrix(null, null, message);
+    renderTrapdoorProfileChart(null, message);
+    renderTermStructure(null, message);
+    updateIvHvSpread(null, { realized: message, implied: message });
+}
+
+// Reason for a value the server left out: the first name in `names` that data.missing has, as itself or as a prefix
+// ("iv_hv_spread" also matches "iv_hv_spread.atm_implied_volatility").
+function arbReason(...names) {
+    const keys = Object.keys(_arbMissing);
+    for (const n of names) {
+        const k = keys.find(key => key === n || key.startsWith(n + '.') || key.startsWith(n + ':') || key.startsWith(n + '['));
+        if (k) return String(_arbMissing[k]);
+    }
+    return '';
+}
+
+function updateArbitrageUI(data, ticker) {
     if (!data) return;
-    // 1. Update Oscillator
-    if (data.z_score !== undefined) updateOscillator(data.z_score);
-    
-    // 2. Update Dealer Trapdoor
-    if (data.gamma_state) updateTrapdoor(data.gamma_state, data.dealer_trapdoor);
-    
-    // 3. Update IV Bleed
-    if (data.iv_bleed) updateIvBleed(data.iv_bleed);
-    
-    // 4. Update Probability Matrix
-    if (data.probabilities) updateProbMatrix(data.probabilities);
+    _arbMissing = (data.missing && typeof data.missing === 'object') ? data.missing : {};
+    const reasons = Object.entries(_arbMissing).map(([k, v]) => `${esc(k)}: ${esc(v)}`);
+    showArbNote(reasons.length ? `Not available for ${esc(data.ticker || ticker)}: ${reasons.join(' · ')}` : '', false);
 
-    // 5. Update Trapdoor Profile Map
-    if (data.dealer_trapdoor && data.dealer_trapdoor.vanna_profile) {
-        renderTrapdoorProfileChart(data.dealer_trapdoor.vanna_profile);
-    }
-
-    // 6. Update Term Structure
-    if (data.term_structure) {
-        renderTermStructure(data.term_structure);
-    }
-
-    // 7. Update IV/HV Spread
-    if (data.iv_hv_spread) {
-        updateIvHvSpread(data.iv_hv_spread);
-    }
+    updateOscillator(data.z_score, arbReason('z_score', 'oscillator'), data.z_components);
+    updateTrapdoor(data.gamma_state, data.dealer_trapdoor, arbReason('gamma_state', 'zero_gamma', 'dealer_trapdoor'));
+    updateIvBleed(data.iv_bleed, arbReason('iv_bleed'));
+    updateProbMatrix(data.probabilities, data.ticker || ticker, arbReason('probabilities'));
+    renderTrapdoorProfileChart(data.dealer_trapdoor && data.dealer_trapdoor.vanna_profile, arbReason('vanna_profile', 'dealer_trapdoor'));
+    renderTermStructure(data.term_structure, arbReason('term_structure'));
+    updateIvHvSpread(data.iv_hv_spread, {
+        realized: arbReason('realized_volatility_20d', 'iv_hv_spread'),
+        implied: arbReason('atm_implied_volatility', 'iv_hv_spread'),
+    });
 }
 
-function updateOscillator(score) {
+// Puts a short message over a chart panel that has no data (the canvas sits in a relative box), or clears it
+function setChartNote(canvasId, text) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || !canvas.parentElement) return;
+    let note = canvas.parentElement.querySelector('.chart-note');
+    if (!text) { if (note) note.remove(); return; }
+    if (!note) {
+        note = document.createElement('div');
+        note.className = 'chart-note absolute inset-0 flex items-center justify-center p-6 text-center text-zinc-600 text-[10px] uppercase tracking-widest';
+        canvas.parentElement.appendChild(note);
+    }
+    note.innerText = text;
+}
+
+// Which factors (vix, gex, dix) the score was built from, and why the others were left out
+function describeOscillatorParts(parts) {
+    if (!parts || typeof parts !== 'object') return '';
+    const used = Array.isArray(parts.used) ? parts.used.map(n => String(n).toUpperCase()) : [];
+    const left = Object.entries(parts.missing || {}).map(([n, why]) => `${n.toUpperCase()} (${why})`);
+    return (used.length ? `Built from ${used.join(' + ')}.` : 'No factor could be used.') + (left.length ? ` Left out: ${left.join('; ')}.` : '');
+}
+
+function updateOscillator(score, reason, parts) {
     const gauge = document.getElementById('oscillatorGauge');
     const needle = document.getElementById('oscillatorNeedle');
     const valueText = document.getElementById('oscillatorValue');
     const statusText = document.getElementById('oscillatorStatus');
     const signalBox = document.getElementById('oscillatorSignal');
+    const partsBox = document.getElementById('oscillatorComponents');
 
     if (!needle || !valueText) return;
+    if (partsBox) partsBox.innerText = describeOscillatorParts(parts);
+
+    if (!isNum(score)) {
+        needle.style.transform = 'rotate(0deg)';
+        valueText.innerText = DASH;
+        if (statusText) statusText.innerText = reason || 'No reading';
+        if (signalBox) {
+            signalBox.innerText = "NO READING";
+            signalBox.className = "bg-zinc-950 border border-zinc-800 px-4 py-2 rounded text-[11px] font-bold text-zinc-600 uppercase tracking-[0.2em]";
+        }
+        return;
+    }
+    score = Number(score);
 
     // Normalize -100 to +100 to -90 to 90 degrees
     const rotation = (score / 100) * 90;
@@ -2807,7 +3028,7 @@ function updateOscillator(score) {
     }
 }
 
-function updateTrapdoor(state, trapdoor) {
+function updateTrapdoor(state, trapdoor, reason) {
     const dist = document.getElementById('trapDistance');
     const distPct = document.getElementById('trapDistancePct');
     const velocity = document.getElementById('trapVelocity');
@@ -2819,17 +3040,27 @@ function updateTrapdoor(state, trapdoor) {
     const alert = document.getElementById('trapAlert');
 
     if (!dist || !velocity) return;
+    state = state || {};
 
-    dist.innerText = state.distance.toFixed(3);
-    if (distPct) distPct.innerText = `${(state.distance_pct * 100).toFixed(2)}% Distance`;
-    velocity.innerText = state.velocity.toFixed(4);
+    dist.innerText = fmt(state.distance, 3);
+    if (distPct) distPct.innerText = isNum(state.distance_pct) ? `${(state.distance_pct * 100).toFixed(2)}% Distance` : `${DASH} Distance`;
+    velocity.innerText = fmt(state.velocity, 4);
+    if (vanna) vanna.innerText = fmt(trapdoor && trapdoor.vanna_exposure, 2);
+    if (charm) charm.innerText = fmt(trapdoor && trapdoor.charm_exposure, 2);
 
-    if (trapdoor && vanna && charm) {
-        vanna.innerText = trapdoor.vanna_exposure.toFixed(2);
-        charm.innerText = trapdoor.charm_exposure.toFixed(2);
-    }
-
-    if (state.short_gamma_active) {
+    if (typeof state.short_gamma_active !== 'boolean') {
+        // no zero-gamma level (or no spot), so there is no state to report
+        if (icon) {
+            icon.innerText = "❔";
+            icon.className = "text-4xl mb-2 text-zinc-800";
+        }
+        if (title) {
+            title.innerText = "No Gamma Reading";
+            title.className = "text-sm font-bold text-zinc-500 uppercase tracking-widest mb-1";
+        }
+        if (desc) desc.innerText = reason || "The zero-gamma level is not available, so the squeeze state cannot be judged.";
+        if (alert) alert.classList.add('hidden');
+    } else if (state.short_gamma_active) {
         if (icon) {
             icon.innerText = "🌋";
             icon.className = "text-4xl mb-2 trap-active";
@@ -2854,64 +3085,71 @@ function updateTrapdoor(state, trapdoor) {
     }
 }
 
-function updateIvBleed(bleedData) {
+function updateIvBleed(bleedData, reason) {
     const container = document.getElementById('ivBleedContainer');
     if (!container) return;
-    if (!bleedData || bleedData.length === 0) {
-        container.innerHTML = '<div class="p-8 text-center text-zinc-700 text-[10px] uppercase tracking-widest">No significant bleed detected.</div>';
+    if (!Array.isArray(bleedData) || bleedData.length === 0) {
+        container.innerHTML = `<div class="p-8 text-center text-zinc-700 text-[10px] uppercase tracking-widest">${esc(reason || 'No significant bleed detected.')}</div>`;
         return;
     }
 
     container.innerHTML = bleedData.map(item => `
         <div class="grid grid-cols-4 text-[10px] p-2 border-b border-zinc-900 hover:bg-zinc-900/50 transition-colors">
-            <div class="pl-2 font-bold text-white">${item.strike}</div>
-            <div class="text-right text-purple-400">${(item.live_iv * 100).toFixed(1)}%</div>
-            <div class="text-right text-zinc-500">${(item.hist_iv * 100).toFixed(1)}%</div>
-            <div class="text-right pr-2 ${item.bleed > 0.2 ? 'text-red-500 font-bold' : 'text-zinc-400'}">${(item.bleed * 100).toFixed(1)}%</div>
+            <div class="pl-2 font-bold text-white">${esc(item.strike)}</div>
+            <div class="text-right text-purple-400">${isNum(item.live_iv) ? fmt(item.live_iv * 100, 1, '', '%') : DASH}</div>
+            <div class="text-right text-zinc-500">${isNum(item.hist_iv) ? fmt(item.hist_iv * 100, 1, '', '%') : DASH}</div>
+            <div class="text-right pr-2 ${item.bleed > 0.2 ? 'text-red-500 font-bold' : 'text-zinc-400'}">${isNum(item.bleed) ? fmt(item.bleed * 100, 1, '', '%') : DASH}</div>
         </div>
     `).join('');
 }
 
-function updateProbMatrix(probs) {
+function updateProbMatrix(probs, ticker, reason) {
     const body = document.getElementById('probMatrixBody');
     const optimalText = document.getElementById('probOptimalText');
 
     if (!body) return;
 
-    if (!probs || probs.length === 0) {
-        body.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-zinc-700 uppercase tracking-widest font-sans">No data available.</td></tr>';
+    if (!Array.isArray(probs) || probs.length === 0) {
+        body.innerHTML = `<tr><td colspan="4" class="p-8 text-center text-zinc-700 uppercase tracking-widest font-sans">${esc(reason || 'No data available.')}</td></tr>`;
+        if (optimalText) optimalText.innerText = reason || 'No optimal strike identified for the current volatility regime.';
         return;
     }
 
+    const pct = v => isNum(v) ? fmt(v * 100, 1, '', '%') : DASH;
     body.innerHTML = probs.map(p => `
         <tr class="border-b border-zinc-900/50 hover:bg-zinc-900/30">
-            <td class="p-2 pl-3 font-bold text-blue-400">${p.strike}</td>
-            <td class="p-2 text-right">${(p.prob_3d * 100).toFixed(1)}%</td>
-            <td class="p-2 text-right">${(p.prob_5d * 100).toFixed(1)}%</td>
-            <td class="p-2 text-right pr-3">${(p.prob_7d * 100).toFixed(1)}%</td>
+            <td class="p-2 pl-3 font-bold text-blue-400">${esc(p.strike)}</td>
+            <td class="p-2 text-right">${pct(p.prob_3d)}</td>
+            <td class="p-2 text-right">${pct(p.prob_5d)}</td>
+            <td class="p-2 text-right pr-3">${pct(p.prob_7d)}</td>
         </tr>
     `).join('');
 
-    if (probs[0] && optimalText) {
-        optimalText.innerText = `SPY $${probs[0].strike} Strike | ${ (probs[0].prob_3d * 100).toFixed(1) }% Base Probability | Dealer Trap Multiplier Active.`;
+    if (optimalText) {
+        // the text names the first row (as before); the ticker is the one that was scanned, not a fixed SPY
+        const first = probs[0];
+        optimalText.innerText = first && isNum(first.prob_3d)
+            ? `${ticker || DASH} $${first.strike} Strike | ${(first.prob_3d * 100).toFixed(1)}% Base Probability | Dealer Trap Multiplier Active.`
+            : (reason || 'No optimal strike identified for the current volatility regime.');
     }
 }
 
 // --- NEW INSTITUTIONAL UI RENDERERS ---
 
 let trapdoorProfileChartInstance = null;
-function renderTrapdoorProfileChart(profileData) {
+function renderTrapdoorProfileChart(profileData, reason) {
     const ctx = document.getElementById('trapdoorProfileChart')?.getContext('2d');
     if (!ctx) return;
     
-    if (trapdoorProfileChartInstance) trapdoorProfileChartInstance.destroy();
-    if (!profileData || profileData.length === 0) return;
+    if (trapdoorProfileChartInstance) { trapdoorProfileChartInstance.destroy(); trapdoorProfileChartInstance = null; }
+    if (!Array.isArray(profileData) || profileData.length === 0) { setChartNote('trapdoorProfileChart', reason || 'No vanna / charm profile'); return; }
+    setChartNote('trapdoorProfileChart', '');
     
     profileData.sort((a, b) => a.strike - b.strike);
     
     const labels = profileData.map(d => d.strike);
-    const vanna = profileData.map(d => d.vanna);
-    const charm = profileData.map(d => d.charm);
+    const vanna = profileData.map(d => toNum(d.vanna));     // a null stays a gap in the chart, not a zero bar
+    const charm = profileData.map(d => toNum(d.charm));
     
     trapdoorProfileChartInstance = new Chart(ctx, {
         type: 'bar',
@@ -2964,12 +3202,15 @@ function renderTrapdoorProfileChart(profileData) {
 }
 
 let termStructureChartInstance = null;
-function renderTermStructure(termData) {
+function renderTermStructure(termData, reason) {
     const ctx = document.getElementById('termStructureChart')?.getContext('2d');
     if (!ctx) return;
     
-    if (termStructureChartInstance) termStructureChartInstance.destroy();
-    if (!termData || termData.length === 0) return;
+    if (termStructureChartInstance) { termStructureChartInstance.destroy(); termStructureChartInstance = null; }
+    // an expiry with no implied volatility is left out, never drawn as 0%
+    termData = Array.isArray(termData) ? termData.filter(d => isNum(d.iv) && isNum(d.days)) : [];
+    if (termData.length === 0) { setChartNote('termStructureChart', reason || 'No term structure'); return; }
+    setChartNote('termStructureChart', '');
     
     termData.sort((a, b) => a.days - b.days);
     
@@ -3021,18 +3262,28 @@ function renderTermStructure(termData) {
     });
 }
 
-function updateIvHvSpread(spreadData) {
+function updateIvHvSpread(spreadData, reasons) {
     const elRealized = document.getElementById('spreadRealized');
     const elImplied = document.getElementById('spreadImplied');
     const elStatus = document.getElementById('spreadStatus');
     
     if (!elRealized || !elImplied || !elStatus) return;
+    spreadData = spreadData || {};
+    reasons = reasons || {};
     
-    const hv = spreadData.realized_volatility_20d * 100;
-    const iv = spreadData.atm_implied_volatility * 100;
+    const hv = isNum(spreadData.realized_volatility_20d) ? spreadData.realized_volatility_20d * 100 : null;
+    const iv = isNum(spreadData.atm_implied_volatility) ? spreadData.atm_implied_volatility * 100 : null;
     
-    elRealized.innerText = hv.toFixed(1) + '%';
-    elImplied.innerText = iv.toFixed(1) + '%';
+    elRealized.innerText = hv === null ? DASH : hv.toFixed(1) + '%';
+    elRealized.title = hv === null ? (reasons.realized || 'realized volatility not available') : '';
+    elImplied.innerText = iv === null ? DASH : iv.toFixed(1) + '%';
+    elImplied.title = iv === null ? (reasons.implied || 'implied volatility not available') : '';
+    
+    if (hv === null || iv === null) {
+        elStatus.innerText = `SPREAD UNAVAILABLE${(hv === null ? reasons.realized : reasons.implied) ? ': ' + (hv === null ? reasons.realized : reasons.implied) : ''}`;
+        elStatus.className = "bg-zinc-950 border border-zinc-800 rounded p-4 text-center font-bold text-[12px] uppercase tracking-widest text-zinc-600";
+        return;
+    }
     
     const diff = iv - hv;
     
@@ -3072,15 +3323,14 @@ async function loadOptionChain(expChangeOnly = false) {
     if (!ticker) return;
     const expiry = document.getElementById('explorerExpiry').value;
     const chainBody = document.getElementById('explorerChainBody');
-    chainBody.innerHTML = `<div class="p-8 text-center text-zinc-600 text-[10px] uppercase tracking-widest animate-pulse">Fetching ${ticker} chain...</div>`;
+    chainBody.innerHTML = `<div class="p-8 text-center text-zinc-600 text-[10px] uppercase tracking-widest animate-pulse">Fetching ${esc(ticker)} chain...</div>`;
 
     try {
-        let url = `${API_BASE}/api/option_chain?ticker=${ticker}`;
-        if (expiry) url += `&expiration=${expiry}`;
-        const res = await fetch(url);
-        const result = await res.json();
-        if (result.status !== 'success') {
-            chainBody.innerHTML = `<div class="p-8 text-center text-red-500 text-[10px]">${result.message}</div>`;
+        let url = `${API_BASE}/api/option_chain?ticker=${encodeURIComponent(ticker)}`;
+        if (expiry) url += `&expiration=${encodeURIComponent(expiry)}`;
+        const result = await fetchJson(url);
+        if (result.status !== 'success' || !result.data) {
+            chainBody.innerHTML = `<div class="p-8 text-center text-red-500 text-[10px]">${esc(result.message || 'Option chain unavailable')}</div>`;
             return;
         }
         const data = result.data;
@@ -3089,19 +3339,19 @@ async function loadOptionChain(expChangeOnly = false) {
         _explorerCurrentExp = data.selected_expiration;
 
         // Populate spot
-        document.getElementById('explorerSpotPrice').innerText = `$${data.spot.toFixed(2)}`;
+        document.getElementById('explorerSpotPrice').innerText = fmt(data.spot, 2, '$');
 
         // Populate expiry dropdown (only if fresh ticker load)
         if (!expChangeOnly || document.getElementById('explorerExpiry').options.length <= 1) {
             const sel = document.getElementById('explorerExpiry');
-            sel.innerHTML = data.expirations.map(e =>
-                `<option value="${e}" ${e === data.selected_expiration ? 'selected' : ''}>${e}</option>`
+            sel.innerHTML = (data.expirations || []).map(e =>
+                `<option value="${esc(e)}" ${e === data.selected_expiration ? 'selected' : ''}>${esc(e)}</option>`
             ).join('');
         }
 
         renderChainTable();
     } catch (e) {
-        chainBody.innerHTML = `<div class="p-8 text-center text-red-500 text-[10px]">Error: ${e.message}</div>`;
+        chainBody.innerHTML = `<div class="p-8 text-center text-red-500 text-[10px]">Error: ${esc(e.message)}</div>`;
     }
 }
 
@@ -3109,7 +3359,7 @@ function renderChainTable() {
     const chainBody = document.getElementById('explorerChainBody');
     if (!_explorerChainData) return;
     const contracts = _explorerType === 'call' ? _explorerChainData.calls : _explorerChainData.puts;
-    const spot = _explorerChainData.spot;
+    const spot = toNum(_explorerChainData.spot);
 
     if (!contracts || contracts.length === 0) {
         chainBody.innerHTML = '<div class="p-8 text-center text-zinc-700 text-[10px]">No contracts found.</div>';
@@ -3117,22 +3367,43 @@ function renderChainTable() {
     }
 
     chainBody.innerHTML = contracts.map(c => {
-        const isATM = Math.abs(c.strike - spot) / spot < 0.01;
-        const isITM = (_explorerType === 'call') ? c.strike < spot : c.strike > spot;
+        // a quote the feed did not give is null: shown as a dash (and 0 is sent when the row is clicked, which asks for the chain's own price)
+        const isATM = spot !== null && Math.abs(c.strike - spot) / spot < 0.01;
+        const isITM = spot !== null && ((_explorerType === 'call') ? c.strike < spot : c.strike > spot);
         const rowBg = isATM ? 'bg-indigo-900/20' : isITM ? 'bg-zinc-900/40' : '';
         const strikeColor = isATM ? 'text-indigo-300 font-bold' : isITM ? 'text-white' : 'text-zinc-400';
-        const ivColor = c.iv > 0.5 ? 'text-red-400' : c.iv > 0.3 ? 'text-amber-400' : 'text-green-400';
-        return `<div onclick="selectContract(${c.strike}, '${_explorerCurrentExp}', '${_explorerType}', ${c.last})"
+        const ivColor = !isNum(c.iv) ? 'text-zinc-600' : c.iv > 0.5 ? 'text-red-400' : c.iv > 0.3 ? 'text-amber-400' : 'text-green-400';
+        return `<div onclick="selectContract(${Number(c.strike)}, '${esc(_explorerCurrentExp)}', '${_explorerType}', ${isNum(c.last) ? Number(c.last) : 0})"
             class="grid grid-cols-6 text-[10px] px-3 py-1.5 border-b border-zinc-900/50 hover:bg-indigo-900/20 cursor-pointer transition-colors ${rowBg}">
-            <div class="${strikeColor}">${c.strike}${isATM ? ' ◀' : ''}</div>
-            <div class="text-right text-zinc-300 font-mono">${c.last.toFixed(2)}</div>
-            <div class="text-right text-zinc-500 font-mono">${c.bid.toFixed(2)}</div>
-            <div class="text-right text-zinc-500 font-mono">${c.ask.toFixed(2)}</div>
-            <div class="text-right ${ivColor} font-mono">${(c.iv * 100).toFixed(1)}%</div>
-            <div class="text-right text-zinc-600 font-mono">${c.oi.toLocaleString()}</div>
+            <div class="${strikeColor}">${esc(c.strike)}${isATM ? ' ◀' : ''}</div>
+            <div class="text-right text-zinc-300 font-mono">${fmt(c.last, 2)}</div>
+            <div class="text-right text-zinc-500 font-mono">${fmt(c.bid, 2)}</div>
+            <div class="text-right text-zinc-500 font-mono">${fmt(c.ask, 2)}</div>
+            <div class="text-right ${ivColor} font-mono">${isNum(c.iv) ? fmt(c.iv * 100, 1, '', '%') : DASH}</div>
+            <div class="text-right text-zinc-600 font-mono">${isNum(c.oi) ? Number(c.oi).toLocaleString() : DASH}</div>
         </div>`;
     }).join('');
 }
+
+// The result fields of /api/option_calc and the element that shows each. A null field shows a dash; data.missing says why.
+const EX_FIELDS = [
+    ['exMoneyness', d => d.moneyness ?? DASH],
+    ['exMarketPx', d => fmt(d.market_price, 2, '$')],
+    ['exBSPx', d => fmt(d.bs_price, 2, '$')],
+    ['exProbITM', d => fmt(d.prob_itm, 1, '', '%')],
+    ['exProbOTM', d => fmt(d.prob_otm, 1, '', '%')],
+    ['exDelta', d => fmt(d.delta, 4)],
+    ['exGamma', d => fmt(d.gamma, 6)],
+    ['exTheta', d => fmt(d.theta, 4, '$')],
+    ['exVega', d => fmt(d.vega, 4, '$')],
+    ['exRho', d => fmt(d.rho, 4, '$')],
+    ['exBreakeven', d => fmt(d.breakeven, 2, '$')],
+    ['exExpMove', d => fmt(d.expected_move, 2, '±$')],
+    ['exIntrinsic', d => fmt(d.intrinsic, 4, '$')],
+    ['exExtrinsic', d => fmt(d.extrinsic, 4, '$')],
+    ['exIV', d => fmt(d.iv_pct, 1, '', '%')],
+    ['exHV', d => fmt(d.hv_pct, 1, '', '%')],
+];
 
 async function selectContract(strike, expiration, type, marketPrice) {
     const ticker = _explorerCurrentTicker;
@@ -3140,33 +3411,44 @@ async function selectContract(strike, expiration, type, marketPrice) {
     document.getElementById('explorerMetrics').classList.remove('hidden');
     document.getElementById('explorerMetrics').classList.add('flex');
     document.getElementById('explorerContractLabel').innerText = `${ticker} $${strike} ${type.toUpperCase()} exp ${expiration}`;
+    // clear the figures of the previous contract so they never sit next to this contract's label
+    EX_FIELDS.forEach(([id]) => { const el = document.getElementById(id); if (el) el.innerText = ''; });
     document.getElementById('exProbITM').innerText = '...';
+    const signal = document.getElementById('exIVSignal');
+    signal.innerText = 'LOADING...';
+    signal.className = 'p-3 text-center font-bold text-[11px] uppercase tracking-widest bg-zinc-950 border-t border-zinc-900 text-zinc-600';
+    _lastAnalyticsData = null;
 
     try {
-        const url = `${API_BASE}/api/option_calc?ticker=${ticker}&strike=${strike}&expiration=${expiration}&type=${type}&market_price=${marketPrice}`;
-        const res = await fetch(url);
-        const result = await res.json();
-        if (result.status !== 'success') {
-            document.getElementById('exIVSignal').innerText = result.message;
+        const url = `${API_BASE}/api/option_calc?ticker=${encodeURIComponent(ticker)}&strike=${encodeURIComponent(strike)}&expiration=${encodeURIComponent(expiration)}&type=${encodeURIComponent(type)}&market_price=${encodeURIComponent(marketPrice)}`;
+        const result = await fetchJson(url);
+        if (result.status !== 'success' || !result.data) {
+            // for example the 422 that says the chain has no implied volatility for this contract
+            EX_FIELDS.forEach(([id]) => { const el = document.getElementById(id); if (el) el.innerText = DASH; });
+            signal.innerText = result.message || 'Analytics unavailable';
+            signal.className = 'p-3 text-center font-bold text-[11px] tracking-wide bg-zinc-950 border-t border-zinc-900 text-red-500';
             return;
         }
         const d = result.data;
-        document.getElementById('explorerContractLabel').innerText = `${d.option_type} ${ticker} $${strike} | Exp ${expiration} | Spot $${d.spot}`;
-        document.getElementById('exMoneyness').innerText = d.moneyness;
-        document.getElementById('exDays').innerText = `${d.days_to_exp} days`;
-        document.getElementById('exMarketPx').innerText = `$${d.market_price.toFixed(2)}`;
-        document.getElementById('exBSPx').innerText = `$${d.bs_price.toFixed(2)}`;
-        document.getElementById('exProbITM').innerText = `${d.prob_itm.toFixed(1)}%`;
-        document.getElementById('exProbOTM').innerText = `${d.prob_otm.toFixed(1)}%`;
-        document.getElementById('exDelta').innerText = d.delta.toFixed(4);
-        document.getElementById('exGamma').innerText = d.gamma.toFixed(6);
-        document.getElementById('exTheta').innerText = `$${d.theta.toFixed(4)}`;
-        document.getElementById('exVega').innerText = `$${d.vega.toFixed(4)}`;
-        document.getElementById('exRho').innerText = `$${d.rho.toFixed(4)}`;
-        document.getElementById('exBreakeven').innerText = `$${d.breakeven.toFixed(2)}`;
+        document.getElementById('explorerContractLabel').innerText = `${d.option_type || type.toUpperCase()} ${ticker} $${strike} | Exp ${expiration} | Spot ${fmt(d.spot, 2, '$')}`;
+        document.getElementById('exDays').innerText = isNum(d.days_to_exp) ? `${d.days_to_exp} days` : DASH;
+        EX_FIELDS.forEach(([id, f]) => { const el = document.getElementById(id); if (el) el.innerText = f(d); });
+        // the IV vs HV banner: the signal, or the reason there is none
+        const missingMap = (d.missing && typeof d.missing === 'object') ? d.missing : {};
+        const why = missingMap.hv_pct || missingMap.iv_signal || Object.values(missingMap)[0];   // the root cause first
+        if (d.iv_signal) {
+            signal.innerText = d.iv_signal;
+            signal.className = `p-3 text-center font-bold text-[11px] uppercase tracking-widest bg-zinc-950 border-t border-zinc-900 ${/OVERPRICED/.test(d.iv_signal) ? 'text-red-400' : /UNDERPRICED/.test(d.iv_signal) ? 'text-green-400' : 'text-zinc-400'}`;
+        } else {
+            signal.innerText = why ? `IV vs HV unavailable: ${why}` : 'IV vs HV unavailable';
+            signal.className = 'p-3 text-center font-bold text-[11px] tracking-wide bg-zinc-950 border-t border-zinc-900 text-zinc-500';
+        }
+        signal.title = Object.entries(missingMap).map(([k, v]) => `${k}: ${v}`).join('\n');
         _lastAnalyticsData = d; // Store for watchlist
     } catch(e) {
-        document.getElementById('exIVSignal').innerText = `Error: ${e.message}`;
+        EX_FIELDS.forEach(([id]) => { const el = document.getElementById(id); if (el) el.innerText = DASH; });
+        signal.innerText = `Error: ${e.message}`;
+        signal.className = 'p-3 text-center font-bold text-[11px] tracking-wide bg-zinc-950 border-t border-zinc-900 text-red-500';
     }
 }
 
@@ -3174,13 +3456,22 @@ async function selectContract(strike, expiration, type, marketPrice) {
 // --- INSTITUTIONAL WATCHLIST ---
 // ==========================================
 
+function readWatchlist() {
+    try { return JSON.parse(localStorage.getItem('optionsWatchlist') || '[]'); }
+    catch (e) { return []; }
+}
+function writeWatchlist(list) {
+    try { localStorage.setItem('optionsWatchlist', JSON.stringify(list)); }
+    catch (e) { log(`The wishlist could not be saved in this browser: ${e.message}`, 'error'); }
+}
+
 function addToWatchlist() {
     if (!_lastAnalyticsData) {
         alert("Select an option first to generate analytics.");
         return;
     }
 
-    const watchlist = JSON.parse(localStorage.getItem('optionsWatchlist') || '[]');
+    const watchlist = readWatchlist();
     
     // Create a unique ID
     const id = `${_explorerCurrentTicker}_${_lastAnalyticsData.strike}_${_lastAnalyticsData.option_type}_${_lastAnalyticsData.expiration}`;
@@ -3197,15 +3488,16 @@ function addToWatchlist() {
         strike: _lastAnalyticsData.strike,
         type: _lastAnalyticsData.option_type,
         expiry: _lastAnalyticsData.expiration,
-        addedPrice: _lastAnalyticsData.market_price,
+        addedPrice: toNum(_lastAnalyticsData.market_price),   // null when the chain had no price: Change (%) then shows a dash
         addedDate: new Date().toLocaleString(),
         analytics: _lastAnalyticsData,
         timestamp: Date.now()
     };
 
     watchlist.push(newItem);
-    localStorage.setItem('optionsWatchlist', JSON.stringify(watchlist));
+    writeWatchlist(watchlist);
     renderWatchlist();
+    refreshWatchlistPrices();
     
     // UI Feedback
     const btn = event.target;
@@ -3218,9 +3510,36 @@ function addToWatchlist() {
     }, 2000);
 }
 
+// Current price of each saved contract: GET /api/option_calc with market_price=0 answers the chain's last price as market_price.
+// _wlLive holds the latest answer per contract id: { px, at } or { error, at }. An answer younger than WL_FRESH_MS is reused.
+const WL_FRESH_MS = 60 * 1000;
+const _wlLive = {};
+let _wlRefreshing = false;
+let _wlRefreshAgain = false;
+
+const wlExpired = item => !!item.expiry && item.expiry < new Date().toISOString().slice(0, 10);
+
+function wlCells(item) {
+    const live = _wlLive[item.id];
+    const added = toNum(item.addedPrice);
+    const px = live && live.px !== undefined ? toNum(live.px) : null;
+    let liveHtml;
+    if (px !== null) liveHtml = `<span class="text-white">${fmt(px, 2, '$')}</span>`;
+    else if (wlExpired(item)) liveHtml = `<span class="text-zinc-600" title="the contract has expired">${DASH}</span>`;
+    else if (live && live.error) liveHtml = `<span class="text-zinc-600" title="${esc(live.error)}">${DASH}</span>`;
+    else liveHtml = `<span class="text-zinc-600" title="${_wlRefreshing ? 'loading' : 'not loaded yet: it loads while this tab is open'}">${_wlRefreshing ? '…' : DASH}</span>`;
+    let changeHtml = `<span class="text-zinc-600">${DASH}</span>`;
+    if (px !== null && added !== null && added > 0) {
+        const change = (px - added) / added * 100;
+        changeHtml = `<span class="${change >= 0 ? 'text-green-400' : 'text-red-400'}">${change.toFixed(2)}%</span>`;
+    }
+    return { liveHtml, changeHtml };
+}
+
 function renderWatchlist() {
     const body = document.getElementById('wishlistBody');
-    const watchlist = JSON.parse(localStorage.getItem('optionsWatchlist') || '[]');
+    if (!body) return;
+    const watchlist = readWatchlist();
 
     if (watchlist.length === 0) {
         body.innerHTML = `<tr><td colspan="6" class="p-8 text-center text-zinc-700 uppercase tracking-widest">Wishlist is empty</td></tr>`;
@@ -3228,24 +3547,23 @@ function renderWatchlist() {
     }
 
     body.innerHTML = watchlist.map((item, index) => {
-        const currentPrice = item.analytics.market_price; // In a real app we'd fetch live here
-        const change = ((currentPrice - item.addedPrice) / item.addedPrice * 100).toFixed(2);
-        const changeClass = change >= 0 ? 'text-green-400' : 'text-red-400';
+        const { liveHtml, changeHtml } = wlCells(item);
+        const added = toNum(item.addedPrice);
         
         return `
-            <tr class="border-b border-zinc-900/50 hover:bg-zinc-900/30 transition-colors group">
+            <tr class="border-b border-zinc-900/50 hover:bg-zinc-900/30 transition-colors group" data-wl-id="${esc(item.id)}">
                 <td class="py-3 px-1">
-                    <div class="font-bold text-white">${item.ticker} $${item.strike} ${item.type}</div>
-                    <div class="text-[8px] text-zinc-500">${item.expiry}</div>
+                    <div class="font-bold text-white">${esc(item.ticker)} $${esc(item.strike)} ${esc(item.type)}</div>
+                    <div class="text-[8px] text-zinc-500">${esc(item.expiry)}</div>
                 </td>
-                <td class="text-right font-mono text-zinc-400">$${item.addedPrice.toFixed(2)}</td>
-                <td class="text-right font-mono text-white">$${currentPrice.toFixed(2)}</td>
-                <td class="text-right font-mono ${changeClass}">${change}%</td>
-                <td class="text-right text-zinc-500">${item.addedDate}</td>
+                <td class="text-right font-mono text-zinc-400">${fmt(added, 2, '$')}</td>
+                <td class="text-right font-mono wl-live">${liveHtml}</td>
+                <td class="text-right font-mono wl-change">${changeHtml}</td>
+                <td class="text-right text-zinc-500">${esc(item.addedDate)}</td>
                 <td class="text-right">
                     <div class="flex justify-end gap-2">
-                        <button onclick="showWatchlistDetail('${item.id}')" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded text-[8px] uppercase font-bold">Details</button>
-                        <button onclick="removeFromWatchlist('${item.id}')" class="bg-red-900/20 hover:bg-red-900/40 text-red-500 px-2 py-1 rounded text-[8px] uppercase font-bold">Remove</button>
+                        <button onclick="showWatchlistDetail('${esc(item.id)}')" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded text-[8px] uppercase font-bold">Details</button>
+                        <button onclick="removeFromWatchlist('${esc(item.id)}')" class="bg-red-900/20 hover:bg-red-900/40 text-red-500 px-2 py-1 rounded text-[8px] uppercase font-bold">Remove</button>
                     </div>
                 </td>
             </tr>
@@ -3253,10 +3571,45 @@ function renderWatchlist() {
     }).join('');
 }
 
+// Fetches the current price of every saved contract that has no answer younger than a minute (all of them when `force`).
+// One contract at a time: each call reads a live option chain. The rows are updated in place as the answers arrive.
+async function refreshWatchlistPrices(force = false) {
+    if (_wlRefreshing) { _wlRefreshAgain = true; return; }   // a contract added meanwhile is picked up when this pass ends
+    const items = readWatchlist().filter(item => !wlExpired(item));
+    const due = items.filter(item => force || !_wlLive[item.id] || Date.now() - _wlLive[item.id].at > WL_FRESH_MS);
+    if (due.length === 0) return;
+    _wlRefreshing = true;
+    try {
+        for (const item of due) {
+            try {
+                const url = `${API_BASE}/api/option_calc?ticker=${encodeURIComponent(item.ticker)}&strike=${encodeURIComponent(item.strike)}`
+                    + `&expiration=${encodeURIComponent(item.expiry)}&type=${encodeURIComponent(String(item.type).toLowerCase())}&market_price=0`;
+                const r = await fetchJson(url);
+                const px = r.status === 'success' && r.data ? toNum(r.data.market_price) : null;
+                _wlLive[item.id] = px !== null ? { px, at: Date.now() }
+                    : { error: r.status === 'success' ? 'the chain has no price for this contract' : (r.message || 'price unavailable'), at: Date.now() };
+            } catch (e) {
+                _wlLive[item.id] = { error: e.message, at: Date.now() };
+            }
+            // update this row in place (the list may have changed while the request was out)
+            const row = [...document.querySelectorAll('#wishlistBody tr[data-wl-id]')].find(tr => tr.dataset.wlId === item.id);
+            if (row) {
+                const { liveHtml, changeHtml } = wlCells(item);
+                row.querySelector('.wl-live').innerHTML = liveHtml;
+                row.querySelector('.wl-change').innerHTML = changeHtml;
+            }
+        }
+    } finally {
+        _wlRefreshing = false;
+        if (_wlRefreshAgain) { _wlRefreshAgain = false; setTimeout(() => refreshWatchlistPrices(), 0); }
+    }
+}
+
 function removeFromWatchlist(id) {
-    let watchlist = JSON.parse(localStorage.getItem('optionsWatchlist') || '[]');
+    let watchlist = readWatchlist();
     watchlist = watchlist.filter(item => item.id !== id);
-    localStorage.setItem('optionsWatchlist', JSON.stringify(watchlist));
+    writeWatchlist(watchlist);
+    delete _wlLive[id];
     renderWatchlist();
     
     // If we are in the detail view, close it
@@ -3266,11 +3619,10 @@ function removeFromWatchlist(id) {
 }
 
 function showWatchlistDetail(id) {
-    const watchlist = JSON.parse(localStorage.getItem('optionsWatchlist') || '[]');
-    const item = watchlist.find(i => i.id === id);
+    const item = readWatchlist().find(i => i.id === id);
     if (!item) return;
 
-    const d = item.analytics;
+    const d = item.analytics || {};
     const title = `${item.ticker} $${item.strike} ${item.type} | Exp ${item.expiry}`;
     
     const html = `
@@ -3278,50 +3630,50 @@ function showWatchlistDetail(id) {
             <div class="grid grid-cols-2 gap-4">
                 <div class="bg-zinc-900/50 p-3 rounded border border-zinc-800">
                     <div class="text-[8px] text-zinc-500 uppercase">Prob. ITM</div>
-                    <div class="text-xl font-bold text-green-400">${d.prob_itm.toFixed(1)}%</div>
+                    <div class="text-xl font-bold text-green-400">${fmt(d.prob_itm, 1, '', '%')}</div>
                 </div>
                 <div class="bg-zinc-900/50 p-3 rounded border border-zinc-800">
                     <div class="text-[8px] text-zinc-500 uppercase">Prob. OTM</div>
-                    <div class="text-xl font-bold text-red-400">${d.prob_otm.toFixed(1)}%</div>
+                    <div class="text-xl font-bold text-red-400">${fmt(d.prob_otm, 1, '', '%')}</div>
                 </div>
             </div>
             
             <div class="grid grid-cols-3 gap-2">
                 <div class="text-center">
                     <div class="text-[7px] text-zinc-500 uppercase">Delta</div>
-                    <div class="text-xs font-mono text-white">${d.delta.toFixed(4)}</div>
+                    <div class="text-xs font-mono text-white">${fmt(d.delta, 4)}</div>
                 </div>
                 <div class="text-center">
                     <div class="text-[7px] text-zinc-500 uppercase">Gamma</div>
-                    <div class="text-xs font-mono text-white">${d.gamma.toFixed(6)}</div>
+                    <div class="text-xs font-mono text-white">${fmt(d.gamma, 6)}</div>
                 </div>
                 <div class="text-center">
                     <div class="text-[7px] text-zinc-500 uppercase">Theta</div>
-                    <div class="text-xs font-mono text-white">${d.theta.toFixed(4)}</div>
+                    <div class="text-xs font-mono text-white">${fmt(d.theta, 4)}</div>
                 </div>
             </div>
 
             <div class="pt-4 border-t border-zinc-800">
                 <div class="flex justify-between text-[10px] mb-1">
                     <span class="text-zinc-500 uppercase">Breakeven</span>
-                    <span class="text-white font-mono">$${d.breakeven.toFixed(2)}</span>
+                    <span class="text-white font-mono">${fmt(d.breakeven, 2, '$')}</span>
                 </div>
                 <div class="flex justify-between text-[10px] mb-1">
                     <span class="text-zinc-500 uppercase">Expected Move</span>
-                    <span class="text-white font-mono">±$${d.expected_move.toFixed(2)}</span>
+                    <span class="text-white font-mono">${fmt(d.expected_move, 2, '±$')}</span>
                 </div>
                 <div class="flex justify-between text-[10px] mb-1">
                     <span class="text-zinc-500 uppercase">Intrinsic Val</span>
-                    <span class="text-green-400 font-mono">$${d.intrinsic.toFixed(4)}</span>
+                    <span class="text-green-400 font-mono">${fmt(d.intrinsic, 4, '$')}</span>
                 </div>
                 <div class="flex justify-between text-[10px]">
                     <span class="text-zinc-500 uppercase">Extrinsic Val</span>
-                    <span class="text-purple-400 font-mono">$${d.extrinsic.toFixed(4)}</span>
+                    <span class="text-purple-400 font-mono">${fmt(d.extrinsic, 4, '$')}</span>
                 </div>
             </div>
 
             <div class="mt-6">
-                <button onclick="removeFromWatchlist('${id}')" class="w-full bg-red-900/20 hover:bg-red-900/40 text-red-500 font-bold py-2 rounded text-[10px] uppercase tracking-widest transition-all">
+                <button onclick="removeFromWatchlist('${esc(id)}')" class="w-full bg-red-900/20 hover:bg-red-900/40 text-red-500 font-bold py-2 rounded text-[10px] uppercase tracking-widest transition-all">
                     Remove from Watchlist
                 </button>
             </div>
@@ -3337,69 +3689,8 @@ function showWatchlistDetail(id) {
 // ==========================================
 // --- HELP MODAL INTELLIGENCE SYSTEM ---
 // ==========================================
+// Help texts for the Time Arbitrage panels (the "?" buttons). The Macro Direction panels have no help button.
 const panelHelp = {
-    // Macro Tab
-    "panel1": {
-        title: "Macro Risk Index (VMRI)",
-        desc: "The Vlad Macro Risk Index (VMRI) is our proprietary systemic stress measure. It aggregates Volatility (VIX), Dollar Strength (DXY), and Credit Spreads (HY OAS). High VMRI (red) indicates systemic fragility; low VMRI (green) indicates stability."
-    },
-    "panel2": {
-        title: "COMEX Physical Inventory",
-        desc: "Tracks the registered vs eligible silver inventory at the COMEX. Sharp drops in 'Registered' silver often precede physical squeezes and high price volatility."
-    },
-    "panel3": {
-        title: "War Room: Scenario Engine",
-        desc: "A what-if calculator for the Vlad Macro Risk Index. VMRI = (DXY × 10Y yield ÷ 1.61) × (HY OAS ÷ 4) × (VIX ÷ 20). Move any of the four inputs, or apply a 1970s / 2008 / 2020 preset, to see the score, its risk tier and where it would sit among recorded readings. Click ? Guide in the card for each variable."
-    },
-    "panel4": {
-        title: "Institutional Options Scanner",
-        desc: "Real-time feed of large institutional options orders (Whales). Focus on high premium (> \k) and High Vol/OI ratio orders to spot smart money positioning."
-    },
-    "panel5": {
-        title: "Macro Catalyst Calendar",
-        desc: "Upcoming macroeconomic events (CPI, FOMC, Payrolls). High impact events are highlighted. Markets typically 'front-run' these events 48 hours in advance."
-    },
-    "panel6": {
-        title: "Dealer Map (GEX)",
-        desc: "Gamma Exposure (GEX) profile. Shows where market makers are forced to buy or sell to hedge their books. Price magnets usually exist at large Call/Put walls."
-    },
-    "panel7": {
-        title: "Dark Pool Tape",
-        desc: "Real-time feed of off-exchange institutional trades. These 'hidden' trades often represent large accumulation or distribution by banks and hedge funds."
-    },
-    "panel8": {
-        title: "Dark Pool Visualizer",
-        desc: "A graphical representation of dark pool activity over the last 24 hours. Bubbles represent trade size. Clusters of large trades indicate institutional interest levels."
-    },
-    "panel9": {
-        title: "SLV Institutional Flow",
-        desc: "Historical tracking of dark pool sentiment specifically for the iShares Silver Trust (SLV). Correlates institutional buying with future price movements."
-    },
-    "panel10": {
-        title: "Economic Intelligence Feed",
-        desc: "Consolidated macro news with AI-driven sentiment analysis. Headlines are tagged BULLISH or BEARISH based on their likely impact on market liquidity."
-    },
-    "panel11": {
-        title: "Physical Market Premiums",
-        desc: "Tracks the premium of physical silver bullion over the paper spot price. Rising premiums indicate physical supply-demand imbalances."
-    },
-    "panel12": {
-        title: "Volatility Term Structure",
-        desc: "Compares front-month volatility to back-month. Backwardation (front > back) usually signals an imminent market crash or extreme fear."
-    },
-    "panel13": {
-        title: "Liquidity Provider Heatmap",
-        desc: "Visualizes the depth of the order book across major exchanges. Used to identify 'liquidity pockets' where price is likely to accelerate."
-    },
-    "panel15": {
-        title: "Engine Positions",
-        desc: "Every position the execution engine has output (including CASH), newest first; ✉ = recovered from sent report emails. Entry is the bid/ask mid when suggested. +1D/+1W/+2W are the % change from entry at the first trading day on/after each horizon: plain values are recorded market mids (captured by each pipeline run), ~ values are model estimates (Black-Scholes at that day's SPY close using the IV implied by the entry price), and horizons past expiration use intrinsic value at the expiry close. CASH rows show SPY's move instead. Now = live mid for open positions. ★ marks favorites; ✕ stops tracking (history stays in the database)."
-    },
-    "panel14": {
-        title: "Shanghai-COMEX Arb Spread",
-        desc: "Calculates the price difference between the Shanghai Gold Exchange (SGE) and COMEX. A high positive spread (Shanghai higher) often pulls silver higher globally."
-    },
-
     // Time Arbitrage Tab
     "arbPanel1": {
         title: "Capacity Constraint Oscillator",
@@ -3481,13 +3772,12 @@ async function loadPositions() {
     const body = document.getElementById('positionsBody');
     if (!body) return;
     try {
-        const res = await fetch(`${API_BASE}/api/positions`);
-        const json = await res.json();
+        const json = await fetchJson(`${API_BASE}/api/positions`);   // a 503 body says the database is not set up yet
         if (json.status !== 'success') throw new Error(json.message || 'load failed');
         window._positionsData = json.data;
         renderPositions();
     } catch (e) {
-        body.innerHTML = `<tr><td colspan="9" class="py-3 text-red-400">Positions unavailable: ${e.message}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="9" class="py-3 text-red-400">Positions unavailable: ${esc(e.message)}</td></tr>`;
     }
 }
 
@@ -3546,21 +3836,21 @@ function renderPositions() {
 }
 
 async function togglePositionStar(id) {
-    const res = await fetch(`${API_BASE}/api/positions/${id}/star`, { method: 'POST' });
-    const json = await res.json();
-    if (json.status === 'success' && window._positionsData) {
-        const p = window._positionsData.find(x => x.signal_id === id);
-        if (p) p.starred = json.starred ? 1 : 0;
-        renderPositions();
-    }
+    try {
+        const json = await fetchJson(`${API_BASE}/api/positions/${id}/star`, { method: 'POST' });
+        if (json.status !== 'success') { log(`Star failed: ${json.message || 'error'}`, 'error'); return; }
+        const p = (window._positionsData || []).find(x => x.signal_id === id);
+        if (p) { p.starred = json.starred ? 1 : 0; renderPositions(); }
+    } catch (e) { log(`Star failed: ${e.message}`, 'error'); }
 }
 
 async function deletePosition(id) {
     const p = (window._positionsData || []).find(x => x.signal_id === id);
     if (!confirm(`Stop tracking ${p ? (p.contract || 'CASH') + ' from ' + new Date(p.created_at).toLocaleString() : 'this position'}?`)) return;
-    const res = await fetch(`${API_BASE}/api/positions/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-        window._positionsData = window._positionsData.filter(x => x.signal_id !== id);
+    try {
+        const json = await fetchJson(`${API_BASE}/api/positions/${id}`, { method: 'DELETE' });
+        if (json.http >= 400 || json.status === 'error') { log(`Stop tracking failed: ${json.message || 'error'}`, 'error'); return; }
+        window._positionsData = (window._positionsData || []).filter(x => x.signal_id !== id);
         renderPositions();
-    }
+    } catch (e) { log(`Stop tracking failed: ${e.message}`, 'error'); }
 }
