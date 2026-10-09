@@ -30,8 +30,16 @@
     </header>
 
     <main class="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        <aside
+        <aside id="sidebar"
             class="w-full md:w-80 border-b md:border-b-0 md:border-r border-zinc-800 p-4 md:p-6 flex flex-col gap-4 md:gap-6 overflow-y-auto bg-black max-h-[35vh] md:max-h-none shrink-0 md:shrink z-50 shadow-[0_10px_20px_-10px_rgba(0,0,0,0.8)] md:shadow-none">
+            <!-- Phones only: this bar opens and closes the triggers and the Whale Hunter form (closed by default).
+                 On wider screens the bar is hidden and #sidebarBody is display:contents, so the sidebar looks as before. -->
+            <button id="sidebarToggle" type="button" onclick="toggleSidebar()" aria-expanded="false" aria-controls="sidebarBody"
+                class="sidebar-toggle md:hidden">
+                <span>Macro Triggers <span class="sidebar-toggle-sub">&amp; Whale Hunter</span></span>
+                <span class="sidebar-chevron" aria-hidden="true">&#9662;</span>
+            </button>
+            <div id="sidebarBody" class="sidebar-body md:contents">
             <section>
                 <h3 class="text-xs font-bold text-zinc-500 uppercase mb-4 tracking-widest">Macro Triggers</h3>
                 <div class="flex flex-col gap-2">
@@ -87,6 +95,7 @@
                         PARAMETERS</button>
                 </div>
             </section>
+            </div>
         </aside>
 
         <div class="flex-1 flex flex-col overflow-hidden bg-[#020202] center-display-column">
@@ -970,7 +979,7 @@
                                         stroke-width="3" stroke-linecap="round"
                                         style="transform-origin: 100px 90px; transform: rotate(0deg);"
                                         class="transition-transform duration-1000 ease-out" />
-                                    <circle cx="100" cy="90" r="5" fill="#fff" />
+                                    <circle id="oscillatorHub" cx="100" cy="90" r="5" fill="#fff" />
                                 </svg>
                                 <div class="absolute bottom-0 left-0 right-0 text-center">
                                     <div id="oscillatorValue" class="text-3xl font-bold text-white tracking-tighter">0.0
@@ -1583,9 +1592,9 @@
 
     <!-- Mobile Bottom Navigation -->
     <nav id="mobileNav" class="md:hidden flex h-12 border-t border-zinc-800 bg-black shrink-0 w-full z-[100]">
-        <button onclick="switchMobileTab('panels')" id="tabPanels"
+        <button onclick="switchMobileTab('panels')" id="tabPanels" aria-pressed="true"
             class="flex-1 text-[10px] font-bold tracking-widest text-white border-t-2 border-blue-500 bg-zinc-900/50 uppercase">Panels</button>
-        <button onclick="switchMobileTab('console')" id="tabConsole"
+        <button onclick="switchMobileTab('console')" id="tabConsole" aria-pressed="false"
             class="flex-1 text-[10px] font-bold tracking-widest text-zinc-500 border-t-2 border-transparent hover:bg-zinc-900/50 uppercase">Console</button>
     </nav>
 

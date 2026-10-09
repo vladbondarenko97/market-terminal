@@ -31,11 +31,11 @@ a stand-in number.
 
 ```
 header:   VLADHQ TERMINAL | REMOTE API status | host | clock
-sidebar:  Macro Triggers, Custom Whale Hunter
+sidebar:  Macro Triggers, Custom Whale Hunter     (phones: one bar that opens them)
 center:   tab bar (MACRO DIRECTION, TIME ARBITRAGE, FORECAST LAB)
           active tab (panels)
           splitter
-          Console Engine v2.0
+          Console Engine v2.0                     (phones: replaces the active tab)
 mobile:   bottom bar (Panels, Console)
 ```
 
@@ -104,10 +104,39 @@ call and put premium totals.
 
 ### Mobile layout
 
-On narrow screens (about 768 px or less) the sidebar sits above the panels, panel dragging is off, and a bottom bar switches between
-**Panels** and **Console**. The switch hides or shows the Macro Direction grid and the console only. A command you
-start (a `cmd` line, such as pressing a scan button) switches the view to Console; messages written while panels load,
-background refreshes and tab changes do not. The tab bar still switches tabs.
+On phones (a viewport narrower than 768 px; 768 px and wider gets the wide layout, the same breakpoint as Tailwind's `md:`
+classes) the page changes as follows. The wide layout is not affected by any of it. All the phone rules sit in one
+`@media (max-width: 767.98px)` block at the end of `styles.css`; `MOBILE_QUERY` in `app.js` holds the same number.
+
+- **Sidebar bar.** The Macro Triggers and the Custom Whale Hunter form sit behind a one-line bar, **MACRO TRIGGERS & WHALE
+  HUNTER**, which is closed by default so the active tab gets the screen (header, bar, tab bar and bottom bar take about
+  200 px). Tap the bar to open them over the page (the tab underneath does not move); tap it again, press Esc, or press
+  any button inside to close it. Pressing a button inside also switches to the console, so the messages of the trigger
+  you started (also a refusal, such as a second RE-SCAN while one is followed) are on screen. Open or closed is
+  remembered in this browser (`vladhq_sidebar_open`); if the browser blocks storage the state is just not remembered.
+  The fields keep their values while the bar is closed, and the Time Arbitrage tab still reads the Target Ticker.
+- **Panels / Console.** The bottom bar shows either **Panels** (the tab chosen in the tab bar) or **Console**. Console
+  replaces whichever tab is active (Macro Direction, Time Arbitrage or Forecast Lab) and fills the area under the tab bar;
+  **Panels** brings that tab back. Choosing a tab in the tab bar while the console shows leaves the console and shows
+  that tab. A command you start (a `cmd` line, such as pressing a scan button) switches to Console; messages written
+  while panels load, background refreshes and tab changes do not. Opening Console scrolls the log to the newest line.
+  There is no split on a phone, so **[Minimize]** is hidden. `switchMobileTab('panels' | 'console')` in `app.js` does the
+  switch (it does nothing on the wide layout).
+- **Panel dragging** is off.
+- **Text fields** (text, number, date, menus, the Copy dialog) are 16 px. Safari on iPhone zooms the page in when a
+  field smaller than that gets focus; zooming by pinch is not disabled.
+- **Touch targets.** The small controls (panel zoom **-** / **+**, REFRESH, COPY, [MAX], SCAN, **?**, the card buttons,
+  chart toggles, scenario buttons, the War Room sliders) get about 32 px of height and width. Panel title bars wrap their
+  controls onto a second line when they do not fit.
+- **Tab bar.** The three labels use a smaller type size and letter spacing so each stays on one line down to 320 px.
+- **Forecast Lab card 11.** When the chart is narrower than 640 px the legend goes below it, so the series names are not
+  cut off, also in full screen. On the wide layout it stays on the right.
+- **War Room.** In full screen the tier labels (LOW, MODERATE, ELEVATED, SYSTEMIC) and the numbers under the bar use a
+  smaller size so they do not run into each other.
+- **Capacity Constraint Oscillator.** With no reading the dial shows a short label (NO READING) and the needle fades; the
+  full reason is under the gauge. This is so on every screen size.
+- The page height follows the visible screen (`100dvh`), so the browser's own toolbar does not cover the bottom bar.
+
 
 ## Macro Direction tab
 
@@ -180,7 +209,7 @@ blanked, so numbers from an earlier answer (or another ticker) never sit next to
 
 | # | Panel | Shows | Source |
 |---|---|---|---|
-| 1 | CAPACITY CONSTRAINT OSCILLATOR | A -100 to +100 gauge. Scores of 75 or more in size read "STRATEGIC EDGE DETECTED" (bullish or bearish); anything smaller reads "CASH POSITION - NO STRUCTURAL EDGE". With no score it reads "NO READING" and the reason. The line under the gauge says which factors the score was built from and why any other was left out. | live VIX (and the GEX and DIX columns) against the macro ledger's recent values |
+| 1 | CAPACITY CONSTRAINT OSCILLATOR | A -100 to +100 gauge. Scores of 75 or more in size read "STRATEGIC EDGE DETECTED" (bullish or bearish); anything smaller reads "CASH POSITION - NO STRUCTURAL EDGE". With no score the dial reads "NO READING" (the needle fades out) and the box under it reads "NO READING" too. The reason is in the line under the gauge, which says which factors the score was built from and why any other was left out (or, when the route sent no factors, gives the reason itself), and in the tab's note line; the dial label shows it as a tooltip. | live VIX (and the GEX and DIX columns) against the macro ledger's recent values |
 | 2 | DEALER TRAPDOOR | Spot against zero gamma (distance, percent), approach velocity, aggregate Vanna and Charm, and a "Gamma Neutral" or "SHORT GAMMA SQUEEZE" state. Without a zero-gamma level it reads "No Gamma Reading" and the reason. | spot and zero gamma from the newest `equities_darkpool_gex_ledger` row for the ticker; chain is live |
 | 3 | IV PREMIUM BLEED | Strike, Live IV, Hist. Avg and Bleed % for the 15 call strikes nearest the spot price. "Hist. Avg" is the 20-day realized volatility. | live |
 | 4 | ASYMMETRIC PROBABILITY MATRIX | Log-normal probability that each of the 5 strikes nearest the spot price expires in the money in 3, 5 and 7 days, plus an "Optimal Strike Selection" line that names the ticker being scanned. | live |
@@ -265,7 +294,7 @@ Other behavior:
 | REFRESH, SCAN | Panels 1, 2, 11, 12, 15 (REFRESH); 6, 7, 10 (SCAN) | Reload that panel. SCAN reads the ticker box next to it. |
 | **?** | Time Arbitrage panels | Opens a help dialog. The Macro Direction panels have no help button. |
 
-Keyboard: Esc closes the War Room guide, closes the Forecast Lab help dialog, and leaves Forecast Lab full screen.
+Keyboard: Esc closes the War Room guide, closes the Forecast Lab help dialog, leaves Forecast Lab full screen and, on a phone, closes the sidebar bar.
 Enter in the Option Explorer's Ticker box loads the chain. There are no other shortcuts.
 
 Browser storage (`localStorage`, per browser and per origin):
@@ -275,6 +304,7 @@ Browser storage (`localStorage`, per browser and per origin):
 | `vladhq_zoom_panel1` ... `vladhq_zoom_panel15` | Zoom level of each Macro Direction panel. |
 | `vladhq_panel_height` | Height of the panel area, in pixels (default 550). |
 | `vladhq_console_min` | `1` when the console is minimized. |
+| `vladhq_sidebar_open` | `1` when the sidebar bar is open on a phone (closed by default). |
 | `optionsWatchlist` | The Institutional Wishlist. |
 
 ### Refresh timing

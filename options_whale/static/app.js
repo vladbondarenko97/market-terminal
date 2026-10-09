@@ -596,7 +596,7 @@ document.addEventListener('DOMContentLoaded', () => {
     panels.forEach(panel => {
         // When drag starts, apply styling
         panel.addEventListener('dragstart', function(e) {
-            if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) {
+            if (isMobileLayout()) {
                 e.preventDefault();
                 return;
             }
@@ -934,7 +934,10 @@ let savedTopHeight = parseFloat(localStorage.getItem('vladhq_panel_height')) || 
 const CONSOLE_MIN_OPEN = 150;   // smallest console height when expanded
 const PANELS_MIN = 200;         // smallest panel area height
 
-const isMobileLayout = () => window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+// "Phone layout" = below Tailwind's md breakpoint (768 px), which the page's layout classes (md:...) use. styles.css has the same
+// number in its mobile media query; at exactly 768 px both agree that the wide layout applies.
+const MOBILE_QUERY = '(max-width: 767.98px)';
+const isMobileLayout = () => !!(window.matchMedia && window.matchMedia(MOBILE_QUERY).matches);
 const tabContents = () => document.querySelectorAll('.tab-content');
 const activeTab = () => [...tabContents()].find(t => !t.classList.contains('hidden')) || document.getElementById('macro-tab');
 
@@ -1031,37 +1034,65 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 });
 
+// --- MOBILE: SIDEBAR BAR ---
+// On a phone the Macro Triggers and the Whale Hunter form sit behind a one-line bar (closed by default) so the active tab gets the
+// screen. The open/closed state is remembered per browser. On wider screens the bar does not exist and none of this has an effect.
+const SIDEBAR_KEY = 'vladhq_sidebar_open';
+
+function applySidebarOpen(open) {
+    const side = document.getElementById('sidebar');
+    if (!side) return;
+    side.classList.toggle('sidebar-open', open);
+    document.getElementById('sidebarToggle')?.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function setSidebarOpen(open) {
+    applySidebarOpen(open);
+    try { localStorage.setItem(SIDEBAR_KEY, open ? '1' : '0'); } catch (e) { /* storage blocked: the state just is not remembered */ }
+}
+
+function sidebarIsOpen() { return !!document.getElementById('sidebar')?.classList.contains('sidebar-open'); }
+function toggleSidebar() { setSidebarOpen(!sidebarIsOpen()); }
+function collapseSidebar() { if (sidebarIsOpen()) setSidebarOpen(false); }
+
+(function restoreSidebar() {
+    let open = false;
+    try { open = localStorage.getItem(SIDEBAR_KEY) === '1'; } catch (e) { /* default: closed */ }
+    applySidebarOpen(open);
+})();
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && isMobileLayout()) collapseSidebar(); });
+// Pressing any trigger in the open sidebar (also one that is refused, such as a second re-scan, which only logs an info line) shows
+// the console, where its messages are
+document.getElementById('sidebarBody')?.addEventListener('click', e => { if (e.target.closest('button')) switchMobileTab('console'); });
+
 // --- MOBILE TAB NAVIGATION ---
+// The bottom bar has two views: Panels (the tab picked in the tab bar) and Console, which replaces whichever tab is active.
+// Choosing a tab in the tab bar always returns to Panels. Either switch also closes the sidebar bar, which would otherwise
+// cover the console.
 function switchMobileTab(tab) {
-    if (!window.matchMedia('(max-width: 768px)').matches) return;
-    
-    const panelContainer = document.getElementById('panelContainer');
+    if (!isMobileLayout()) return;
+
+    const consoleView = tab === 'console';
     const consoleSection = document.getElementById('consoleSection');
     const tabPanels = document.getElementById('tabPanels');
     const tabConsole = document.getElementById('tabConsole');
-    
-    if (tab === 'console') {
-        panelContainer.classList.add('mobile-tab-hidden');
-        consoleSection.classList.remove('mobile-tab-hidden');
-        
-        if (tabConsole) {
-            tabConsole.classList.add('text-white', 'border-blue-500', 'bg-zinc-900/50');
-            tabConsole.classList.remove('text-zinc-500', 'border-transparent');
-            tabPanels.classList.add('text-zinc-500', 'border-transparent');
-            tabPanels.classList.remove('text-white', 'border-blue-500', 'bg-zinc-900/50');
-        }
-        
+    const on = ['text-white', 'border-blue-500', 'bg-zinc-900/50'];
+    const off = ['text-zinc-500', 'border-transparent'];
+
+    document.body.classList.toggle('mobile-console-view', consoleView);     // styles.css hides every .tab-content with this
+    consoleSection?.classList.toggle('mobile-tab-hidden', !consoleView);
+    [[tabConsole, consoleView], [tabPanels, !consoleView]].forEach(([btn, active]) => {
+        if (!btn) return;
+        btn.classList.remove(...(active ? off : on));
+        btn.classList.add(...(active ? on : off));
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    collapseSidebar();
+
+    if (consoleView) {
         if (isConsoleMinimized) toggleConsole();
-    } else {
-        panelContainer.classList.remove('mobile-tab-hidden');
-        consoleSection.classList.add('mobile-tab-hidden');
-        
-        if (tabPanels) {
-            tabPanels.classList.add('text-white', 'border-blue-500', 'bg-zinc-900/50');
-            tabPanels.classList.remove('text-zinc-500', 'border-transparent');
-            tabConsole.classList.add('text-zinc-500', 'border-transparent');
-            tabConsole.classList.remove('text-white', 'border-blue-500', 'bg-zinc-900/50');
-        }
+        const logEl = document.getElementById('consoleLog');
+        if (logEl) logEl.scrollTop = logEl.scrollHeight;                    // lines written while it was hidden: show the newest
     }
 }
 
@@ -2867,6 +2898,9 @@ async function dumpAllData() {
 
 // --- TAB SWITCHING SYSTEM ---
 function switchTab(tabName) {
+    // On a phone, picking a tab while the console is showing leaves the console and shows that tab
+    if (isMobileLayout()) switchMobileTab('panels');
+
     // 1. Update UI Buttons
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
     const activeBtn = document.getElementById(`tab-${tabName}`);
@@ -2992,12 +3026,27 @@ function updateOscillator(score, reason, parts) {
     const partsBox = document.getElementById('oscillatorComponents');
 
     if (!needle || !valueText) return;
-    if (partsBox) partsBox.innerText = describeOscillatorParts(parts);
+    const partsText = describeOscillatorParts(parts);
+    if (partsBox) partsBox.innerText = partsText;
+    if (statusText) statusText.removeAttribute('title');
 
-    if (!isNum(score)) {
+    // No score: the needle, its hub and most of the arc fade out, so the dial does not look like a reading of zero
+    const hasScore = isNum(score);
+    needle.style.opacity = hasScore ? '' : '0';
+    document.getElementById('oscillatorHub')?.style.setProperty('opacity', hasScore ? '' : '0');
+    if (gauge) gauge.style.opacity = hasScore ? '' : '0.25';
+
+    if (!hasScore) {
         needle.style.transform = 'rotate(0deg)';
         valueText.innerText = DASH;
-        if (statusText) statusText.innerText = reason || 'No reading';
+        // The gauge dial is small, so it gets a short label only. The reason can be long (it lists every missing input): it goes
+        // under the gauge, in the line that says which factors were left out, or when that line is empty (the route failed and
+        // sent no factors) in its place, and it is the dial label's tooltip. The tab's note line above also carries it.
+        if (statusText) {
+            statusText.innerText = 'No reading';
+            if (reason) statusText.title = reason;
+        }
+        if (partsBox && reason && !partsText) partsBox.innerText = reason;
         if (signalBox) {
             signalBox.innerText = "NO READING";
             signalBox.className = "bg-zinc-950 border border-zinc-800 px-4 py-2 rounded text-[11px] font-bold text-zinc-600 uppercase tracking-[0.2em]";

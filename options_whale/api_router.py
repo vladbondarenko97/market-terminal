@@ -646,8 +646,8 @@ def vmri_chart_page():
                     renderChart();
                     updateInsightBanner();
                 } catch (e) { 
-                    console.error("Fetch failed:", e); 
-                    document.getElementById('insightBanner').innerHTML = `<span class="insight-threat">⚠️ CONNECTION FAILED</span>`;
+                    console.error("VMRI chart failed:", e); 
+                    document.getElementById('insightBanner').innerHTML = `<span class="insight-threat">⚠️ COULD NOT LOAD THE VMRI HISTORY</span>`;
                 }
             }
 
@@ -658,7 +658,10 @@ def vmri_chart_page():
                 const driver = masterData.primary_driver[lastIdx];
 
                 let statusHtml = '';
-                if (currentScore >= 250) {
+                if (currentScore === null || currentScore === undefined || !isFinite(currentScore)) {
+                    // A run whose inputs were incomplete (for example no HY OAS from FRED) records no score.
+                    statusHtml = `<span class="insight-threat">⚠️ NO VMRI SCORE FOR THE LATEST RUN</span> | an input was missing (see the macro ledger row ${masterData.labels[lastIdx] || ''})`;
+                } else if (currentScore >= 250) {
                     let trend = momentum > 0 ? "ACCELERATING UPWARD" : "DECAYING";
                     statusHtml = `<span class="insight-threat">⚠️ SYSTEMIC THREAT ACTIVE (${currentScore.toFixed(0)})</span> | Primary Driver: <span class="insight-driver">${driver}</span> | Trend: ${trend}`;
                 } else {

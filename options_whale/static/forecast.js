@@ -43,6 +43,18 @@ function fcChart(id, cfg) {
 }
 const axis = (extra = {}) => Object.assign({ grid: { color: FC_COL.grid }, ticks: { color: FC_COL.ink2, font: { size: 9 } } }, extra);
 
+// A legend on the right takes a third of a phone-wide chart and cuts its labels off: on a phone, below this canvas width, it goes to
+// the bottom. The wide layout keeps it on the right at every width. Chart.js does not make the position scriptable, so the chart's
+// onResize hook (it also fires when the card goes full screen or the phone turns) sets it; Chart.js then lays the chart out with it
+// in the same resize.
+const FC_LEGEND_SIDE_MIN_WIDTH = 640;
+const fcLegendPosition = (width, phone = typeof isMobileLayout === 'function' && isMobileLayout()) => (phone && width > 0 && width < FC_LEGEND_SIDE_MIN_WIDTH) ? 'bottom' : 'right';
+const fcFitLegend = (chart, size) => {
+    const lg = chart.options.plugins && chart.options.plugins.legend;
+    const want = fcLegendPosition(size && size.width);
+    if (lg && lg.position !== want) lg.position = want;
+};
+
 async function loadForecast(ticker) {
     if (ticker) FC.ticker = ticker;
     ['SPY', 'SLV'].forEach(t => document.getElementById(`fcBtn${t}`)?.classList.toggle('active', t === FC.ticker));
@@ -507,7 +519,8 @@ function renderInventories(j) {
     if (ref) ds.push({ label: ref[0], data: labels.map(() => ref[1]), borderColor: '#71717a', borderDash: [4, 4], borderWidth: 1, pointRadius: 0, pointHoverRadius: 0 });
     const long = labels.length > 60;
     fcChart('fc11Chart', { type: 'line', data: { labels, datasets: ds },
-        options: { plugins: { legend: { position: 'right', labels: { color: FC_COL.ink, boxWidth: 10, font: { size: 10 } },
+        options: { onResize: fcFitLegend,
+                   plugins: { legend: { position: fcLegendPosition(document.getElementById('fc11Chart').parentElement.clientWidth), labels: { color: FC_COL.ink, boxWidth: 10, font: { size: 10 } },
                                         onClick: (e, item, legend) => { const d = legend.chart.data.datasets[item.datasetIndex];
                                             if (d.invKey) st.hidden[d.invKey] = !st.hidden[d.invKey];
                                             Chart.defaults.plugins.legend.onClick(e, item, legend); } },
