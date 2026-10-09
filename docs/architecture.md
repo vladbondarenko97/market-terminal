@@ -59,9 +59,11 @@ These rules hold across the codebase. A change that breaks one needs a very good
 4. **Snapshots are immutable.** To change a value, change the model, bump its version and make a new run. Record
    the change in [Value changes](value-changes.md).
 5. **The lake is additive.** `core/lake.py` only creates tables and adds columns; it never drops, replaces or
-   deletes rows.
+   deletes rows, and triggers stop any `UPDATE` or `DELETE` of a snapshot. The one exception is the view
+   `v2_latest_snapshot`, which holds no data: `migrate()` replaces it when its definition changes.
 6. **A failing source does not stop the run.** Collectors catch their own errors and report them as missing;
-   the run continues and ends `completed_with_warnings` if delivery or export had problems.
+   the run continues. Each step after the snapshot (ledgers, ticket, forecast log, files, each delivery channel)
+   also runs on its own; a failure there ends the run `completed_with_warnings` with exit code 3.
 7. **Network calls are bounded and recorded.** New pipeline fetches go through `SourceSession.fetch()` in
    `core/sources.py` (per-provider limits in `PROVIDER_LIMITS`). Offline runs make no provider calls.
 8. **Paths and secrets come from `config.py` and `.env`.** Nothing hardcodes a data path or a key.

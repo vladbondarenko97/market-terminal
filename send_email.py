@@ -107,12 +107,16 @@ def plain_body(msg):
 
 
 def deliver(eml_path):
-    """Send a saved message. Returns (status, detail): smtp_accepted | failed | outcome_unknown.
+    """Send a saved message. Returns (status, detail): smtp_accepted | skipped | failed | outcome_unknown.
+    `skipped` means email is not configured at all (all four settings empty); a partly configured setup is `failed`.
     SMTP acceptance is not proof of inbox delivery."""
-    if not EMAIL_SENDER or not EMAIL_PASSWORD:
-        return "failed", "EMAIL_SENDER/EMAIL_PASSWORD not configured"
-    if not SMTP_SERVER or not RECIPIENT_EMAIL:
-        return "failed", "SMTP_SERVER/RECIPIENT_EMAIL not configured"
+    settings = {"EMAIL_SENDER": EMAIL_SENDER, "EMAIL_PASSWORD": EMAIL_PASSWORD, "SMTP_SERVER": SMTP_SERVER,
+                "RECIPIENT_EMAIL": RECIPIENT_EMAIL}
+    if not any(settings.values()):
+        return "skipped", "email not configured (EMAIL_SENDER, EMAIL_PASSWORD, SMTP_SERVER and RECIPIENT_EMAIL are empty)"
+    missing = [k for k, v in settings.items() if not v]
+    if missing:
+        return "failed", f"email partly configured: {', '.join(missing)} empty"
     msg = load_eml(eml_path)
     try:
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=60)
@@ -166,6 +170,8 @@ def ntfy_brief(ctx, report_text, dashboard_url=None, report_url=None):
     import requests
     from core import lake, render
     from upload_data import report_filename
+    if not NTFY_URL:
+        return {"status": "skipped", "error": "NTFY_URL not configured"}
     try:
         title, message, prio, tags = render.ntfy_summary(ctx)
     except Exception as e:
@@ -201,6 +207,7 @@ def ntfy_brief(ctx, report_text, dashboard_url=None, report_url=None):
     return {"title": title, "status": "sent_without_attachment" if fallback[0]["status"] == "sent" else "failed",
             "error": lake.redact(err)[:200], "priority": prio}
 
+
 def generate_and_send():
     """Legacy entry point: deliver the latest committed run's saved email (no recollection)."""
     from main_pipeline import resend
@@ -208,4 +215,4 @@ def generate_and_send():
 
 
 if __name__ == "__main__":
-    generate_and_send()
+    raise SystemExit(generate_and_send())

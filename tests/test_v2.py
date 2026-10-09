@@ -255,8 +255,8 @@ class T04Outputs(unittest.TestCase):
         import send_email
         r = self._latest()
         eml = Path(json.loads(r["artifacts_json"])["out_dir"]) / "email.eml"
-        status, _ = send_email.deliver(eml)          # no credentials configured
-        self.assertEqual(status, "failed")
+        status, _ = send_email.deliver(eml)          # no email settings at all: the channel is off, not failed
+        self.assertEqual(status, "skipped")
         self.assertTrue(eml.exists())
 
         class FlakySMTP:

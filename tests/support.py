@@ -17,7 +17,7 @@ DATA = TMP / "CME_Data"
 os.environ["PORTFOLIO_DATA_DIR"] = str(DATA)
 # Blank every credential and delivery setting so a developer's real .env (loaded by config, which never overrides
 # variables that are already set) cannot reach a provider, a mailbox, a phone or a web server during tests.
-for k in ("DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOLD_API_KEY", "ALPHA_VANTAGE_KEY",
+for k in ("DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOLD_API_KEY",
           "EBAY_APP_ID", "EBAY_CERT_ID", "CME_LOGIN_USERNAME", "CME_LOGIN_PASSWORD", "EMAIL_SENDER",
           "EMAIL_PASSWORD", "SMTP_SERVER", "RECIPIENT_EMAIL", "REPORT_SENDER", "NTFY_URL", "DASHBOARD_URL",
           "UPLOAD_URL", "UPLOAD_TOKEN", "REPORT_UPLOAD", "SCHEDULED_RUNS"):

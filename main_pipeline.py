@@ -5,19 +5,24 @@
                                                                  # one run; `run` is the default command
   python main_pipeline.py cme-login                              # one-time CME login (MFA) for the volume FTP
   python main_pipeline.py replay [--run RUN_ID] [--out DIR]     # offline re-render of a saved run, no delivery
-  python main_pipeline.py import-history                         # idempotent import of old files/tables
+  python main_pipeline.py import-history [--no-backup]           # idempotent import of old files/tables
+  python main_pipeline.py backfill-positions                     # record engine tickets for old live runs that have none
   python main_pipeline.py resend [--run RUN_ID]                  # explicit resend of a saved email.eml
   python main_pipeline.py catalog [--run RUN_ID]                 # variable catalog + lineage (Markdown)
   python main_pipeline.py status                                 # last 10 runs + the current run's status
   python main_pipeline.py ntfy-test                              # send the latest run's phone brief to NTFY_URL
 
-Exit codes of `run`: 0 = finished (also with warnings, and also when a scheduled run is skipped), 75 = another run
-holds the run lock (nothing was started), 1 = failed before the snapshot was committed. Only `run` takes the lock.
-`resend` exits 0 when SMTP accepted the message, 2 when it did not, 1 when there is nothing to resend.
+Exit codes of `run`: 0 = finished cleanly (also when a scheduled run is skipped), 3 = finished with warnings (the
+snapshot is committed, but a stage or a configured delivery channel failed; see `status`), 75 = another job holds
+the run lock (nothing was started), 1 = failed before the snapshot was committed. A channel that is not configured
+at all (no SMTP settings, no NTFY_URL, no UPLOAD_URL/UPLOAD_TOKEN) is skipped and is not a warning.
+`run`, `cme-login`, `import-history` and `backfill-positions` take the run lock and exit 75 when it is held; `replay`,
+`resend`, `catalog`, `status` and `ntfy-test` do not. `resend` exits 0 when SMTP accepted the message, 2 when it did
+not, 1 when there is nothing to resend. `ntfy-test` exits 0 when the brief was sent and 2 when it was not.
+An offline run writes its files to <data>/<day folder>/offline_<run id>/ and never to the shared day files.
 """
 import argparse
 import csv
-import fcntl
 import json
 import os
 import secrets
@@ -31,10 +36,9 @@ from pathlib import Path
 import config
 from config import DATA_DIR, DB_PATH, PROJECT_ROOT, run_folder_name
 from core import catalog, lake, render
+from core.runlock import EXIT_BUSY, LOCK_PATH, STATUS_PATH, RunLock, busy_message, effective_state, lock_is_held, read_status  # noqa: F401
 
-LOCK_PATH = DATA_DIR / ".v2_run.lock"
-STATUS_PATH = DATA_DIR / ".v2_run_status.json"
-EXIT_BUSY = 75
+EXIT_WARNINGS = 3
 
 
 # ============================================================ helpers
@@ -67,30 +71,15 @@ def set_status(**kw):
     write_atomic(STATUS_PATH, json.dumps(cur, indent=2))
 
 
-class RunLock:
-    """One run owns collection and exports. A second request gets a clear busy answer."""
-    def __init__(self):
-        self.fh = None
-
-    def acquire(self):
-        self.fh = open(LOCK_PATH, "a+")
-        try:
-            fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            self.fh.close()
-            self.fh = None
-            return False
-        self.fh.seek(0)
-        self.fh.truncate()
-        self.fh.write(str(os.getpid()))
-        self.fh.flush()
-        return True
-
-    def release(self):
-        if self.fh:
-            fcntl.flock(self.fh, fcntl.LOCK_UN)
-            self.fh.close()
-            self.fh = None
+def mark_interrupted_runs(conn):
+    """Call while holding the run lock: any live or offline run still `running` belongs to a process that died, because
+    the lock admits one run at a time. Only the status (and an empty error) is updated; no row is deleted."""
+    with lake._WRITE_LOCK, conn:
+        cur = conn.execute(
+            "UPDATE v2_runs SET status = 'interrupted', "
+            "error = COALESCE(error, 'the run ended without recording a result (process killed or crashed)') "
+            "WHERE status = 'running' AND mode IN ('live', 'offline')")
+    return cur.rowcount
 
 
 def _csv_append(path, header_fallback, row):
@@ -201,11 +190,18 @@ def render_outputs(conn, ctx, out_dir, *, rows=None):
 
 
 # ============================================================ run
+def _stage_error(stages, warnings, name, exc):
+    """A post-commit stage failed: keep the traceback in `stages`, add a warning, and let the other stages run."""
+    import traceback
+    stages[f"{name}_error"] = lake.redact(traceback.format_exc()[-3000:])
+    warnings.append(f"{name} error: {lake.redact(str(exc))[:300]}")
+    print(f"⚠️  Stage '{name}' failed: {exc}")
+
+
 def run(*, offline=False, deliver=True, upload=True, trigger="manual", use_browser=True, skip_cme=False,
         max_volume_files=10, login_wait_seconds=900):
-    from core import collect
-    from core.sources import SourceSession
-    from send_email import alphaflow_appendix, deliver as smtp_deliver, ntfy_brief, ntfy_push
+    """One coordinated run. Returns 0 (clean), 3 (completed with warnings) or 75 (busy); raises when the run fails
+    before the snapshot is committed (the CLI then exits 1)."""
     if trigger == "scheduled":
         from core.market_calendar import scheduled_run_skip_reason
         skip = ("scheduled runs are off on this machine (SCHEDULED_RUNS=1 is not set in .env)"
@@ -213,117 +209,215 @@ def run(*, offline=False, deliver=True, upload=True, trigger="manual", use_brows
         if skip:
             print(f"⏭️  Scheduled run skipped: {skip}")
             return 0
-    config.ensure_data_dir()
+    deliver = deliver and not offline              # an offline run never sends or uploads anything
+    config.ensure_data_dir(allow_create=True)      # creates only the default sibling CME_Data, never PORTFOLIO_DATA_DIR
     lock = RunLock()
     if not lock.acquire():
-        try:
-            cur = json.loads(STATUS_PATH.read_text())
-        except Exception:
-            cur = {}
-        print(f"⏳ BUSY: run {cur.get('run_id')} is in progress (stage {cur.get('stage')}). Not starting another.")
+        print(busy_message())
         return EXIT_BUSY
+    try:
+        return _run_locked(offline=offline, deliver=deliver, upload=upload, trigger=trigger, use_browser=use_browser,
+                           skip_cme=skip_cme, max_volume_files=max_volume_files, login_wait_seconds=login_wait_seconds)
+    finally:
+        lock.release()
+
+
+def _run_locked(*, offline, deliver, upload, trigger, use_browser, skip_cme, max_volume_files, login_wait_seconds):
+    from core import collect
+    from core.sources import SourceSession
+    from send_email import alphaflow_appendix, ntfy_push
     t0 = time.monotonic()
     now = datetime.now(timezone.utc).replace(microsecond=0)
     run_id = f"{now:%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
     folder = run_folder_name(now)
     mode = "offline" if offline else "live"
+    # an offline run never touches the day's shared files: its own folder inside the day folder
+    out_dir = DATA_DIR / folder / (f"offline_{run_id}" if offline else "")
     conn = lake.connect(DB_PATH)
-    lake.migrate(conn)
-    lake.create_run(conn, run_id, mode=mode, trigger=trigger, run_folder=folder, code_version=code_version())
-    stages = {}
-    set_status(run_id=run_id, stage="collecting", state="running", pid=os.getpid(), mode=mode, started_at=now.isoformat())
-    print(f"🚀 v2 run {run_id} ({mode}, trigger={trigger}) → {DATA_DIR / folder}")
     try:
-        session = SourceSession(conn, run_id, offline=offline)
-        run_meta = {"run_id": run_id, "generated_at": now.isoformat(), "run_folder": folder, "mode": mode,
-                    "code_version": code_version(), "trigger": trigger}
-        notify = (lambda m: ntfy_push([("CME login needed", m, "urgent", "key")])) if deliver else None
-        set_status(stage="collecting (a CME login window may be waiting for you)")
-        ctx, frames = collect.build_context(conn, session, run_meta, use_browser=use_browser, skip_cme_download=skip_cme,
-                                           max_volume_files=max_volume_files, login_wait_seconds=login_wait_seconds,
-                                           notify=notify)
-        ctx["appendix"] = {"alphaflow_text": alphaflow_appendix()}
-        stages["collect"] = {"status": "done", "seconds": round(time.monotonic() - t0, 1), "detail": ctx["stage_seconds"]}
-        set_status(stage="capturing")
-        n_obs = lake.record_observations(conn, collect.context_observations(ctx, frames), run_id=run_id)
-        stages["capture"] = {"status": "done", "new_observations": n_obs}
-        lake.commit_snapshot(conn, run_id, ctx)
-        ctx = lake.load_snapshot(conn, run_id)     # every renderer consumes the committed snapshot
-        stats = session.stats()
-        lake.update_run(conn, run_id, status="committed", stages_json=stages, request_counts_json=lake.redact(lake.dumps(stats)),
-                        sources_json={k: {"status": v.get("status"), "reason": v.get("reason")}
-                                      for k, v in ctx.items() if isinstance(v, dict) and "status" in v})
-        print(f"💾 Snapshot committed ({n_obs} new observations, provider calls {stats['calls']}, "
-              f"dedup hits {stats['dedup_hits']})")
-    except Exception as e:
-        import traceback
-        lake.update_run(conn, run_id, status="failed", error=lake.redact(traceback.format_exc()[-4000:]), stages_json=stages,
-                        elapsed_s=time.monotonic() - t0, finished_at=lake.utc_now_iso())
-        set_status(stage="failed", state="failed", error=str(e))
-        lock.release()
-        print(f"❌ Run failed before the snapshot was committed: {e}")
-        raise
+        lake.migrate(conn)
+        stale = mark_interrupted_runs(conn)
+        if stale:
+            print(f"ℹ️  {stale} earlier run(s) never recorded an end (process killed); marked 'interrupted'.")
+        lake.create_run(conn, run_id, mode=mode, trigger=trigger, run_folder=folder, code_version=code_version())
+        stages = {}
+        set_status(run_id=run_id, stage="collecting", state="running", pid=os.getpid(), mode=mode,
+                   started_at=now.isoformat(), finished_at=None, elapsed_s=None, error=None)
+        print(f"🚀 v2 run {run_id} ({mode}, trigger={trigger}) → {out_dir}")
+        try:
+            session = SourceSession(conn, run_id, offline=offline)
+            run_meta = {"run_id": run_id, "generated_at": now.isoformat(), "run_folder": folder, "mode": mode,
+                        "code_version": code_version(), "trigger": trigger}
+            notify = (lambda m: ntfy_push([("CME login needed", m, "urgent", "key")])) if deliver else None
+            set_status(stage="collecting (a CME login window may be waiting for you)")
+            ctx, frames = collect.build_context(conn, session, run_meta, use_browser=use_browser,
+                                               skip_cme_download=skip_cme, max_volume_files=max_volume_files,
+                                               login_wait_seconds=login_wait_seconds, notify=notify)
+            ctx["appendix"] = {"alphaflow_text": alphaflow_appendix()}
+            stages["collect"] = {"status": "done", "seconds": round(time.monotonic() - t0, 1),
+                                 "detail": ctx["stage_seconds"]}
+            set_status(stage="capturing")
+            n_obs = lake.record_observations(conn, collect.context_observations(ctx, frames), run_id=run_id)
+            stages["capture"] = {"status": "done", "new_observations": n_obs}
+            lake.commit_snapshot(conn, run_id, ctx)
+            ctx = lake.load_snapshot(conn, run_id)     # every renderer consumes the committed snapshot
+            stats = session.stats()
+            lake.update_run(conn, run_id, status="committed", stages_json=stages,
+                            request_counts_json=lake.redact(lake.dumps(stats)),
+                            sources_json={k: {"status": v.get("status"), "reason": v.get("reason")}
+                                          for k, v in ctx.items() if isinstance(v, dict) and "status" in v})
+            print(f"💾 Snapshot committed ({n_obs} new observations, provider calls {stats['calls']}, "
+                  f"dedup hits {stats['dedup_hits']})")
+        except Exception as e:
+            import traceback
+            elapsed = time.monotonic() - t0
+            lake.update_run(conn, run_id, status="failed", error=lake.redact(traceback.format_exc()[-4000:]),
+                            stages_json=stages, elapsed_s=elapsed, finished_at=lake.utc_now_iso())
+            set_status(stage="failed", state="failed", error=lake.redact(str(e)), finished_at=lake.utc_now_iso(),
+                       elapsed_s=round(elapsed, 1))
+            print(f"❌ Run failed before the snapshot was committed: {e}")
+            raise
+        warnings = _post_commit(conn, ctx, run_id, mode, out_dir, stages, deliver=deliver, upload=upload)
+        elapsed = time.monotonic() - t0
+        final = "completed_with_warnings" if warnings else "completed"
+        if warnings:
+            stages["warnings"] = warnings
+        lake.update_run(conn, run_id, status=final, stages_json=stages, finished_at=lake.utc_now_iso(),
+                        elapsed_s=elapsed, error=lake.redact("; ".join(warnings)) or None,
+                        request_counts_json=lake.redact(lake.dumps(session.stats())))
+        set_status(stage="done", state=final, finished_at=lake.utc_now_iso(), elapsed_s=round(elapsed, 1),
+                   error=lake.redact("; ".join(warnings)) or None)
+        print(f"🎉 Run {run_id} {final} in {elapsed:.1f}s" + (f" — {'; '.join(warnings)}" if warnings else ""))
+        return EXIT_WARNINGS if warnings else 0
+    finally:
+        conn.close()
+
+
+def _post_commit(conn, ctx, run_id, mode, out_dir, stages, *, deliver, upload):
+    """Everything after the snapshot is committed. Ledgers, trade signal, forecast log, rendering and delivery each
+    run on their own: a failure is recorded in `stages` and returned as a warning, and the others still run."""
     warnings = []
-    try:
-        set_status(stage="exporting")
-        rows = None
-        if mode == "live":
+    set_status(stage="exporting")
+    rows = None
+    if mode == "live":
+        try:
             rows = export_ledgers(conn, ctx, run_id, stages)
-            from core import positions
-            sig = positions.record_signal(conn, ctx)
-            stages["trade_signal"] = sig["position_type"] if sig else "none"
-            from core import forecast as _fc
-            stages["forecasts_logged"] = _fc.record_forecasts(conn, ctx)
             bad = {k: v for k, v in stages["ledgers"].items() if str(v).startswith("error")}
             if bad:
                 warnings.append(f"ledger errors: {bad}")
-        else:
-            stages["ledgers"] = "skipped (offline run does not append legacy ledgers)"
-        out_dir = DATA_DIR / folder
+        except Exception as e:
+            _stage_error(stages, warnings, "ledgers", e)
+        try:
+            from core import positions
+            sig = positions.record_signal(conn, ctx)
+            stages["trade_signal"] = sig["position_type"] if sig else "none"
+        except Exception as e:
+            _stage_error(stages, warnings, "trade_signal", e)
+        try:
+            from core import forecast as _fc
+            stages["forecasts_logged"] = _fc.record_forecasts(conn, ctx)
+        except Exception as e:
+            _stage_error(stages, warnings, "forecast_log", e)
+    else:
+        stages["ledgers"] = "skipped (offline run does not append legacy ledgers)"
+    rendered = False
+    report = None
+    try:
         artifacts, report, manifest, eml = render_outputs(conn, ctx, out_dir, rows=rows)
-        rpid = lake.store_payload(conn, source="v2_render", kind="daily_market_report", content=report, fmt="text",
-                                  run_id=run_id)
-        epid = lake.store_payload(conn, source="v2_render", kind="email_mime", content=eml, fmt="eml", run_id=run_id)
-        artifacts["daily_market_report.txt"]["payload_id"] = rpid
-        artifacts["email.eml"]["payload_id"] = epid
+        rendered = True
         stages["export"] = {"status": "done", "charts": {c["file"]: c["status"] for c in manifest}}
-        lake.update_run(conn, run_id, artifacts_json={"out_dir": str(out_dir), "files": artifacts,
-                                                      "charts": [{k: v for k, v in c.items() if k != "trace"}
-                                                                 for c in manifest]},
-                        stages_json=stages)
         print(f"📁 Exports written to {out_dir}")
-        if deliver:
-            set_status(stage="delivering")
-            lake.update_run(conn, run_id, delivery_status="attempting")
-            status, detail = smtp_deliver(out_dir / "email.eml")
-            from upload_data import report_filename, upload_report
-            report_url = upload_report(out_dir / "daily_market_report.txt", report_filename(ctx)) if upload else None
-            pushes = [ntfy_brief(ctx, report, config.optional_env("DASHBOARD_URL", ""), report_url)] + ntfy_push(_refinery_alerts(ctx))
-            up = upload_status = None
-            if upload:
-                from upload_data import upload_files
-                upload_status, up = upload_files(str(out_dir))
-            lake.update_run(conn, run_id, delivery_status=status,
-                            delivery_detail=json.dumps({"smtp": detail, "ntfy": pushes, "upload": [upload_status, up]}))
-            print(f"✉️  Email: {status} — {detail}")
-            if status != "smtp_accepted":
-                warnings.append(f"email {status}")
-        else:
-            lake.update_run(conn, run_id, delivery_status="not_requested")
     except Exception as e:
-        import traceback
-        warnings.append(f"export/delivery error: {e}")
-        stages["export_error"] = lake.redact(traceback.format_exc()[-3000:])
-    elapsed = time.monotonic() - t0
-    final = "completed_with_warnings" if warnings else "completed"
-    lake.update_run(conn, run_id, status=final, stages_json=stages, finished_at=lake.utc_now_iso(), elapsed_s=elapsed,
-                    error=lake.redact("; ".join(warnings)) or None,
-                    request_counts_json=lake.redact(lake.dumps(session.stats())))
-    set_status(stage="done", state=final, finished_at=lake.utc_now_iso(), elapsed_s=round(elapsed, 1))
-    conn.close()
-    lock.release()
-    print(f"🎉 Run {run_id} {final} in {elapsed:.1f}s" + (f" — {'; '.join(warnings)}" if warnings else ""))
-    return 0
+        _stage_error(stages, warnings, "render", e)
+    if rendered:
+        try:
+            rpid = lake.store_payload(conn, source="v2_render", kind="daily_market_report", content=report, fmt="text",
+                                      run_id=run_id)
+            epid = lake.store_payload(conn, source="v2_render", kind="email_mime", content=eml, fmt="eml",
+                                      run_id=run_id)
+            artifacts["daily_market_report.txt"]["payload_id"] = rpid
+            artifacts["email.eml"]["payload_id"] = epid
+        except Exception as e:
+            _stage_error(stages, warnings, "payload_store", e)
+        try:
+            lake.update_run(conn, run_id, artifacts_json={"out_dir": str(out_dir), "files": artifacts,
+                                                          "charts": [{k: v for k, v in c.items() if k != "trace"}
+                                                                     for c in manifest]},
+                            stages_json=stages)
+        except Exception as e:
+            _stage_error(stages, warnings, "artifacts", e)
+    if not deliver:
+        lake.update_run(conn, run_id, delivery_status="not_requested")
+    elif not rendered:
+        lake.update_run(conn, run_id, delivery_status="failed",
+                        delivery_detail=json.dumps({"error": "nothing was rendered, so there was nothing to send"}))
+        warnings.append("delivery skipped: render failed")
+    else:
+        set_status(stage="delivering")
+        try:
+            lake.update_run(conn, run_id, delivery_status="attempting")
+            warnings.extend(_deliver(conn, ctx, run_id, out_dir, report, upload=upload))
+        except Exception as e:
+            _stage_error(stages, warnings, "delivery", e)
+    return warnings
+
+
+def _deliver(conn, ctx, run_id, out_dir, report, *, upload):
+    """Email, report upload, phone pushes, then the database/dashboard upload. Every channel is attempted whatever
+    the others did. A channel that is not configured is `skipped`; one that is configured and fails is a warning.
+    Records `delivery_status` (the email outcome) and `delivery_detail` (all channels). Returns the warnings."""
+    import upload_data
+    from send_email import deliver as smtp_deliver, ntfy_brief, ntfy_push
+    warnings = []
+
+    def failure(e):
+        return lake.redact(f"{type(e).__name__}: {e}")[:300]
+
+    try:
+        email_status, email_detail = smtp_deliver(out_dir / "email.eml")
+    except Exception as e:
+        email_status, email_detail = "failed", failure(e)
+    print(f"✉️  Email: {email_status} — {email_detail}")
+    if email_status not in ("smtp_accepted", "skipped"):
+        warnings.append(f"email {email_status}: {lake.redact(str(email_detail))[:200]}")
+
+    report_up = {"status": "not_requested"}
+    if upload:
+        try:
+            report_up = upload_data.upload_report_result(out_dir / "daily_market_report.txt",
+                                                         upload_data.report_filename(ctx))
+        except Exception as e:
+            report_up = {"status": "failed", "detail": failure(e)}
+        if report_up["status"] == "failed":
+            warnings.append(f"report upload failed: {report_up.get('detail')}")
+
+    pushes = []
+    try:
+        pushes.append(ntfy_brief(ctx, report, config.DASHBOARD_URL, report_up.get("url")))
+    except Exception as e:
+        pushes.append({"title": "daily brief", "status": "failed", "error": failure(e)})
+    try:
+        pushes.extend(ntfy_push(_refinery_alerts(ctx)))
+    except Exception as e:
+        pushes.append({"title": "refinery alerts", "status": "failed", "error": failure(e)})
+    bad = [p for p in pushes if p.get("status") in ("failed", "outcome_unknown")]
+    if bad:
+        warnings.append(f"phone push {bad[0]['status']}: {bad[0].get('error')}"
+                        + (f" (+{len(bad) - 1} more)" if len(bad) > 1 else ""))
+
+    up_status, up_detail = "not_requested", None
+    if upload:
+        try:
+            up_status, up_detail = upload_data.upload_files(str(out_dir))
+        except Exception as e:
+            up_status, up_detail = "failed", failure(e)
+        if up_status == "failed":
+            warnings.append(f"upload failed: {up_detail}")
+
+    lake.update_run(conn, run_id, delivery_status=email_status,
+                    delivery_detail=json.dumps({"smtp": email_detail, "ntfy": pushes, "report_upload": report_up,
+                                                "upload": [up_status, up_detail]}))
+    return warnings
 
 
 def _refinery_alerts(ctx):
@@ -408,13 +502,86 @@ def print_catalog(run_id=None):
 
 
 def status():
+    held = lock_is_held()
     conn = lake.connect(DB_PATH, readonly=True)
     for r in conn.execute("SELECT run_id, mode, status, started_at, elapsed_s, delivery_status FROM v2_runs "
                           "ORDER BY started_at DESC LIMIT 10"):
-        print(dict(r))
-    if STATUS_PATH.exists():
-        print("current:", STATUS_PATH.read_text())
+        row = dict(r)
+        if row["status"] == "running" and row["mode"] in ("live", "offline") and not held:
+            row["status"] = "interrupted"            # the process is gone; the next run records this in the table
+        print(row)
+    conn.close()
+    cur = read_status()
+    if cur:
+        cur["state"] = effective_state(cur)         # "running" with no process holding the run lock = "interrupted"
+        print("current:", json.dumps(cur, indent=2))
     return 0
+
+
+def import_history_command(*, backup=True):
+    """`import-history`: takes the run lock, backs portfolio.db up first (unless backup=False), then imports."""
+    from core.importer import import_history
+    config.ensure_data_dir()
+    lock = RunLock()
+    if not lock.acquire():
+        print(busy_message())
+        return EXIT_BUSY
+    try:
+        if backup and not backup_database_file():
+            return 1
+        import_history()
+        return 0
+    finally:
+        lock.release()
+
+
+def backup_database_file():
+    """Copy portfolio.db to <data>/backups/portfolio-<UTC time>.db (SQLite backup API plus an integrity check).
+    Returns the path, True when there is nothing to back up yet, or None when the backup failed."""
+    if not DB_PATH.exists():
+        print("💾 No portfolio.db yet: nothing to back up.")
+        return True
+    dest_dir = DATA_DIR / "backups"
+    dest = dest_dir / f"portfolio-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.db"
+    try:
+        dest_dir.mkdir(exist_ok=True)
+        lake.backup_database(DB_PATH, dest)
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        print(f"❌ Backup of portfolio.db failed ({e}). Nothing was imported. "
+              "Fix the cause, or run again with --no-backup to import without a backup.")
+        return None
+    print(f"💾 Backup of portfolio.db → {dest} ({dest.stat().st_size / 1e6:.1f} MB)")
+    return dest
+
+
+def backfill_positions():
+    """`backfill-positions`: record engine tickets for committed live runs that have none. Idempotent."""
+    from core import positions
+    config.ensure_data_dir()
+    lock = RunLock()
+    if not lock.acquire():
+        print(busy_message())
+        return EXIT_BUSY
+    try:
+        conn = lake.connect(DB_PATH)
+        lake.migrate(conn)
+        before = conn.execute("SELECT COUNT(*) FROM v2_trade_signals").fetchone()[0]
+        with_ticket = positions.backfill(conn)
+        after = conn.execute("SELECT COUNT(*) FROM v2_trade_signals").fetchone()[0]
+        conn.close()
+        print(f"📈 {with_ticket} committed live run(s) carry an engine ticket; {after - before} new position row(s) "
+              f"recorded ({after} in total). Runs that already had a row were left alone.")
+        return 0
+    finally:
+        lock.release()
+
+
+def _database_ready():
+    if DB_PATH.exists():
+        return True
+    print(f"No database at {DB_PATH} yet. Run `python main_pipeline.py run` first.")
+    return False
 
 
 def main(argv=None):
@@ -422,7 +589,8 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd")
     r = sub.add_parser("run", help="one coordinated run: collect, snapshot, render, deliver (the default command)")
     r.add_argument("--offline", action="store_true",
-                   help="no provider/network requests; implies --no-deliver and records no ledgers, positions or forecasts")
+                   help="no provider/network requests; implies --no-deliver and records no ledgers, positions or forecasts. "
+                        "Files go to <data>/<day folder>/offline_<run id>/, never over the day's files")
     r.add_argument("--no-deliver", action="store_true",
                    help="save report + email.eml but do not send, notify (ntfy) or upload; ledgers and positions are still recorded")
     r.add_argument("--no-upload", action="store_true",
@@ -430,28 +598,42 @@ def main(argv=None):
     r.add_argument("--skip-cme", action="store_true",
                    help="make no CME requests (volume or inventory); use saved CME history only")
     r.add_argument("--no-cme-browser", action="store_true",
-                   help="CME inventory: plain HTTP only, no browser fallback. The volume listing still uses the browser "
-                        "window; use --skip-cme or --cme-max-files 0 to avoid it")
+                   help="keep the CME browser closed: no volume listing or download (volume outcome `skipped`), and the "
+                        "inventory workbook is fetched over plain HTTP only. Log in with `cme-login` and run without "
+                        "this flag to fetch volume files")
     r.add_argument("--cme-max-files", type=int, default=10,
                    help="max missing CME volume workbooks to fetch this run (default 10, capped at 40; 0 = skip the volume download)")
     r.add_argument("--trigger", default="manual",
                    help="label stored with the run (default manual). Only `scheduled` is special: that run is skipped "
-                        "unless SCHEDULED_RUNS=1 is set in .env and now is inside an NYSE trading day's session "
-                        "(09:20-16:00 ET); a skipped run exits 0 and records nothing")
+                        "unless SCHEDULED_RUNS=1 is set in .env and now is inside the scheduler's window on an NYSE "
+                        "trading day; a skipped run exits 0 and records nothing")
     r.add_argument("--login-wait", type=int, default=15,
                    help="minutes to wait for you to finish a CME login when CME refuses a download (default 15; 0 = never wait)")
     rp = sub.add_parser("replay", help="re-render a saved run offline (no network, no delivery)")
     rp.add_argument("--run", help="run id to replay (default: the latest committed snapshot)")
     rp.add_argument("--out", help="output folder (default: <data folder>/<day folder>/replay_<run id>)")
-    sub.add_parser("import-history", help="import old files and tables into the lake (idempotent)")
+    ih = sub.add_parser("import-history", help="import old files and tables into the lake (idempotent); takes the run "
+                                               "lock and first copies portfolio.db to <data>/backups/")
+    ih.add_argument("--no-backup", action="store_true", help="do not back portfolio.db up before importing")
+    sub.add_parser("backfill-positions", help="record engine tickets for committed live runs that have none "
+                                              "(idempotent; takes the run lock)")
     rs = sub.add_parser("resend", help="send a saved run's email.eml again (explicit; never automatic)")
     rs.add_argument("--run", help="run id to resend (default: the latest committed snapshot)")
     c = sub.add_parser("catalog", help="print the variable catalog + lineage (Markdown) for a run")
     c.add_argument("--run", help="run id (default: the latest committed snapshot)")
-    sub.add_parser("status", help="print the last 10 runs and the current run's status")
-    sub.add_parser("cme-login", help="log in to CME in a browser window (MFA) and save the session")
-    sub.add_parser("ntfy-test", help="send the latest run's phone brief (summary + report attachment) to NTFY_URL")
+    sub.add_parser("status", help="print the last 10 runs and the current run's status ('interrupted' = the run died)")
+    sub.add_parser("cme-login", help="log in to CME in a browser window (MFA) and save the session (takes the run lock)")
+    sub.add_parser("ntfy-test", help="send the latest run's phone brief (summary + report attachment) to NTFY_URL; "
+                                     "exits 2 when it was not sent")
     a = p.parse_args(argv)
+    try:
+        return _dispatch(a)
+    except config.ConfigError as e:
+        print(f"ConfigError: {e}", file=sys.stderr)
+        return 1
+
+
+def _dispatch(a):
     if a.cmd in (None, "run"):
         a.offline = getattr(a, "offline", False)
         return run(offline=a.offline, deliver=not getattr(a, "no_deliver", False) and not a.offline,
@@ -459,12 +641,28 @@ def main(argv=None):
                    use_browser=not getattr(a, "no_cme_browser", False), skip_cme=getattr(a, "skip_cme", False),
                    max_volume_files=min(getattr(a, "cme_max_files", 10), config.CME_BACKFILL_MAX_ATTEMPTS),
                    login_wait_seconds=max(0, getattr(a, "login_wait", 15)) * 60)
+    if a.cmd == "import-history":
+        return import_history_command(backup=not a.no_backup)
+    if a.cmd == "backfill-positions":
+        return backfill_positions() if _database_ready() else 1
+    if a.cmd == "cme-login":
+        from core import cme
+        config.ensure_data_dir(allow_create=True)
+        lock = RunLock()
+        if not lock.acquire():
+            print(busy_message())
+            return EXIT_BUSY
+        try:
+            ok = cme.interactive_login(str(DATA_DIR / "state.json"), config.CME_LOGIN_USERNAME, config.CME_LOGIN_PASSWORD)
+        finally:
+            lock.release()
+        print("✅ CME session saved and verified" if ok else "⚠️ CME download not verified (session saved if you logged in)")
+        return 0 if ok else 1
+    # the remaining commands only read an existing database
+    if not _database_ready():
+        return 1
     if a.cmd == "replay":
         return replay(a.run, out_dir=a.out)
-    if a.cmd == "import-history":
-        from core.importer import import_history
-        import_history()
-        return 0
     if a.cmd == "resend":
         return resend(a.run)
     if a.cmd == "catalog":
@@ -488,13 +686,9 @@ def main(argv=None):
             return 1
         report = report.decode("utf-8") if isinstance(report, bytes) else report
         # test pushes do not upload: every upload is a permanent file on the server
-        print(ntfy_brief(ctx, report, config.optional_env("DASHBOARD_URL", ""), None))
-        return 0
-    if a.cmd == "cme-login":
-        from core import cme
-        ok = cme.interactive_login(str(DATA_DIR / "state.json"), config.CME_LOGIN_USERNAME, config.CME_LOGIN_PASSWORD)
-        print("✅ CME session saved and verified" if ok else "⚠️ CME download not verified (session saved if you logged in)")
-        return 0 if ok else 1
+        result = ntfy_brief(ctx, report, config.DASHBOARD_URL, None)
+        print(result)
+        return 0 if result.get("status") in ("sent", "sent_without_attachment") else 2
 
 
 if __name__ == "__main__":

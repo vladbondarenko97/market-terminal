@@ -49,7 +49,7 @@ Breaking one of these is a bug, even if the tests pass.
    add a fallback constant, a placeholder number or a silent default for market data.
 4. **Snapshots are immutable and the lake is additive.** Do not edit stored snapshots. Do not drop, rename or delete
    tables, columns or rows in `portfolio.db`. Schema changes are `CREATE ... IF NOT EXISTS` or `ADD COLUMN` in
-   `core/lake.py`.
+   `core/lake.py` (views hold no data; `migrate()` may replace one, as it does `v2_latest_snapshot`).
 5. **Models run in the pipeline.** New computation goes in `core/` and lands in the snapshot. New `/api/*` routes
    read stored data. Some existing routes compute live; do not copy that pattern.
 6. **Pipeline network calls go through `SourceSession.fetch()`** (`core/sources.py`), so they are deduplicated,

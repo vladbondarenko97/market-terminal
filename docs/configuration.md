@@ -11,8 +11,13 @@ install. For operators setting up a Mac and for contributors adding a setting. F
   package is installed (it is in `requirements.txt`), then exposes constants such as `config.FRED_API_KEY`.
   If python-dotenv is missing, `.env` is silently ignored.
 - A real environment variable wins over `.env` (python-dotenv does not override).
-- `NAME=` with nothing after it sets the variable to the empty string. For keys and URLs, empty means "not
-  configured": the feature is skipped or the source reports `missing`. The exceptions are called out below.
+- `NAME=` with nothing after it sets the variable to the empty string. A blank value (empty or only spaces)
+  counts as not set. For keys and URLs that means "not configured": the feature is skipped or the source reports
+  `missing`. For the two numbers (`SMTP_PORT`, `OPTIONS_WHALE_PORT`) it means the default. A value that is not a
+  whole number between 1 and 65535 stops every script that imports `config` with `ConfigError: SMTP_PORT must be a
+  whole number ...`, so a typo is reported and not guessed.
+- A legacy alias (`DB_API_KEY` for `DATABENTO_API_KEY`) is used whenever its primary is unset **or blank**, in
+  every script.
 - Flags that are compared with `1` (`SCHEDULED_RUNS`, `REPORT_UPLOAD`, `ALPHAFLOW_DEBUG`) need exactly `1`.
 - `setup.sh` creates `.env` from [`.env.example`](../.env.example) and sets its mode to 600. `.env` is never
   committed (`.gitignore`).
@@ -37,10 +42,14 @@ session. `config.py` resolves it once, when it is first imported, in this order:
    - If the sibling folder does **not exist** and the Desktop folder has a `portfolio.db`, the Desktop folder is
      used.
    - Otherwise the sibling is used. An existing but empty sibling wins over a Desktop installation.
-3. **Side effect on import:** when the folder that was chosen is the sibling and it does not exist, importing
-   `config` creates it (empty). An explicit `PORTFOLIO_DATA_DIR` that does not exist is not created. The pipeline
-   then stops with `ConfigError: Data directory ... does not exist` (`config.ensure_data_dir()`, called by
-   `main_pipeline.py run`). `setup.sh` creates the folder itself with `mkdir -p`.
+3. **Nothing is created on import.** Importing `config` only works out the path (`config.DATA_DIR`, and
+   `config.DATA_DIR_EXPLICIT`, which is true when `PORTFOLIO_DATA_DIR` is set). Folders are created by commands:
+   `main_pipeline.py run`, `cme-login`, `download_volume.py` and `update_inventory.py` create the default sibling
+   `CME_Data` when it is missing (`config.ensure_data_dir(allow_create=True)`). A `PORTFOLIO_DATA_DIR` that does
+   not exist is never created, by anything: the command stops with `ConfigError: Data directory ... does not
+   exist` (exit code 1 from `main_pipeline.py`). Commands that only read, and `import-history`, never create the
+   folder. `setup.sh` creates it itself with `mkdir -p`. A script run from a fresh clone therefore leaves no empty
+   `CME_Data` next to the repository.
 
 On a Mac that could hold two installations, pin the folder in `.env` and leave it there:
 
@@ -53,6 +62,7 @@ Derived values, all from `config.py`:
 | Name | Value |
 |---|---|
 | `DATA_DIR` | the folder above |
+| `DATA_DIR_EXPLICIT` | `True` when `PORTFOLIO_DATA_DIR` is set; such a folder is never created for you |
 | `DB_PATH` | `DATA_DIR/portfolio.db` |
 | `daily_dir()` | `DATA_DIR/<Mon-DD-YY>`, the day in America/Chicago (`config.TZ_NAME`), for example `Sep-29-26` |
 | `PROJECT_ROOT` | the repository folder (also holds `.env`) |
@@ -66,23 +76,19 @@ means `main_pipeline.py`; "terminal" means `options_whale/api_router.py`.
 
 | Variable | Default / alias | Read by | When empty |
 |---|---|---|---|
-| `DATABENTO_API_KEY` | `""`. Legacy alias: `DB_API_KEY` | `config.DATABENTO_API_KEY` for the pipeline (`core/collect.py`, `core/sources.py databento_trades()`); `options_whale/api_router.py` at import; `setup.sh`; `alphaflow/engine.py` | Pipeline: the SPY and SLV block-trade flow sections report `missing`; the run continues. **Terminal: the server does not start** (it raises `EnvironmentError` at import). `setup.sh` installs the login service but does not start it. |
+| `DATABENTO_API_KEY` | `""`. Legacy alias: `DB_API_KEY` (used when this is unset or blank) | `config.DATABENTO_API_KEY` for the pipeline (`core/collect.py`, `core/sources.py databento_trades()`); `config.require_databento_key()` in `options_whale/api_router.py` at import; `setup.sh`; `alphaflow/engine.py` | Pipeline: the SPY and SLV block-trade flow sections report `missing`; the run continues. **Terminal: the server does not start** (it raises `EnvironmentError` at import). `setup.sh` installs the login service but does not start it. |
 | `FRED_API_KEY` | `""` | `core/collect.py` (macro series, Forecast Lab inputs, CPI dates) | Every FRED series reports `missing`. This includes the high-yield spread, so **VMRI shows `INCOMPLETE DATA`** (its credit input comes from FRED). Forecast Lab cards 5 and 6 lose their FRED inputs, and card 7 loses the CPI dates. |
 | `EIA_API_KEY` | `""` | `core/sources.py eia_weekly()` | The public EIA `.xls` history file is used instead. Nothing is lost. |
 | `GOLD_API_KEY` | `""` | `core/collect.py _spot()` (goldapi.io spot silver) | `prices.silver_spot` reports `missing`; the futures-minus-spot basis is empty. |
 | `EBAY_APP_ID`, `EBAY_CERT_ID` | `""` | `core/collect.py collect_ebay()`; `ebay.py` (run by the terminal's `/api/silver_eagle_prices`) | Silver Eagle listings report `missing`. Both are needed. `ebay.py` exits with "Cannot proceed without a valid eBay API token". |
-| `ALPHA_VANTAGE_KEY` | `""` | defined in `config.py`, **read by nothing** | No effect. Unused; safe to leave out of `.env`. |
 
-**Databento key.** Fill `DATABENTO_API_KEY`. `DB_API_KEY` is the name an older version used; leave it blank.
-The two names are not treated the same way:
+**Databento key.** Fill `DATABENTO_API_KEY`. `DB_API_KEY` is the name an older version used; it still works. Every
+reader (the pipeline, the terminal, AlphaFlow, `setup.sh`) goes through `config.DATABENTO_API_KEY`, which takes the
+alias whenever `DATABENTO_API_KEY` is unset or blank, so a `.env` copied from the template with
+`DATABENTO_API_KEY=` blank and only `DB_API_KEY` filled works everywhere. `config.require_databento_key()` returns the
+key or raises `EnvironmentError`; the terminal calls it at import.
 
-- `config.optional_env()` uses the alias only when the primary variable is *not set at all*.
-- `config.required_env()` also uses the alias when the primary is set but *blank*.
-
-A `.env` copied from the template has `DATABENTO_API_KEY=` blank. If only `DB_API_KEY` is filled, the terminal
-accepts it (it uses `required_env`), but `config.DATABENTO_API_KEY` stays empty, so the pipeline sees no key and
-`setup.sh` does not start the server. Known issue: the alias works in `required_env` only. See
-[Known issues](known-issues.md).
+`ALPHA_VANTAGE_KEY` was removed: nothing read it. A leftover line in `.env` is ignored.
 
 ### CME login
 
@@ -95,49 +101,56 @@ accepts it (it uses `required_env`), but `config.DATABENTO_API_KEY` stays empty,
 Email is sent with `send_email.py deliver()`: plain SMTP with STARTTLS on `SMTP_PORT` (587 works; an implicit-SSL
 port such as 465 does not). The message is always saved as `email.eml` first.
 
+The four settings `EMAIL_SENDER`, `EMAIL_PASSWORD`, `SMTP_SERVER` and `RECIPIENT_EMAIL` go together. **All four
+empty: email is `skipped`**, which is not a warning (a machine that never sends email ends its runs clean). **Some
+set, some empty: `failed`**, with the empty names in the detail, and the run ends `completed_with_warnings`.
+
 | Variable | Default | Read by | When empty |
 |---|---|---|---|
-| `EMAIL_SENDER` | `""` | `send_email.py` (login and From header) | Email is not sent: status `failed`, detail `EMAIL_SENDER/EMAIL_PASSWORD not configured`. The run ends `completed_with_warnings`. |
+| `EMAIL_SENDER` | `""` | `send_email.py` (login and From header) | With the other three also empty, email is `skipped`. Otherwise it is not sent: status `failed`, detail `email partly configured: EMAIL_SENDER empty`. |
 | `EMAIL_PASSWORD` | `""` | `send_email.py` | Same as above. Use an app password if your provider offers one. |
-| `SMTP_SERVER` | `""` | `send_email.py` | Email is not sent (`SMTP_SERVER/RECIPIENT_EMAIL not configured`). |
-| `SMTP_PORT` | `587` | `config.py` as `int(...)` | **Do not leave it blank.** `SMTP_PORT=` makes `import config` fail with `ValueError`, which stops every script. Delete the line or keep `587`. Known issue: no fallback for a blank value. See [Known issues](known-issues.md). |
-| `RECIPIENT_EMAIL` | `""` | `send_email.py` (To header) | Email is not sent. |
+| `SMTP_SERVER` | `""` | `send_email.py` | Same as above. |
+| `SMTP_PORT` | `587` | `config.SMTP_PORT` | Empty or blank: 587. Text that is not a number from 1 to 65535 is a `ConfigError`. |
+| `RECIPIENT_EMAIL` | `""` | `send_email.py` (To header) | Same as above. |
 | `REPORT_SENDER` | `EMAIL_SENDER` | `scripts/import_email_positions.py` only | The script uses `EMAIL_SENDER`. If both are empty it exits and asks you to set one. |
 
 ### Phone push and dashboard link
 
 | Variable | Default | Read by | When empty |
 |---|---|---|---|
-| `NTFY_URL` | `""` | `send_email.py` (daily brief, refinery alerts, CME login alert). `options_whale/api_router.py` imports it, but only dead code uses it. | No pushes are sent. Event alerts are recorded as `skipped` (`NTFY_URL not configured`); the daily brief is recorded as `failed` (known issue, see [Known issues](known-issues.md)). Use the full topic URL, for example `https://ntfy.sh/<topic>`. |
-| `DASHBOARD_URL` | `""` | `main_pipeline.py` through `config.optional_env` | The daily push has no **Dashboard** button. Set it to the address of your terminal that your phone can reach (for example a Tailscale address). |
+| `NTFY_URL` | `""` | `send_email.py` (daily brief, refinery alerts, CME login alert) | No pushes are sent. The daily brief and every alert are recorded as `skipped` (`NTFY_URL not configured`), which is not a warning. `main_pipeline.py ntfy-test` exits 2. Use the full topic URL, for example `https://ntfy.sh/<topic>`. |
+| `DASHBOARD_URL` | `""` | `main_pipeline.py` through `config.DASHBOARD_URL` | The daily push has no **Dashboard** button. Set it to the address of your terminal that your phone can reach (for example a Tailscale address). |
 
 ### Upload
 
 Uploads go to the receiver described in [server/README.md](../server/README.md). Only delivered runs upload:
-`--no-deliver`, `--no-upload` and `--offline` skip it.
+`--no-deliver`, `--no-upload` and `--offline` skip it. `UPLOAD_URL` and `UPLOAD_TOKEN` go together: both empty is
+`skipped` (not a warning); only one set is `failed` (a warning). The check happens before any database copy is built.
+An upload counts only when the receiver's JSON reply says `ok` for every file sent; see
+[Operations](operations.md#uploads).
 
 | Variable | Default | Read by | When empty |
 |---|---|---|---|
-| `UPLOAD_URL` | `""` | `upload_data.py` (its own read; `config.UPLOAD_URL` exists but is unused) | Nothing is uploaded. `upload_files()` returns `failed` with `UPLOAD_URL/UPLOAD_TOKEN not configured in .env`. This is recorded in `v2_runs.delivery_detail` and does not add a run warning. |
-| `UPLOAD_TOKEN` | `""` | `upload_data.py` | Same. Must equal the token in `/etc/portfolio-upload/token` on the server. |
-| `REPORT_UPLOAD` | `""` | `upload_data.py upload_report()` | Set to exactly `1` to also upload the daily report under an unguessable name, so the push can carry a permanent **Full report** link. Needs `UPLOAD_URL` and `UPLOAD_TOKEN`. |
+| `UPLOAD_URL` | `""` | `config.UPLOAD_URL`, used by `upload_data.py` | Nothing is uploaded. With `UPLOAD_TOKEN` also empty, `upload_files()` returns `skipped`, recorded in `v2_runs.delivery_detail` with no run warning. With only one of the two set it returns `failed`, which is a warning. |
+| `UPLOAD_TOKEN` | `""` | `config.UPLOAD_TOKEN`, used by `upload_data.py` | Same. Must equal the token in `/etc/portfolio-upload/token` on the server. |
+| `REPORT_UPLOAD` | `""` | `config.REPORT_UPLOAD`, used by `upload_data.py upload_report_result()` | Set to exactly `1` to also upload the daily report under an unguessable name, so the push can carry a permanent **Full report** link. Needs `UPLOAD_URL` and `UPLOAD_TOKEN`; with `1` and no receiver the report upload is `failed` (a warning). Not `1`: `skipped`. |
 
 ### Per-machine settings
 
 | Variable | Default | Read by | When empty |
 |---|---|---|---|
-| `PORTFOLIO_DATA_DIR` | see [Data folder](#data-folder) | `config.py` | The sibling `CME_Data` (or the Desktop fallback) is used. |
-| `OPTIONS_WHALE_PORT` | `8080` | `options_whale/api_router.py` (`os.environ`); `setup.sh` and `menubar/optionswhale.10s.sh` (parse `.env` with `sed`) | Empty means 8080. **Write it unquoted** (`OPTIONS_WHALE_PORT=9090`): the shell scripts only match digits right after `=`, so a quoted value would be read as 8080 by them and as 9090 by Python. |
+| `PORTFOLIO_DATA_DIR` | see [Data folder](#data-folder) | `config.py` | The sibling `CME_Data` (or the Desktop fallback) is used. A folder named here is never created for you. |
+| `OPTIONS_WHALE_PORT` | `8080` | `config.OPTIONS_WHALE_PORT`, read by `options_whale/api_router.py`; `setup.sh` and `menubar/optionswhale.10s.sh` (parse `.env` with `sed`) | Empty means 8080. **Write it unquoted** (`OPTIONS_WHALE_PORT=9090`): the shell scripts only match digits right after `=`, so a quoted value would be read as 8080 by them and as 9090 by Python. |
 | `SCHEDULED_RUNS` | `""` | `config.SCHEDULED_RUNS`; `main_pipeline.py run`; written by `setup.sh` | Must be exactly `1` on the one Mac that owns the schedule. With any other value, runs started with `--trigger scheduled` print a skip message and exit 0. Manual runs ignore it. `setup.sh --schedule` sets it to `1`; `--remove-schedule` and `--uninstall` blank it. `run_dashboard.command` with no argument uses the `scheduled` trigger. |
 
 ### Standalone tools
 
-AlphaFlow (`alphaflow/`) is a separate app. It reads the same `.env` through its own code.
+AlphaFlow (`alphaflow/`) is a separate app. It reads the same `.env` through `config.py`.
 
 | Variable | Default | Read by | When empty |
 |---|---|---|---|
-| `ALPHAFLOW_DEBUG` | unset | `alphaflow/server.py` | Must be exactly `1` to turn on Flask debug mode, which also limits the server to `127.0.0.1`. Otherwise it listens on all interfaces, port 5001. Not in the template as an active line. |
-| `DATABENTO_API_KEY` | | `alphaflow/engine.py`, with `os.getenv` | Prints "Valid DATABENTO_API_KEY not found in .env, simulating..." and returns no trades. The `DB_API_KEY` alias is not honoured here. |
+| `ALPHAFLOW_DEBUG` | unset | `config.ALPHAFLOW_DEBUG`, read by `alphaflow/server.py` | Must be exactly `1` to turn on Flask debug mode, which also limits the server to `127.0.0.1`. Otherwise it listens on all interfaces, port 5001. Not in the template as an active line. |
+| `DATABENTO_API_KEY` | | `alphaflow/engine.py`, through `config.DATABENTO_API_KEY` | Prints "Valid DATABENTO_API_KEY not found in .env, simulating..." and returns no trades. The `DB_API_KEY` alias is honoured. |
 
 ## Browser keys for index.html
 
@@ -207,19 +220,17 @@ What happens without it (checked by running the collector without the package):
 
 ## Rules
 
-- Read settings in `config.py` only. Add a constant there with `optional_env("NAME", default="")`, add the
-  variable to `.env.example` with a comment, and add a row to the table above. Other code imports the constant.
+- Read settings in `config.py` only. Add a constant there with `optional_env("NAME", default="")` (text),
+  `int_env("NAME", default, minimum=, maximum=)` (a number) or `flag_env("NAME")` (a switch that needs exactly `1`),
+  add the variable to `.env.example` with a comment, and add a row to the table above. Other code imports the
+  constant (`config.NAME`); tests patch it on the module that uses it.
+- Importing `config` must stay free of side effects: no folders, no network, no credential checks. Code that cannot
+  run without a key asks for it when it starts (`config.require_databento_key()`).
 - Never hardcode a data path or a key. Use `config.DATA_DIR`, `config.DB_PATH` and `config.daily_dir()`.
 - A missing optional key must give `status: "missing"` with a reason, never a made-up value.
 
-Known issues (places that break the first rule today). See [Known issues](known-issues.md).
+Places that read `.env` without importing `config`, and why:
 
-| Where | What it does instead |
+| Where | Why |
 |---|---|
-| `alphaflow/engine.py` | Loads `../.env` with its own `load_dotenv` and reads `DATABENTO_API_KEY` with `os.getenv` (no alias) |
-| `alphaflow/server.py` | Reads `ALPHAFLOW_DEBUG` with `os.environ` |
-| `options_whale/api_router.py` | Reads `OPTIONS_WHALE_PORT` with `os.environ`, and reads the Databento key at import with `config.required_env` instead of a config constant (`config.require_databento_key()` exists and is unused) |
-| `upload_data.py` | Reads `UPLOAD_URL` again (config has an unused copy) and reads `UPLOAD_TOKEN` and `REPORT_UPLOAD` with `config.optional_env`; neither is a config constant |
-| `main_pipeline.py` | Reads `DASHBOARD_URL` with `config.optional_env`; it is not a config constant |
 | `setup.sh`, `menubar/optionswhale.10s.sh` | Parse `OPTIONS_WHALE_PORT` out of `.env` with `sed` (a shell script cannot import `config`); `setup.sh` also writes `SCHEDULED_RUNS` with `sed` |
-| `fix_csv.py` | One-off script outside the pipeline. It hardcodes a Desktop data path. |

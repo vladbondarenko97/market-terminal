@@ -54,7 +54,10 @@ Nothing else in the project creates a `v2_*` object. Refinery outages, EIA serie
 SLV trust are not separate tables; they are observations and payloads (below).
 
 Run `status` values: `running`, `committed` (snapshot stored, export pending), `completed`,
-`completed_with_warnings`, `failed` (before the snapshot was committed). The manual helpers `download_volume.py`
+`completed_with_warnings`, `failed` (before the snapshot was committed), and `interrupted` (a run that was still
+`running` when it was killed; the next run marks it). `delivery_status` values: `smtp_accepted`, `failed`,
+`outcome_unknown`, `skipped` (email not configured), `not_requested` (`--no-deliver`, offline, replay) and
+`attempting`. The manual helpers `download_volume.py`
 and `update_inventory.py` store payloads under the pseudo run ids `manual-download` and `manual-inventory`, which
 have no `v2_runs` row.
 
@@ -149,7 +152,7 @@ CME_Data/
 
 | Item | What it is | Written by |
 |---|---|---|
-| `.v2_run.lock` | `fcntl` lock file. The file stays on disk and keeps the last process id; what matters is whether the lock is held. A second run finds it held and exits with code 75. | `RunLock` in `main_pipeline.py` |
+| `.v2_run.lock` | `fcntl` lock file. The file stays on disk and keeps the last process id; what matters is whether the lock is held. A second run finds it held and exits with code 75. | `RunLock` in `core/runlock.py` |
 | `.v2_run_status.json` | Run id, stage, state, start and finish time; read by `main_pipeline.py status` and by a second run that finds the lock busy. Written atomically (temp file `..v2_run_status.json.tmp`). | `set_status()` |
 | `state.json` | Cookies from the CME session. **Sensitive.** Refreshed at the end of every CME listing fetch and after a login. Never imported into the database and never uploaded. | `cme.save_session()` |
 | `.cme_browser_profile/` | Chromium profile (cookies, local storage, the Duo "remember me" data). **Sensitive.** Ignored by the importer because the name starts with a dot. | `cme.open_persistent_context()` |
