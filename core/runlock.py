@@ -8,6 +8,7 @@ they use `lock_is_held()` to ask without taking it.
 import fcntl
 import json
 import os
+import time
 from contextlib import contextmanager
 
 from config import DATA_DIR
@@ -26,14 +27,20 @@ class RunLock:
     def __init__(self):
         self.fh = None
 
-    def acquire(self):
+    def acquire(self, attempts=5, pause=0.1):
+        """Take the lock without waiting for a run. A few quick retries cover `lock_is_held()`, which holds the lock
+        for an instant while it checks; a real run holds it for minutes, so the answer is still BUSY."""
         self.fh = open(LOCK_PATH, "a+")
-        try:
-            fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            self.fh.close()
-            self.fh = None
-            return False
+        for attempt in range(attempts):
+            try:
+                fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if attempt == attempts - 1:
+                    self.fh.close()
+                    self.fh = None
+                    return False
+                time.sleep(pause)
         self.fh.seek(0)
         self.fh.truncate()
         self.fh.write(str(os.getpid()))
@@ -50,8 +57,8 @@ class RunLock:
 def lock_is_held():
     """True while any process (this one included, through another RunLock) holds the run lock.
 
-    A non-blocking probe that never keeps the lock. It takes the lock for an instant when it is free, so a run
-    starting in that instant can see a false BUSY; callers treat the answer as a status display, not a guard."""
+    A non-blocking probe that never keeps the lock. It takes the lock for an instant when it is free; RunLock.acquire()
+    retries briefly, so a run starting in that instant still gets the lock."""
     try:
         fh = open(LOCK_PATH, "r")
     except OSError:

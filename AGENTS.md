@@ -86,12 +86,12 @@ the pipeline; do not wire them in. The full list is in
 
 ## Testing the server
 
-`options_whale/api_router.py` needs `DATABENTO_API_KEY` at import time. Use a dummy key, a scratch data folder and
-Flask's test client. Routes that read stored data work offline; live routes call yfinance, Databento or eBay, so
+Import `options_whale/api_router.py` with a scratch data folder and use Flask's test client (no key is needed; the
+dark pool route answers 503 without one). Routes that read stored data work offline; live routes call yfinance, Databento or eBay, so
 avoid them in automated checks.
 
 ```bash
-PORTFOLIO_DATA_DIR=/tmp/mt DATABENTO_API_KEY=dummy .venv/bin/python -c "
+PORTFOLIO_DATA_DIR=/tmp/mt .venv/bin/python -c "
 import sys; sys.path.insert(0, 'options_whale')
 import api_router
 c = api_router.app.test_client()
@@ -133,6 +133,7 @@ Which routes are stored and which are live is listed in [docs/api.md](docs/api.m
 - An offline run commits a snapshot like any other and becomes the latest one the terminal shows. Use a scratch
   folder.
 - Many terminal routes return HTTP 200 with `{"status": "error"}` on failure. Check the body, not only the code.
-- `GET /api/silver_eagle_prices` writes ledger rows (it runs `ebay.py`). Do not call it in checks.
+- `POST /api/silver_eagle_prices` writes a ledger row (it runs `ebay.py`), and `POST /run` starts a real pipeline
+  run. Do not call either in checks.
 - Known bugs are listed in [docs/known-issues.md](docs/known-issues.md). Check there before "fixing" something
   surprising, and keep fixes out of unrelated changes.

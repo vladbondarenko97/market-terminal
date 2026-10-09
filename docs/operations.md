@@ -55,9 +55,9 @@ An explicit `PORTFOLIO_DATA_DIR` that does not exist is an error for the pipelin
 ```bash
 git clone https://github.com/vladbondarenko97/market-terminal.git
 cd market-terminal
-./setup.sh                 # first pass: creates .env; the server is installed but not started (no API key yet)
-# fill in .env (at least DATABENTO_API_KEY), then:
-./setup.sh                 # second pass: starts the server
+./setup.sh                 # first pass: creates .env and starts the server
+# fill in .env (see Configuration for what each key unlocks), then:
+./setup.sh                 # second pass: restarts the server with the new settings
 ./setup.sh --schedule      # only on the ONE Mac that should run the pipeline on a schedule
 ```
 
@@ -87,8 +87,8 @@ performs the uninstall.
    data folder through `config.py` and creates it (error if it cannot, for example a `PORTFOLIO_DATA_DIR` copied
    from another Mac). Reads `OPTIONS_WHALE_PORT` from `.env` (blank or missing means 8080). Warns when the data folder has no `portfolio.db`.
 4. **Server login service.** Writes the plist, then starts the service and waits up to 45 seconds for HTTP 200 on
-   `http://127.0.0.1:<port>/`. If `DATABENTO_API_KEY` (or `DB_API_KEY`) is empty the service is installed but not
-   started, because the server cannot import without the key.
+   `http://127.0.0.1:<port>/`. With `DATABENTO_API_KEY` (or `DB_API_KEY`) empty it warns that the dark pool panels
+   stay empty; the server still starts.
 5. **Pipeline schedule** (only with `--schedule`). Asks `core/market_calendar.py` for the local fire times (see
    [Scheduling](#scheduling)), writes the schedule plist with one entry per distinct weekday, hour and minute, sets
    `SCHEDULED_RUNS=1` in `.env`, loads the job, and prints `ok: N launch times, local clock times HH:MM HH:MM ...`
@@ -115,12 +115,12 @@ performs the uninstall.
 ### What it prints
 
 Progress lines start with `==>`; `ok:` lines confirm a step; warnings (`!!`) and fatal errors (`xx`) go to stderr.
-It ends with a summary: the server line (`running at http://localhost:<port>`, `installed but NOT responding`, or
-`NOT started`), the menu bar line, a schedule line, and the server log path. If a schedule plist exists but
+It ends with a summary: the server line (`running at http://localhost:<port>` or `installed but NOT responding`), a
+`Keys:` line when `DATABENTO_API_KEY` is empty, the menu bar line, a schedule line, and the server log path. If a schedule plist exists but
 `--schedule` was not given, the summary reminds you to run `--remove-schedule` unless this Mac is the scheduler.
 
-**Exit status.** 0 only when the server answers at the end. Otherwise 1, including the normal first pass before
-`.env` is filled in and including a pass where the schedule installed correctly but the server is down.
+**Exit status.** 0 only when the server answers at the end. Otherwise 1, including a pass where the schedule
+installed correctly but the server is down.
 `--remove-schedule` and `--uninstall` exit 0.
 
 ### One Mac owns the schedule
@@ -647,7 +647,7 @@ plugin. A link that points elsewhere, or a regular file with the same name, is l
 | A Chromium window opened and the run waits | CME refused a download, so it waits for login. | Finish login and MFA in that window. To avoid the wait use `--login-wait 0` or `--skip-cme`. |
 | `CME session missing/expired: run python main_pipeline.py cme-login` | The login did not complete in time or the session expired. | `python main_pipeline.py cme-login`, then run again. |
 | CME section marked `cached` or `stale` | No new workbook this run (see [CME login](#cme-login)). | Check the CME outcome in the log; log in; drop missing workbooks into the data folder. |
-| Menu bar icon red, or `Server: NOT started` | `DATABENTO_API_KEY` is empty, so the server cannot start; or the port is taken. | Set the key in `.env`, set `OPTIONS_WHALE_PORT` if needed, run `./setup.sh`, read `optionswhale.log`. |
+| Menu bar icon red, or `Server: installed but NOT responding` | The port is taken, or the server failed to start. | Set `OPTIONS_WHALE_PORT` if needed, run `./setup.sh`, read `optionswhale.log`. |
 | `./setup.sh` exits 1 | The server is not up at the end (also the normal first pass). | Read the summary; fill in `.env`; run it again. |
 | Run ends `completed_with_warnings` (exit 3) | A stage failed, a ledger step failed, or a configured delivery channel failed (email, ntfy push, upload). | `status`, then the run's `error` text and `stages_json`. Fix `.env`, then `resend`. A channel with no settings at all is skipped and never causes this. |
 | Email status `outcome_unknown` | The connection dropped during the send. | Check the mailbox. Only then `resend`. |

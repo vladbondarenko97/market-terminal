@@ -80,7 +80,7 @@ from. How the card looks in the browser is in [Terminal](terminal.md#forecast-la
 |---|---|
 | **?** | Opens a help dialog from `FC_FAQ` in `forecast.js`: what the card shows, how to read it, how to trade with it, how hedge funds and quant desks use it, and caveats. Esc or a click outside closes it. |
 | **⛶** | Full screen. Esc, the ⛶ button or a click on the dark backdrop returns. |
-| **COPY** | Copies `{ticker, run, card, data}` as JSON, where `card` is the title and `data` is the card's part of the response (`copyForecastCard()`). It uses the terminal's Copy dialog, which may be hidden on this tab; the clipboard copy still happens. See [Terminal: known issues](terminal.md#known-issues-in-the-controls). |
+| **COPY** | Copies `{ticker, run, card, data}` as JSON, where `card` is the title and `data` is the card's part of the response (`copyForecastCard()`). It also shows the JSON in the terminal's Copy dialog. |
 
 ## Status contract
 

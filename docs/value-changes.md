@@ -37,6 +37,19 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **Terminal live routes** (computed per request, never stored; listed here because the numbers on screen move):
+  - `/api/gex` computes zero gamma with the pipeline's `gex_profile()` (`gex_v2`, `zero_gamma_v1`) instead of
+    returning spot; walls and strikes come from the same profile.
+  - `/api/darkpool` reads Databento sides the pipeline's way (`block_flow_v2`: `B` buy, `A` sell, `N` unknown), so its
+    bias and BUY/SELL labels are the opposite of before. It uses the VWAP heuristic when less than half the block
+    volume has a known side, and says which method it used.
+  - Time Arbitrage: the oscillator is the mean of the components that have data (it divided by 3 even when GEX and
+    DIX were empty); IV bleed, vanna and charm use the 15 strikes nearest spot and the probability matrix the 5
+    nearest (they used the lowest strikes); contracts with unknown open interest are skipped, not weighted as 1.
+  - `/api/option_calc` uses the requested ticker's realised volatility (it always used SPY's) and reports
+    `market_price: null` when there is no quote (it showed the Black-Scholes price as if it were one).
+  - No invented fallbacks: where these routes used VIX 20, IV 0.20, a 5% rate, 15% volatility or zero gamma 0.5%
+    below spot, the value is now `null` with a reason.
 - **Engine ticket horizon marks** (`HORIZON_VERSION` `horizons_v1` to `horizons_v2`): the `market` basis of the
   +1D / +1W / +2W values used the **first** mark recorded on the target day (the opening run's chain). It now uses the
   **last** one (`positions._market_mark()`), the run closest to the close. Tickets whose target day had both a

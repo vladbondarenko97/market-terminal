@@ -1,8 +1,8 @@
 # Configuration
 
 Every setting the project reads: where the data folder is, every variable in `.env`, the keys for the static
-`index.html` page, the fixed limits in code, and the one optional dependency that `requirements.txt` does not
-install. For operators setting up a Mac and for contributors adding a setting. For commands see
+`index.html` page, the fixed limits in code, and what happens when the Shanghai benchmark package is missing. For
+operators setting up a Mac and for contributors adding a setting. For commands see
 [Operations](operations.md); for what ends up in the data folder see [Data](data.md).
 
 ## How settings are loaded
@@ -76,7 +76,7 @@ means `main_pipeline.py`; "terminal" means `options_whale/api_router.py`.
 
 | Variable | Default / alias | Read by | When empty |
 |---|---|---|---|
-| `DATABENTO_API_KEY` | `""`. Legacy alias: `DB_API_KEY` (used when this is unset or blank) | `config.DATABENTO_API_KEY` for the pipeline (`core/collect.py`, `core/sources.py databento_trades()`); `config.require_databento_key()` in `options_whale/api_router.py` at import; `setup.sh`; `alphaflow/engine.py` | Pipeline: the SPY and SLV block-trade flow sections report `missing`; the run continues. **Terminal: the server does not start** (it raises `EnvironmentError` at import). `setup.sh` installs the login service but does not start it. |
+| `DATABENTO_API_KEY` | `""`. Legacy alias: `DB_API_KEY` (used when this is unset or blank) | `config.DATABENTO_API_KEY` for the pipeline (`core/collect.py`, `core/sources.py databento_trades()`); `config.require_databento_key()` in `options_whale/api_router.py` (first dark pool request); `setup.sh`; `alphaflow/engine.py` | Pipeline: the SPY and SLV block-trade flow sections report `missing`; the run continues. Terminal: the server starts, and `/api/darkpool` answers 503 naming the missing key. `setup.sh` warns. |
 | `FRED_API_KEY` | `""` | `core/collect.py` (macro series, Forecast Lab inputs, CPI dates) | Every FRED series reports `missing`. This includes the high-yield spread, so **VMRI shows `INCOMPLETE DATA`** (its credit input comes from FRED). Forecast Lab cards 5 and 6 lose their FRED inputs, and card 7 loses the CPI dates. |
 | `EIA_API_KEY` | `""` | `core/sources.py eia_weekly()` | The public EIA `.xls` history file is used instead. Nothing is lost. |
 | `GOLD_API_KEY` | `""` | `core/collect.py _spot()` (goldapi.io spot silver) | `prices.silver_spot` reports `missing`; the futures-minus-spot basis is empty. |
@@ -86,7 +86,7 @@ means `main_pipeline.py`; "terminal" means `options_whale/api_router.py`.
 reader (the pipeline, the terminal, AlphaFlow, `setup.sh`) goes through `config.DATABENTO_API_KEY`, which takes the
 alias whenever `DATABENTO_API_KEY` is unset or blank, so a `.env` copied from the template with
 `DATABENTO_API_KEY=` blank and only `DB_API_KEY` filled works everywhere. `config.require_databento_key()` returns the
-key or raises `EnvironmentError`; the terminal calls it at import.
+key or raises `EnvironmentError`. The terminal creates its Databento client on the first `/api/darkpool` request.
 
 `ALPHA_VANTAGE_KEY` was removed: nothing read it. A leftover line in `.env` is ignored.
 
@@ -191,32 +191,21 @@ These are constants in code, not settings. Change them in code.
 | `eia` | 5 |
 | `tceq`, `cftc`, `yahoo`, `fred` | 2 each |
 | `forexfactory`, `databento`, `goldapi`, `akshare`, `ebay`, `cme` | 1 each |
-| any provider not listed (`ishares`, `federalreserve`) | none in practice: `fetch()` builds a new default semaphore on every call, so nothing is shared (known issue, see [Known issues](known-issues.md)) |
+| any provider not listed (`ishares`, `federalreserve`) | 1 each (one semaphore per provider, created on first use) |
 
 Other bounds: `core/api_client.py` (used only by `ebay.py`) uses a 15 s timeout and 3 retries with backoff on
 429 and 5xx; `EIA_API_LENGTH` in `core/sources.py` is 5000 rows (the full weekly history).
 
-## Optional dependency
+## Shanghai benchmark dependency
 
 **akshare.** `core/sources.py sge_silver_benchmark()` imports `akshare` inside the fetch to read the Shanghai
-Gold Exchange (SGE) silver benchmark. `akshare` is **not** in `requirements.txt`, so `setup.sh` does not install
-it. Known issue: missing dependency. See [Known issues](known-issues.md).
+Gold Exchange (SGE) silver benchmark. It is in `requirements.txt`, so `setup.sh` installs it. A `.venv` built before
+it was added does not have it: re-run `./setup.sh` or `.venv/bin/pip install -r requirements.txt`.
 
-What happens without it (checked by running the collector without the package):
-
-1. The `ImportError` (`ModuleNotFoundError: No module named 'akshare'`) is raised inside `SourceSession.fetch()`.
-   `fetch()` catches any exception from the provider call, writes a `v2_fetch_log` row (source `akshare`,
-   outcome `error`, that message as detail), records it in the session's error list, and re-raises it as
-   `SourceUnavailable`.
-2. `collect_shanghai()` catches that and returns `{"status": "missing", "reason": "akshare: error
-   ModuleNotFoundError: No module named 'akshare'"}`. The run does not stop.
-3. The Shanghai–COMEX spread card shows the reason. The ledger columns `SHFE_Silver_USD` and `SHFE_Premium` are
-   written empty. Nothing else depends on it.
-4. Every run tries the import again, so installing the package fixes it on the next run:
-
-```bash
-.venv/bin/pip install akshare
-```
+Without the package the run does not stop: `SourceSession.fetch()` logs the `ModuleNotFoundError` in `v2_fetch_log`,
+`collect_shanghai()` returns `{"status": "missing", "reason": "akshare: error ModuleNotFoundError: ..."}`, the
+Shanghai–COMEX spread card shows that reason, and the ledger columns `SHFE_Silver_USD` and `SHFE_Premium` are written
+empty. Every run tries the import again.
 
 ## Rules
 

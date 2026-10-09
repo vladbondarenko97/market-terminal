@@ -55,7 +55,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
    (`main_pipeline.py replay`) without fetching again.
 3. **Missing is not zero.** A model or source without its inputs returns `{"status": "missing", "reason": "..."}`.
    It never returns 0, a placeholder or a remembered constant, and the UI shows the reason. Stale data is shown
-   with its real date. (Some older terminal routes still break this rule; see [Known issues](known-issues.md).)
+   with its real date.
 4. **Snapshots are immutable.** To change a value, change the model, bump its version and make a new run. Record
    the change in [Value changes](value-changes.md).
 5. **The lake is additive.** `core/lake.py` only creates tables and adds columns; it never drops, replaces or

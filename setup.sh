@@ -137,6 +137,7 @@ echo "port: $PORT"
 [ -f "$DATA_DIR/portfolio.db" ] || warn "No portfolio.db in $DATA_DIR yet. Copy CME_Data from another Mac, or run the pipeline to create it."
 
 HAVE_KEY="$(cd "$ROOT" && "$VPY" -c 'from config import DATABENTO_API_KEY as k; print(1 if k else 0)')"
+[ "$HAVE_KEY" = 1 ] || warn "DATABENTO_API_KEY is empty in .env: the server starts, but the dark pool panels stay empty."
 
 # --- 4. Server as a login service -----------------------------------------------------------
 step "Login service ($LABEL)"
@@ -177,17 +178,13 @@ plutil -lint "$PLIST" >/dev/null
 
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 SERVER_UP=0
-if [ "$HAVE_KEY" = 1 ]; then
-    # bootout returns before the old process is fully gone; retry the bootstrap briefly.
-    for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null && break; sleep 1; done
-    for _ in $(seq 1 45); do
-        if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/")" = "200" ]; then SERVER_UP=1; break; fi
-        sleep 1
-    done
-    if [ "$SERVER_UP" = 1 ]; then echo "ok: http://localhost:$PORT"; else warn "Server did not answer on port $PORT. See $LOG"; fi
-else
-    warn "DATABENTO_API_KEY is empty in .env, so the server was installed but not started."
-fi
+# bootout returns before the old process is fully gone; retry the bootstrap briefly.
+for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null && break; sleep 1; done
+for _ in $(seq 1 45); do
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/")" = "200" ]; then SERVER_UP=1; break; fi
+    sleep 1
+done
+if [ "$SERVER_UP" = 1 ]; then echo "ok: http://localhost:$PORT"; else warn "Server did not answer on port $PORT. See $LOG"; fi
 
 # --- 5. Pipeline schedule (only on the one Mac that is the source of truth) --------------------
 if [ "$SCHEDULE" = 1 ]; then
@@ -280,11 +277,10 @@ fi
 step "Summary"
 if [ "$SERVER_UP" = 1 ]; then
     echo "Server:   running at http://localhost:$PORT (starts at login, restarts if it crashes)"
-elif [ "$HAVE_KEY" = 1 ]; then
-    echo "Server:   installed but NOT responding. Check $LOG"
 else
-    echo "Server:   NOT started. Fill in $ROOT/.env (at least DATABENTO_API_KEY), then run ./setup.sh again."
+    echo "Server:   installed but NOT responding. Check $LOG"
 fi
+[ "$HAVE_KEY" = 1 ] || echo "Keys:     DATABENTO_API_KEY is empty: fill in $ROOT/.env for the dark pool panels and block flow."
 [ "$MENUBAR" = 1 ] && echo "Menu bar: whale icon, top right (status, start, stop, restart)"
 if [ "$SCHEDULE" = 1 ]; then
     echo "Schedule: this Mac runs the pipeline at the open and before the close (log: $SCHED_LOG)"

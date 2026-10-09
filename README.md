@@ -34,8 +34,7 @@ It has two parts:
 git clone https://github.com/vladbondarenko97/market-terminal.git
 cd market-terminal
 ./setup.sh                 # Homebrew, Python, .venv, .env, server login service, menu bar icon
-# Fill in .env. DATABENTO_API_KEY is required for the terminal server to start.
-./setup.sh                 # again: starts the server now that the key is set
+# Fill in .env (docs/configuration.md says what each key unlocks), then run ./setup.sh again
 
 # First run: builds the database and sends nothing.
 .venv/bin/python main_pipeline.py cme-login            # optional, needs a CME account (volume files need a login)
@@ -54,7 +53,8 @@ Tests need no network and no credentials:
 
 ## What you get
 
-- **Two runs a day** on NYSE trading days (09:31 and 15:45 ET) on the Mac that owns the schedule. Each run stores
+- **Two runs a day** on NYSE trading days (09:31 and 15:45 ET; no afternoon run on 13:00 ET early closes) on the
+  Mac that owns the schedule. Each run stores
   every provider response, computes the models and commits one immutable snapshot.
 - **The terminal**, three tabs:
   - **Macro Direction**: VMRI macro risk index and War Room scenarios, COMEX inventory and paper:physical ratio,
