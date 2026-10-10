@@ -346,7 +346,17 @@ class InsiderEdge(unittest.TestCase):
             self.assertEqual(edges._form4_filings("EXMP"), [])
             lake.record_observations(conn, [lake.obs("edgar.form4", "2026-03-03", entity="a-1", dims={"symbol": "EXMP"}, value={"owner": "X", "is_officer": True, "transactions": []}, source="sec"),
                                             lake.obs("edgar.form4", "2026-03-04", entity="a-2", dims={"symbol": "OTHER"}, value={"owner": "Y"}, source="sec")])
-            got = edges._form4_filings("EXMP")
+            lake.record_observations(conn, [      # the company's own filing as the owner of ANOTHER issuer's shares, and its insiders' filings
+                lake.obs("edgar.form4", "2026-03-05", entity="a-3", dims={"symbol": "EXMP"}, source="sec",
+                         value={"owner": "Example Corp", "is_officer": True, "issuer_cik": "0000999999", "company_cik": "0000000123", "transactions": []}),
+                lake.obs("edgar.form4", "2026-03-06", entity="a-4", dims={"symbol": "EXMP"}, source="sec",
+                         value={"owner": "Z", "is_officer": True, "issuer_cik": "123", "company_cik": "0000000123", "transactions": []}),
+                lake.obs("edgar.form4", "2026-03-07", entity="a-5", dims={"symbol": "OLD"}, source="sec", value={"owner": "A", "issuer_cik": "0000000555"}),
+                lake.obs("edgar.form4", "2026-03-08", entity="a-6", dims={"symbol": "OLD"}, source="sec", value={"owner": "B", "issuer_cik": "0000000555"}),
+                lake.obs("edgar.form4", "2026-03-09", entity="a-7", dims={"symbol": "OLD"}, source="sec", value={"owner": "Old Corp", "issuer_cik": "0000000777"})])
+            self.assertEqual([f["accession"] for f in edges._form4_filings("EXMP")], ["a-1", "a-4"])       # a-3 is about another issuer
+            self.assertEqual([f["accession"] for f in edges._form4_filings("OLD")], ["a-5", "a-6"])        # rows without company_cik: the usual issuer
+            got = [f for f in edges._form4_filings("EXMP") if f["accession"] == "a-1"]
         conn.close()
         self.assertEqual([(f["accession"], f["date"], f["owner"]) for f in got], [("a-1", "2026-03-03", "X")])
 

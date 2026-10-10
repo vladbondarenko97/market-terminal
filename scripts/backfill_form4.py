@@ -84,7 +84,7 @@ def main(argv=None):
                     failed += 1
                     print(f"    {r['accession']}: {e}")
                     continue
-                lake.record_observations(conn, [lake.obs(METRIC, r["filing_date"], entity=r["accession"], dims={"symbol": sym}, value=parsed,
+                lake.record_observations(conn, [lake.obs(METRIC, r["filing_date"], entity=r["accession"], dims={"symbol": sym}, value={**parsed, "company_cik": cik},
                                                          source="sec", payload_id=pid, time_quality="as_of_date")], run_id=run_id)
                 have.add(r["accession"])
                 stored += 1
