@@ -271,7 +271,8 @@ sqlite3 CME_Data/portfolio.db ".backup 'portfolio-copy.db'"
   run is `missing` with the offline reason). `clusters` are near-identical headlines merged (newest first, ids `S1`...): `title`,
   `published_at`, `category`, `official`, `sentiment` (VADER), `new` (first seen in this run), `sources` (`name`, `url` of every
   copy) and `cluster_key`. `items` counts fetched, in-window (36 hours; 7 days for the official category), undated (excluded,
-  never treated as fresh), new this run and clusters dropped by the 120-cluster cap. Only titles, links, source names and
+  never treated as fresh), new this run, clusters formed, and clusters dropped by the caps (60 keyword-relevant and 20 other
+  non-official clusters, then 120 in total; official clusters are never dropped). Only titles, links, source names and
   timestamps are stored, never article text. The feed list is `core/news_feeds.json` (or `NEWS_FEEDS_FILE`).
 - **`v2_news_items`** (lake table, additive): one row per distinct URL ever fetched: `url_hash` (SHA-256 of the URL, primary key),
   `title`, `url`, `source`, `category`, `published_at` (NULL when the feed gave no date), `first_seen_run`, `first_seen_at`,

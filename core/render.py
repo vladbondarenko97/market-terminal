@@ -6,6 +6,7 @@ import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from xml.dom import minidom
+from zoneinfo import ZoneInfo
 
 from core import metrics
 
@@ -772,7 +773,7 @@ def headlines_text(ctx, limit=15):
     if not rows:
         why = n.get("reason") or ("no official-source headline in the window" if n else "no news section in this snapshot")
         return f"  - No official-source headlines (status: {n.get('status', 'missing')}; {why}); {note}"
-    ct = __import__("zoneinfo").ZoneInfo("America/Chicago")
+    ct = ZoneInfo("America/Chicago")
     return "\n".join(f"  - {datetime.fromisoformat(c['published_at']).astimezone(ct).strftime('%Y-%m-%d %H:%M')} CT | "
                      f"{c['sources'][0]['name']} | {c['title']} | {c['sources'][0]['url']}" for c in rows) + f"\n  - ({note})"
 

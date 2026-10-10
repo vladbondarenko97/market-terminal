@@ -396,8 +396,9 @@ def _load_feeds():
     path = Path(config.NEWS_FEEDS_FILE) if config.NEWS_FEEDS_FILE else Path(__file__).with_name("news_feeds.json")
     try:
         feeds = json.loads(path.read_text())
-        assert isinstance(feeds, list) and all(isinstance(f, dict) and f.get("name") and f.get("url") for f in feeds)
-    except (OSError, ValueError, AssertionError) as e:
+        if not (isinstance(feeds, list) and all(isinstance(f, dict) and f.get("name") and f.get("url") for f in feeds)):
+            raise ValueError("not a list of {name, url}")
+    except (OSError, ValueError) as e:
         return None, f"feed list unusable ({path.name}): {type(e).__name__}"
     return [f for f in feeds if f.get("enabled", True)], None
 
@@ -441,7 +442,8 @@ def collect_news(conn, session, run, now):
         part = [i for i in items if (i["category"] == newsmod.PRIORITY) == official]
         k, u = newsmod.window(part, now, newsmod.OFFICIAL_HOURS if official else newsmod.NEWS_HOURS)
         kept, unknown = kept + k, unknown + u
-    clusters = newsmod.bucket(newsmod.dedup(kept))
+    deduped = newsmod.dedup(kept)
+    clusters = newsmod.bucket(deduped)
     key_of = {u["url"]: c["cluster_key"] for c in clusters for u in c["sources"]}
     new_urls = set()
     with lake._WRITE_LOCK, conn:
@@ -456,13 +458,13 @@ def collect_news(conn, session, run, now):
     for c in clusters:
         c["official"], c["new"] = c["category"] == newsmod.PRIORITY, any(u["url"] in new_urls for u in c["sources"])
     clusters.sort(key=lambda c: (not c["official"], -newsmod._ts(c["published_at"]).timestamp()))
-    dropped = max(0, len(clusters) - NEWS_CLUSTER_CAP)
+    dropped = len(deduped) - min(len(clusters), NEWS_CLUSTER_CAP)       # by the bucket caps and by the snapshot cap
     clusters = sorted(clusters[:NEWS_CLUSTER_CAP], key=lambda c: (newsmod._ts(c["published_at"]), c["cluster_key"]), reverse=True)
     for n, c in enumerate(clusters, 1):
         c["id"] = f"S{n}"
     return {"status": st, "reason": reason, "as_of": run["generated_at"], "window": win, "feeds": status, "coverage": cov,
             "items": {"fetched": len(items), "in_window": len(kept), "unknown_date": unknown, "new_this_run": len(new_urls),
-                      "dropped_by_cap": dropped},
+                      "clusters": len(deduped), "dropped_by_cap": dropped},
             "clusters": clusters}
 
 
