@@ -115,6 +115,7 @@ set, some empty: `failed`**, with the empty names in the detail, and the run end
 | `SMTP_SERVER` | `""` | `send_email.py` | Same as above. |
 | `SMTP_PORT` | `587` | `config.SMTP_PORT` | Empty or blank: 587. Text that is not a number from 1 to 65535 is a `ConfigError`. |
 | `RECIPIENT_EMAIL` | `""` | `send_email.py` (To header) | Same as above. |
+| `IMAP_SERVER` | `SMTP_SERVER` | `send_email.bounced_runs()` | Mailbox of `EMAIL_SENDER` (IMAP over TLS, port 993, the SMTP login), read only to find bounce notices of earlier report emails. A mailbox that cannot be read changes nothing. |
 | `REPORT_SENDER` | `EMAIL_SENDER` | `scripts/import_email_positions.py` only | The script uses `EMAIL_SENDER`. If both are empty it exits and asks you to set one. |
 
 ### Phone push and dashboard link

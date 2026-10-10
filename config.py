@@ -141,6 +141,7 @@ CME_LOGIN_PASSWORD = optional_env("CME_LOGIN_PASSWORD", default="")
 SMTP_SERVER = optional_env("SMTP_SERVER", default="")
 SMTP_PORT = int_env("SMTP_PORT", 587, minimum=1, maximum=65535)
 RECIPIENT_EMAIL = optional_env("RECIPIENT_EMAIL", default="")
+IMAP_SERVER = optional_env("IMAP_SERVER", default="") or SMTP_SERVER      # the sender's mailbox, read only to find bounce notices
 NTFY_URL = optional_env("NTFY_URL", default="")
 DASHBOARD_URL = optional_env("DASHBOARD_URL", default="")
 UPLOAD_URL = optional_env("UPLOAD_URL", default="")

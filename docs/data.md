@@ -56,7 +56,7 @@ SLV trust are not separate tables; they are observations and payloads (below).
 
 Run `status` values: `running`, `committed` (snapshot stored, export pending), `completed`,
 `completed_with_warnings`, `failed` (before the snapshot was committed), and `interrupted` (a run that was still
-`running` when it was killed; the next run marks it). `delivery_status` values: `smtp_accepted`, `failed`,
+`running` when it was killed; the next run marks it). `delivery_status` values: `smtp_accepted`, `bounced` (set by a later run that found the bounce notice), `failed`,
 `outcome_unknown`, `skipped` (email not configured), `not_requested` (`--no-deliver`, offline, replay) and
 `attempting`. The manual helpers `download_volume.py`
 and `update_inventory.py` store payloads under the pseudo run ids `manual-download` and `manual-inventory`, which

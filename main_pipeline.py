@@ -428,6 +428,26 @@ def _post_commit(conn, ctx, run_id, mode, out_dir, stages, *, deliver, upload):
     return warnings
 
 
+def mark_bounces(conn):
+    """Earlier runs whose email the recipient's server rejected after our SMTP server had accepted it: their
+    delivery_status becomes `bounced` (with the reason). Returns one warning per newly found bounce; never raises."""
+    import send_email
+    if not all((send_email.EMAIL_SENDER, send_email.EMAIL_PASSWORD, send_email.IMAP_SERVER)):
+        return []
+    try:
+        found = send_email.bounced_runs()
+    except Exception:
+        return []                                  # no IMAP on this mail server, or it is down: nothing is known, nothing changes
+    out = []
+    for rid, why in sorted(found.items()):
+        row = lake.get_run(conn, rid)
+        if row and row["delivery_status"] == "smtp_accepted":
+            detail = {**json.loads(row["delivery_detail"] or "{}"), "bounce": lake.redact(why)}
+            lake.update_run(conn, rid, delivery_status="bounced", delivery_detail=json.dumps(detail))
+            out.append(f"email of run {rid} bounced: {lake.redact(why)[:160]}")
+    return out
+
+
 def _deliver(conn, ctx, run_id, out_dir, report, *, upload, note=None):
     """Email, report upload, phone pushes, then the database/dashboard upload. Every channel is attempted whatever
     the others did. A channel that is not configured is `skipped`; one that is configured and fails is a warning.
@@ -457,9 +477,12 @@ def _deliver(conn, ctx, run_id, out_dir, report, *, upload, note=None):
         if report_up["status"] == "failed":
             warnings.append(f"report upload failed: {report_up.get('detail')}")
 
+    bounced = mark_bounces(conn)               # earlier emails that came back; the phone is told, since the inbox was not
+    warnings.extend(bounced)
     pushes = []
     try:
-        pushes.append(ntfy_brief(ctx, report, config.DASHBOARD_URL, report_up.get("url"), narrative=note))
+        pushes.append(ntfy_brief(ctx, report, config.DASHBOARD_URL, report_up.get("url"), narrative=note,
+                                 notice=f"⚠ {len(bounced)} report email(s) bounced: {bounced[-1].split(': ', 1)[1][:110]}" if bounced else None))
     except Exception as e:
         pushes.append({"title": "daily brief", "status": "failed", "error": failure(e)})
     try:
