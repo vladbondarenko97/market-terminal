@@ -764,8 +764,8 @@ def fed_speeches(s):
                                capture=lambda c: (c, None, None))
     try:
         rows = json.loads(content.decode("utf-8-sig"))
-        out = [{"date": datetime.strptime(x["d"].strip(), "%m/%d/%Y %I:%M:%S %p").date().isoformat(), "speaker": x.get("s") or "",
-                "title": x.get("t") or ""} for x in rows if x.get("d")]
+        out = [{"date": datetime.strptime(x["d"].split()[0], "%m/%d/%Y").date().isoformat(), "speaker": x.get("s") or "",
+                "title": x.get("t") or ""} for x in rows if (x.get("d") or "").strip()]      # "10/8/2026 4:30:00 AM"; older entries are date only
     except (ValueError, TypeError, AttributeError, KeyError) as e:
         raise SourceUnavailable("federalreserve", "parse", f"speeches list ({type(e).__name__})")
     if not out:

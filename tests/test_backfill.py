@@ -130,7 +130,7 @@ class ChaosBackfill(Lake):
 class FedSpeeches(Lake):
     BODY = ("﻿" + json.dumps([{"d": "10/8/2026 4:30:00 AM", "t": "Outlook", "s": "Governor Christopher J. Waller", "l": "/a.htm"},
                                    {"d": "9/30/2026 1:05:00 PM", "t": "Rates", "s": "President Some Person"},
-                                   {"t": "undated entry"}, {"d": "1/4/2006 9:00:00 AM", "t": "Old", "s": "Chairman Ben S. Bernanke"}])).encode("utf-8")
+                                   {"t": "undated entry"}, {"d": "1/4/2006", "t": "Old, date only as the real file has it", "s": "Chairman Ben S. Bernanke"}])).encode("utf-8")
 
     def test_fetcher_parses_a_bom_file_and_skips_undated_entries(self):
         with mock.patch("requests.get", return_value=fake_get(200, self.BODY)) as g:
