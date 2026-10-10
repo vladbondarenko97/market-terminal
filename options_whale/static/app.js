@@ -948,13 +948,13 @@ async function followRun(beforeId) {
 // ==========================================
 // --- LAYOUT ENGINE: panels / console split (single owner) ---
 // ==========================================
-// Wide layout (768 px and up). Expanded: the active tab gets a fixed height (user-draggable), the console fills the rest.
+// Wide layout (768 px and up). It starts minimized. Expanded: the active tab gets a fixed height (user-draggable), the console fills the rest.
 // Minimized: the tab fills everything, the console shrinks to its title bar. Applies to every .tab-content.
 // Both layouts also have MAXIMIZED: the console covers the whole viewport (body.console-maximized). That is never stored.
 // Phone layout (below 768 px): MINIMIZED = the tab bar, the active tab and a docked console bar; OPEN = the console fills the area
 // between the header and the bottom bar and the tab bar and tabs are hidden; MAXIMIZED = the console covers everything. Not stored either:
 // a phone always starts MINIMIZED. The state is applied by applyConsoleChrome() (body classes, button labels, bottom bar).
-let isConsoleMinimized = localStorage.getItem('vladhq_console_min') === '1';
+let isConsoleMinimized = localStorage.getItem('vladhq_console_min') !== '0';     // minimized unless this browser expanded it
 let consoleMaximized = false;        // both layouts
 let phoneConsoleOpen = false;        // phone layout: false = MINIMIZED (docked bar), true = OPEN
 let savedTopHeight = parseFloat(localStorage.getItem('vladhq_panel_height')) || 550;

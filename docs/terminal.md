@@ -120,7 +120,8 @@ call and put premium totals.
   is logged as `cmd`.
 - The title row has **[Minimize]** / **[Expand]**, **[Maximize]** / **[Restore]**, **Data Dump** (prints `GET /dump`, the
   newest tactical and volume XML) and **Clear** (empties the log).
-- **Wide layout (768 px and wider).** The panels sit above the console with a thin splitter between them.
+- **Wide layout (768 px and wider).** The console starts minimized to its title bar, so the panels get the whole height; once
+  expanded, the panels sit above the console with a thin splitter between them.
   **[Minimize]** / **[Expand]** collapses the console to its title bar; clicking the title row does the same. Drag the
   splitter to resize the panel area (minimum 200 px for panels, 150 px for the console). The panel height and the
   minimized state persist in the browser (see [Panel controls](#panel-controls)).
@@ -346,7 +347,7 @@ Browser storage (`localStorage`, per browser and per origin):
 |---|---|
 | `vladhq_zoom_panel1` ... `vladhq_zoom_panel15` | Zoom level of each Macro Direction panel. |
 | `vladhq_panel_height` | Height of the panel area, in pixels (default 550). |
-| `vladhq_console_min` | `1` when the console is minimized on the wide layout. Phones and the maximized state are not stored. |
+| `vladhq_console_min` | `1` when the console is minimized on the wide layout, `0` when it was expanded. With nothing stored the console starts minimized. Phones and the maximized state are not stored. |
 | `optionsWatchlist` | The Institutional Wishlist. |
 
 ### Refresh timing
