@@ -5,12 +5,14 @@ is a plain comparison of forward returns (signal days against normal days, or on
 same screen for all of them: a t-statistic of 2 or more, the same sign in both halves of the history and, for
 multi-day holds, 5 points of up-rate. Only an edge that passes can drive a horizon verdict; the rest are context.
 
-Edges: short-term reversal, post-earnings drift, turn of the month, pre-Fed day (short horizon); trend, 12-month
-momentum, volatility premium (mid); overnight versus intraday, factor profile (long). Network: Yahoo only (bars,
-earnings dates, option chain, fund info), cached once per session day per process.
+Edges: short-term reversal, post-earnings drift, turn of the month (short horizon); trend, 12-month momentum,
+volatility premium (mid); overnight versus intraday (long). Network: Yahoo only. Price history comes from
+watch.fetch_bars (one download per ticker per day, shared through a file); earnings dates and fund info are cached
+per day in memory, quotes for a minute.
 """
 import json
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from functools import lru_cache
@@ -18,8 +20,9 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from config import DATA_DIR, DB_PATH
+from config import DATA_DIR
 from core import watch
+from core.watch import SIZE as _SIZE, grade as _grade
 
 TRACKED = DATA_DIR / "edges_tracked.json"
 DEFAULT_TRACKED = ["SPY", "INTC", "SLV", "GOOGL"]
@@ -27,18 +30,9 @@ MAX_TRACKED = 20
 MONTH = 21                                           # trading days in the mid-horizon hold
 DRIFT_DAYS, DRIFT_MOVE = 20, 0.02                    # post-earnings drift: hold, and the reaction that counts as strong
 VOL_INDEX = {"SPY": "^VIX", "QQQ": "^VXN", "DIA": "^VXD", "GLD": "^GVZ", "USO": "^OVX"}      # implied-vol history, where one exists
-_SIZE = {"tested": "standard size", "thin": "half size (small sample)"}
 
 
 # ------------------------------------------------------------------ data (once per session day)
-@lru_cache(maxsize=64)
-def _bars(symbol, day):
-    import yfinance as yf
-    b = yf.Ticker(symbol).history(period="max", auto_adjust=True)[["Open", "High", "Low", "Close"]].dropna()
-    b.index = b.index.tz_localize(None).normalize()
-    return b[b.index.date < day]
-
-
 @lru_cache(maxsize=64)
 def _earnings(symbol, day):
     """Past earnings announcements as naive New York timestamps (oldest first)."""
@@ -53,7 +47,7 @@ def _info(symbol, day):
     i = yf.Ticker(symbol).info or {}
     if not i.get("quoteType"):
         raise ValueError("no fund or company info")                     # raised, so an empty answer is not cached
-    return {k: i.get(k) for k in ("shortName", "quoteType", "trailingPE", "forwardPE", "returnOnEquity", "beta", "profitMargins")}
+    return {k: i.get(k) for k in ("shortName", "quoteType")}
 
 
 @lru_cache(maxsize=16)
@@ -64,24 +58,15 @@ def _vol_index(symbol, day):
     return v / 100
 
 
-@lru_cache(maxsize=4)
-def _fomc_dates(day):
-    """Fed decision dates from the page the pipeline last stored (parsed by the pipeline's own parser). Raises when no
-    page is stored yet, so "nothing" is not cached and shows up as soon as a run has captured it."""
-    from core import lake, sources
-    conn = lake.connect(DB_PATH, readonly=True)
-    try:
-        row = conn.execute("SELECT payload_id FROM v2_payloads WHERE kind = 'fomc_calendar' ORDER BY fetched_at DESC LIMIT 1").fetchone()
-        _, content = lake.load_payload(conn, row["payload_id"])
-    finally:
-        conn.close()
-    stored = type("Stored", (), {"fetch": lambda self, *a, **k: (content.decode(), None)})()
-    return [date.fromisoformat(d) for d in sources.fomc_calendar(stored)[0]]
+_LIVE = {}                                           # symbol -> (when, (price, iv)): quotes are reused for a minute
 
 
 def _live(symbol):
     """(price, 30-day at-the-money implied volatility or None)."""
     import yfinance as yf
+    hit = _LIVE.get(symbol)
+    if hit and time.monotonic() - hit[0] < 60:
+        return hit[1]
     t = yf.Ticker(symbol)
     price, iv = float(t.fast_info["last_price"]), None
     try:
@@ -92,33 +77,18 @@ def _live(symbol):
         iv = sum(ivs) / len(ivs) if ivs else None
     except Exception:
         pass
+    _LIVE[symbol] = (time.monotonic(), (price, iv))
     return price, iv
 
 
 def refresh():
-    for f in (_bars, _earnings, _info, _vol_index, _fomc_dates):
+    for f in (_earnings, _info, _vol_index):
         f.cache_clear()
+    _LIVE.clear()
     watch.refresh()
 
 
 # ------------------------------------------------------------------ evidence
-def _grade(sig, base, min_up=0.05):
-    """Signal forward returns against baseline ones (both date-indexed Series): stats plus an evidence grade."""
-    sig, base = sig.dropna(), base.dropna()
-    out = {"n": len(sig), "p": None, "base": None, "avg": None, "bavg": None, "t": None, "edge": "none"}
-    if len(sig) < 8 or len(base) < 8 or not sig.std():
-        return out
-    half = base.index[len(base) // 2]
-    steady = all(sig[k(sig)].mean() > base[k(base)].mean() for k in (lambda x: x.index < half, lambda x: x.index >= half) if k(sig).any())
-    se = math.sqrt(sig.var() / len(sig) + base.var() / len(base))
-    out.update(p=float((sig > 0).mean()), base=float((base > 0).mean()), avg=float(sig.mean() * 100), bavg=float(base.mean() * 100),
-               t=float((sig.mean() - base.mean()) / se) if se else 0.0)
-    # ponytail: fixed cut-offs, a screen rather than a significance proof (many edges x many tickers = some false passes).
-    if out["t"] >= 2 and steady and out["p"] - out["base"] >= min_up:
-        out["edge"] = "tested" if len(sig) >= 30 else "thin"
-    return out
-
-
 def _ev(g, after, otherwise="normally"):
     if g["p"] is None:
         return f"too few cases to test (n={g['n']})"
@@ -186,20 +156,6 @@ def _turn_of_month(sym, c, today):
                  "inside the window now" if on else f"next window opens {eom:%b %-d}",
                  "last trading day of the month through the third of the next", on, "bullish", g["edge"],
                  _ev(g, "of window days", "of other days"), "Be long through the window; do not open shorts into it")
-
-
-def _pre_fed(sym, c, today, fomc):
-    r = c.pct_change().dropna()
-    days = set(r.index.date)
-    pre = [max(d for d in days if d < f) for f in fomc if f <= today and any(d < f for d in days) and f in days]
-    g = _grade(r[r.index.isin(pd.to_datetime(pre))], r, min_up=0.0)
-    nxt = next((f for f in fomc if f >= today), None)
-    on = bool(nxt) and watch.exit_date(today, 1) == nxt
-    return _edge("fed", "Pre-Fed", "Day before a Fed decision", "short", "Lucca & Moench 2015",
-                 "Stocks used to rise in the 24 hours before scheduled Fed decisions. The effect has faded since it was published.",
-                 f"next Fed decision {nxt:%b %-d}" if nxt else "no Fed dates stored yet", "the session before a Fed decision", on, "bullish",
-                 g["edge"], _ev(g, "of those days", "of all days") if fomc else "no Fed dates stored: run the pipeline once",
-                 "Hold through the day before the decision")
 
 
 def _state(c, mask, key, label, name, source, what, now, trigger, plan_up, plan_down):
@@ -275,19 +231,6 @@ def _overnight(sym, b):
                  else "No reliable gap between overnight and intraday on this ticker")
 
 
-def _factors(sym, c, info):
-    vol = float(c.pct_change().iloc[-252:].std() * math.sqrt(252))
-    parts = [f"P/E {info['trailingPE']:.1f}" if info.get("trailingPE") else None,
-             f"forward P/E {info['forwardPE']:.1f}" if info.get("forwardPE") else None,
-             f"ROE {info['returnOnEquity']:.0%}" if info.get("returnOnEquity") else None,
-             f"margin {info['profitMargins']:.0%}" if info.get("profitMargins") else None,
-             f"beta {info['beta']:.2f}" if info.get("beta") else None, f"1-year volatility {vol:.0%}"]
-    return _edge("factors", "Factors", "Factor profile (value, quality, low volatility)", "long", "Fama & French 1993; Frazzini & Pedersen 2014",
-                 "Where the ticker sits on the long-horizon factors: cheap or dear, profitable or not, calm or wild.",
-                 " · ".join(p for p in parts if p), "descriptive only", False, None, "n/a",
-                 "a single ticker's factor exposure cannot be tested; these pay across many stocks over years", "Context for long-term holding")
-
-
 # ------------------------------------------------------------------ one ticker
 def _verdict(edges):
     out = {}
@@ -310,7 +253,7 @@ def analyze(symbol):
     if not watch._SYMBOL.fullmatch(sym):
         raise ValueError("not a valid ticker")
     try:
-        b = _bars(sym, day)
+        b = watch.fetch_bars(sym)
         price, iv = _live(sym)
     except Exception:
         raise ValueError(f"{sym}: no price history found")
@@ -329,8 +272,7 @@ def analyze(symbol):
     kind = info.get("quoteType")
     announcements = soft(_earnings, sym, day) if kind == "EQUITY" else None if kind is None else []
     edges = [_reversal(sym, c, price), _earnings_drift(sym, c, announcements), _turn_of_month(sym, c, today),
-             _pre_fed(sym, c, today, soft(_fomc_dates, day) or []), _trend(sym, c, price), _momentum(sym, c), _vol_premium(sym, c, iv, day),
-             _overnight(sym, b), _factors(sym, c, info)]
+             _trend(sym, c, price), _momentum(sym, c), _vol_premium(sym, c, iv, day), _overnight(sym, b)]
     v = _verdict(edges)
     v["summary"] = f"{sym}: " + "; ".join(
         f"{h} term {v[h]['label'].lower()}" + (f" ({', '.join(v[h]['edges'])})" if v[h]["edges"] else "") for h in ("short", "mid", "long")) + "."

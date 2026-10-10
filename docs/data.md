@@ -268,6 +268,8 @@ sqlite3 CME_Data/portfolio.db ".backup 'portfolio-copy.db'"
   `opened_at`, `rule`, `underlying`, `underlying_price`, `expiration`, `long_strike`, `short_strike`, the two
   contract symbols, `entry_debit`, `exit_due`, and `closed_at` / `exit_value` / `exit_underlying` once the sell alert
   has gone out. Unique per rule per day.
+- **`cache/bars_<TICKER>_<date>.csv`** (data folder): the day's download of a ticker's daily bars for the rule cards;
+  replaced each session day, safe to delete.
 - **Files in the data folder** (not in the lake): `scanner_watchlist.json` (Day Scanner tickers added from the
   card), `edges_tracked.json` (Edge Lab tracked tickers), `signal_alert_state.json` (what `signal-alerts` last saw,
   so a row alerts once).

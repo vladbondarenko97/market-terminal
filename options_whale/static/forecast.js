@@ -59,8 +59,8 @@ const fcFitLegend = (chart, size) => {
 async function loadForecast(ticker) {
     if (ticker) FC.ticker = ticker;
     ['SPY', 'SLV'].forEach(t => document.getElementById(`fcBtn${t}`)?.classList.toggle('active', t === FC.ticker));
-    loadScanner();                      // cards 12 and 13 have their own routes: they load even when /api/forecast fails
-    loadEdges();
+    if (!FC.scanner) loadScanner();     // cards 12 and 13 have their own routes and REFRESH buttons: they load once per page
+    if (!FC.edges) loadEdges();         // load (even when /api/forecast fails), not on every SPY/SLV switch
     try {
         // fetchJson (app.js) returns the body of a 404 or 503 too, so its message reaches the cards
         const json = await fetchJson(`${API_BASE}/api/forecast?ticker=${FC.ticker}`);
@@ -113,7 +113,7 @@ function sigTable(rows, when, lead = () => '') {
             ${td(r.name, `${r.what} Where: ${r.where}.`)}
             ${td(r.now, `Current reading: live quotes for price-driven rows, otherwise the ${when} run. Where: ${r.where}.`)}
             ${td(r.trigger, `The signal fires when this is true. ${r.what}`)}
-            ${td(r.fired ? 'FIRED' + arrow : 'waiting', r.fired ? `True right now.${r.bias ? ' Read: ' + r.bias + '.' : ''}` : `Not true right now. Rechecked every 5 minutes during the session.`, cls)}
+            ${td(r.fired ? 'FIRED' + arrow : 'waiting', r.fired ? `True right now.${r.bias ? ' Read: ' + r.bias + '.' : ''}` : `Not true right now. Rechecked every 15 minutes during the session.`, cls)}
             ${td(r.action, r.fired ? `Rule-based action for this signal. Sized by its evidence: ${r.evidence}.` : `If it fires: ${r.plan}. Whether that is a trade or only confirmation depends on the evidence column.`, r.fired ? cls : 'fc-muted')}
             ${td(r.evidence, `How this rule did on history. Evidence grade: ${r.edge} (tested = at least 5 points better than its baseline over 30+ cases; thin = better but under 30 cases; none = no measured edge, so it never produces a trade by itself).`, r.edge === 'tested' ? 'fc-pos' : r.edge === 'thin' ? 'fc-warn' : 'fc-muted')}</tr>`;
     }).join('');
@@ -158,7 +158,6 @@ function scannerAdd() {
 function renderScanner(j, error = '') {
     const el = document.getElementById('fc12'), rows = j.scanner || [], td = sigTd, th = sigTh;
     const dips = rows.filter(r => r.rsi2 !== undefined), trades = rows.filter(r => r.fired && r.action.startsWith('Buy'));
-    const shown = rows.filter(r => r.rsi2 !== undefined || r.fired);            // context rows only while they are true
     const remove = r => r.rsi2 !== undefined && r.asset !== 'SPY'
         ? `<button class="fc-x" title="Stop scanning ${fcEsc(r.asset)}" onclick="loadScanner({remove:'${fcEsc(r.asset)}'})">✕</button> ` : '';
     el.innerHTML = `
@@ -173,7 +172,7 @@ function renderScanner(j, error = '') {
             ${kpi('Trades on', trades.length, trades.map(r => r.asset).join(' · ') || 'nothing to do', trades.length ? 'fc-pos' : '')}
             ${kpi('With tested edge', dips.filter(r => r.edge === 'tested').length, dips.filter(r => r.edge === 'tested').map(r => r.asset).join(' · ') || 'none')}
             ${kpi('Entry window', '2:30–3:00 PM CT', 'the only time a trade can fire')}</div>
-        ${shown.length ? sigTable(shown, 'latest', remove) : missing({ reason: 'no live quotes or price history right now' })}
+        ${rows.length ? sigTable(rows, 'latest', remove) : missing({ reason: 'no live quotes or price history right now' })}
         ${(j.failed || []).length ? `<div class="fc-note">No data right now for: ${j.failed.map(s => `${fcEsc(s)} <button class="fc-x" title="Remove ${fcEsc(s)}" onclick="loadScanner({remove:'${fcEsc(s)}'})">✕</button>`).join(' · ')}</div>` : ''}
         <div class="fc-sub" style="margin-top:4px">LIVE WATCH POSITIONS</div>
         ${(j.watch_positions || []).length ? `<table class="fc-table fc-sig"><tr>${th('Opened', 'When the dip rule fired and the alert was sent')}
@@ -188,7 +187,7 @@ function renderScanner(j, error = '') {
                 ${td(fcPct(p.pnl_pct, 0), 'Paper result from alert prices, not your fills', fcCls(p.pnl_pct))}
                 ${td(p.closed_at ? `closed ${p.closed_at.slice(0, 10)}` : `sell ${p.exit_due}`, p.closed_at ? 'Exit alert sent' : 'Open: waiting for the exit date', p.closed_at ? 'fc-muted' : 'fc-warn')}</tr>`).join('')}</table>`
           : `<div class="fc-muted">None yet. When SPY's "Dip in an uptrend" fires the alert names a call spread of at most $300, it is recorded here, and a sell alert follows 5 trading days later.</div>`}
-        <div class="fc-note">One row per symbol, plus any context state that is true right now. Green evidence = the dip rule beat a normal uptrend day on that symbol's own history (5 points of up-rate, t ≥ 2, in both halves); grey = no measured edge, so it never says Buy. Added tickers are saved on this Mac and scanned by the 5-minute alert job. After the 3 PM CT close the triggers shown are the next session's.</div>`;
+        <div class="fc-note">One row per symbol. Green evidence = the dip rule beat a normal uptrend day on that symbol's own history (5 points of up-rate, t ≥ 2, in both halves); grey = no measured edge, so it never says Buy. Added tickers are saved on this Mac and scanned by the 5-minute alert job. After the 3 PM CT close the triggers shown are the next session's.</div>`;
     fcLabelCells(el);
 }
 
@@ -754,7 +753,7 @@ document.addEventListener('click', e => { if (e.target && e.target.id === 'fcFaq
 
 const FC_FAQ = {
     fc13: { title: '13 · Edge lab — FAQ',
-        what: 'Runs the published edges (short-term reversal, post-earnings drift, calendar effects, trend, 12-month momentum, volatility premium, overnight vs intraday, factor profile) against any ticker\'s own price history. For each one it says whether it is active now and whether it actually worked on that ticker. QUERY analyses any symbol without saving it; + TRACK adds it to the matrix.',
+        what: 'Runs the published edges (short-term reversal, post-earnings drift, turn of the month, trend, 12-month momentum, volatility premium, overnight vs intraday) against any ticker\'s own price history. For each one it says whether it is active now and whether it actually worked on that ticker. QUERY analyses any symbol without saving it; + TRACK adds it to the matrix.',
         read: ['<b>Matrix glyphs</b>: ▲ active and bullish, ▼ active and bearish, ● active with no direction, · inactive, – cannot be tested. Green/red/amber = the edge is active and measured on this ticker; grey = it is on but has no measured edge.',
                '<b>Short / Mid / Long</b>: one verdict per horizon, built only from tested edges that are active now.',
                '<b>Detail table</b>: click a ticker for its edges with current reading, trigger, status, action and evidence.',
@@ -766,10 +765,9 @@ const FC_FAQ = {
                   'Testing many edges on many tickers produces some false passes by chance.',
                   'Results come from daily closes and ignore trading costs.'] },
     fc12: { title: '12 · Day scanner — FAQ',
-        what: 'Live rule scan of SPY, GOOGL and any ticker you add with + ADD, from daily closes plus the current price (core/watch.py), rechecked every 5 minutes during the session. ↻ REFRESH pulls fresh quotes and history on demand; the list is saved on this Mac. One rule can produce a trade; the rest are context. Every row is graded against that symbol\'s own history: was the price higher 5 trading days later more often than on a normal uptrend day?',
+        what: 'Live rule scan of SPY, GOOGL and any ticker you add with + ADD, from daily closes plus the current price (core/watch.py), rechecked every 15 minutes during the session. ↻ REFRESH pulls fresh quotes and history on demand; the list is saved on this Mac. One rule can produce a trade; the rest are context. Every row is graded against that symbol\'s own history: was the price higher 5 trading days later more often than on a normal uptrend day?',
         read: ['<b>Dip in an uptrend</b>: 2-day RSI under 10 (SPY) or 5 (GOOGL) with the price above its 200-day average. The trigger column is the exact price that fires it today. Added tickers use 10 if that tested well on their own history, otherwise 5.',
                '<b>Evidence</b> decides everything: a ticker whose dips did not beat a normal uptrend day stays grey and never says Buy, even when its trigger is hit.',
-               '<b>Context rows</b>: overbought, new 20-day high, 3 down closes, lower Bollinger band. Grey evidence means the state has no measured edge.',
                '<b>Live watch positions</b>: paper record of each SPY spread the alert named, with its live value and the sell date.'],
         trade: ['Trade only when "Dip in an uptrend" is FIRED, which can only happen 2:30–3:00 PM CT. SPY: one call spread of at most $300, sold after 5 trading days. GOOGL: shares, because its option bid/ask eats most of a narrow spread\'s edge.',
                 'Overbought and breakout rows firing is a reason to wait, not to buy calls: on both symbols the following 5 days were no better than normal.',

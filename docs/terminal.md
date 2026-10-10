@@ -374,10 +374,9 @@ and only a row with tested evidence can say "Buy"; hover any cell for what it me
   the 200-day average) on a saved watchlist (`+ ADD`, stored in `scanner_watchlist.json`). SPY trades as a call spread
   of at most $300 and opens a paper position (`v2_watch_positions`) that a sell alert closes 5 trading days later.
 - **13 · Edge Lab** (`core/edges.py`, `/api/edges`): the published edges (reversal, post-earnings drift, turn of month,
-  pre-Fed day, trend, 12-month momentum, volatility premium, overnight vs intraday, factor profile) tested on any
-  ticker's own history; `QUERY` analyses a symbol, `+ TRACK` saves it (`edges_tracked.json`).
+  trend, 12-month momentum, volatility premium, overnight vs intraday) tested on any ticker's own history; `QUERY` analyses a symbol, `+ TRACK` saves it (`edges_tracked.json`).
 
-Alerts: `python main_pipeline.py signal-alerts` (launchd `com.vlad.signalalerts`, every 5 minutes, installed by
+Alerts: `python main_pipeline.py signal-alerts` (launchd `com.vlad.signalalerts`, every 15 minutes of the session on weekdays, installed by
 `./setup.sh --schedule`) pushes to `NTFY_URL` and raises a macOS banner when a row goes from waiting to FIRED; it
 exits outside the NYSE session. `--dry-run` prints the live states, `--test` sends a sample.
 
@@ -402,11 +401,10 @@ Code engine and added the routing below.
   template's `enable_thinking`, so oMLX and vLLM-style servers really switch it off.
 - **Limits.** 8 rounds and 16 distinct calls per question (a repeated call is refused), 2,000 tokens per model call,
   `ASSISTANT_MAX_SECONDS` (default 150) per question, `ASSISTANT_MAX_CHARS` (default 12,000) per source. An empty
-  reply (a server left loaded but dead after a GPU out-of-memory error) reloads the model once and asks again.
-- **Servers.** Default Ollama at `http://127.0.0.1:11434/v1` with `qwen3.6:35b-a3b`; on Ollama the default model is
-  kept loaded (`ASSISTANT_KEEP_WARM`, 30 min) and the brief is built when the page opens. This Mac points `.env` at
-  oMLX on port 8000 (`Qwen3.8-27B-oQ4e-mtp`, shared with the coding agent; `ASSISTANT_MAX_SECONDS=300`,
-  `ASSISTANT_MAX_CHARS=8000`). Do not keep a large Ollama model loaded next to oMLX: together they exceed the GPU's
+  reply (a model server short of memory can send one) is asked again once.
+- **Servers.** Default Ollama at `http://127.0.0.1:11434/v1` with `qwen3.6:35b-a3b`; the brief is built when
+  the page opens. Keeping a model loaded is the model server's job (its idle timeout), not the console's. This Mac
+  points `.env` at oMLX on port 8000 (`Qwen3.5-9B-MLX-8bit`, reasoning off, `ASSISTANT_MAX_CHARS=8000`). Do not keep a large Ollama model loaded next to oMLX: together they exceed the GPU's
   memory and both start failing.
 - **Measured here (M4 Pro, 48 GB, 2026-10-09), 17 graded questions** (5 answerable from the brief, 5 needing one
   lookup, 7 multi-step): Ollama `qwen3.6:35b-a3b` with reasoning off 14-15/17, median 5-8 s; reasoning low 17/17,

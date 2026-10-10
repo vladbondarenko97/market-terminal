@@ -34,7 +34,6 @@ LOCAL_MODEL = optional_env("ASSISTANT_LOCAL_MODEL", default="qwen3.6:35b-a3b")
 LOCAL_API_KEY = optional_env("ASSISTANT_LOCAL_API_KEY", default="local")
 # auto = answer from the brief or pick sources without deliberate reasoning (fast), then reason briefly over fetched data.
 LOCAL_REASONING = optional_env("ASSISTANT_LOCAL_REASONING", default="auto")      # auto | none | low | medium | high
-KEEP_WARM = optional_env("ASSISTANT_KEEP_WARM", default="30m")                    # how long Ollama keeps the default model loaded
 MAX_SECONDS = float(optional_env("ASSISTANT_MAX_SECONDS", default="150"))        # per question; a runaway answer is cut here
 MAX_TOKENS = 2000         # per model call, reasoning included: bounds a model that starts looping
 
@@ -85,8 +84,8 @@ SOURCES = OrderedDict([
         "Card 12, Day Scanner: the dip-in-an-uptrend rule (2-day RSI) on the saved watchlist with live quotes, trigger "
         "prices, evidence, and the live-watch paper positions (SPY call spreads) with their value and exit date.")),
     ("edge_lab", ("/api/edges", ("symbol",),
-        "Card 13, Edge Lab: published edges (reversal, earnings drift, turn of month, pre-Fed, trend, momentum, volatility "
-        "premium, overnight, factors) tested on a ticker's own history. It works for ANY ticker, tracked or not: when the "
+        "Card 13, Edge Lab: published edges (reversal, earnings drift, turn of month, trend, momentum, volatility "
+        "premium, overnight) tested on a ticker's own history. It works for ANY ticker, tracked or not: when the "
         "question names a ticker, always pass query symbol=XYZ to get its full table. Without a symbol it only lists the tracked tickers.")),
     ("options_scan_morning", ("/api/morning", ("ticker",), "Options flow scan for a ticker, morning preset. Slow (10-30 s): only when asked for an options scan.")),
     ("options_scan_evening", ("/api/evening", ("ticker",), "Options flow scan for a ticker, evening preset. Slow (10-30 s).")),
@@ -506,24 +505,6 @@ def _clean_answer(text):
     return text.replace("<think>", "").strip()
 
 
-def _ollama(model, keep_alive, timeout=120):
-    """Ollama's own load/unload call, next to the OpenAI-compatible API. Other servers ignore it; failures are silent."""
-    try:
-        requests.post(LOCAL_URL.removesuffix("/v1") + "/api/generate", json={"model": model, "keep_alive": keep_alive}, timeout=timeout)
-    except Exception:
-        pass
-
-
-def keep_warm(app=None):
-    """Load the default model and hold it, and build the brief, so the first question does not wait for either.
-    Only the default model is held: two large models loaded together can run the GPU out of memory."""
-    def work():
-        _ollama(LOCAL_MODEL, KEEP_WARM)
-        if app is not None:
-            brief(app)
-    threading.Thread(target=work, daemon=True).start()
-
-
 # ---------------------------------------------------------------- the engine
 def run_local(app, conv, question, model, reasoning=None):
     """Generator of event dicts. Streams an OpenAI-compatible chat completion with tool calls."""
@@ -532,7 +513,7 @@ def run_local(app, conv, question, model, reasoning=None):
         messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
     messages.append({"role": "user", "content": f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"})
     started, lookups, tokens = time.monotonic(), 0, 0
-    answer, seen, reloaded = "", set(), False
+    answer, seen, retried = "", set(), False
     _round = 0
     while _round <= MAX_ROUNDS:
         body = {"model": model, "messages": messages, "stream": True, "temperature": 0, "max_tokens": MAX_TOKENS,
@@ -593,13 +574,11 @@ def run_local(app, conv, question, model, reasoning=None):
                 yield {"type": "error", "message": f"No answer within {MAX_SECONDS:.0f} s. Ask a narrower question or pick a faster model."}
             break
         if not content and not calls and not thought:
-            # A model server can stay "loaded" but dead after a GPU out-of-memory error. Reload it once and ask again.
-            if reloaded:
-                yield {"type": "error", "message": "The model returned nothing, even after reloading it. Check the model server (it may be out of memory)."}
+            if retried:                                    # a server short of memory can answer with nothing
+                yield {"type": "error", "message": "The model returned nothing twice. Check the model server (it may be out of memory)."}
                 return
-            reloaded = True
-            _ollama(model, 0, timeout=30)
-            yield {"type": "tool", "name": "model", "detail": "empty reply: reloaded the model and asked again", "failed": True}
+            retried = True
+            yield {"type": "tool", "name": "model", "detail": "empty reply: asked again", "failed": True}
             continue
         _round += 1
         if not calls:
@@ -637,8 +616,6 @@ def run_local(app, conv, question, model, reasoning=None):
             messages.append({"role": "tool", "tool_call_id": c["id"] or f"call_{i}", "content": result})
     if answer:
         conv["turns"].append((question, answer))
-    if model == LOCAL_MODEL:
-        keep_warm()
     yield {"type": "done", "engine": "local", "model": model, "lookups": lookups, "tokens": tokens,
            "seconds": round(time.monotonic() - started, 1), "empty": not answer}
 
@@ -656,8 +633,7 @@ def register(app, port=None):
             local["model_installed"] = LOCAL_MODEL in names
         except Exception as e:
             local["error"] = type(e).__name__
-        if local.get("model_installed"):
-            keep_warm(app)                                 # the page is open: have the model and the brief ready
+        threading.Thread(target=brief, args=(app,), daemon=True).start()     # the page is open: have the brief ready
         return jsonify({"status": "success", "version": 3, "local": local,
                         "sources": [{"name": n, "params": list(p), "about": d} for n, (_r, p, d) in SOURCES.items()]})
 

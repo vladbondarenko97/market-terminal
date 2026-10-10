@@ -231,6 +231,5 @@ Places that read `.env` without importing `config`, and why:
 | `ASSISTANT_LOCAL_MODEL` | `qwen3.6:35b-a3b` | Model that answers; the console's menu lists the server's other models |
 | `ASSISTANT_LOCAL_API_KEY` | `local` | Bearer token for the server, if it wants one |
 | `ASSISTANT_LOCAL_REASONING` | `auto` | `auto`, `none`, `low`, `medium`, `high`. `auto`: none to route or answer from the brief, low over fetched data |
-| `ASSISTANT_KEEP_WARM` | `30m` | How long Ollama keeps the default model loaded; ignored by other servers |
 | `ASSISTANT_MAX_SECONDS` | `150` | Time limit per question |
 | `ASSISTANT_MAX_CHARS` | `12000` | Size limit per data source shown to the model |

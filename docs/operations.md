@@ -716,5 +716,7 @@ main_pipeline.py run"). The full repository map is in [Architecture](architectur
   one position failing does not stop the others. A ticker whose earnings date cannot be fetched counts as blocked.
   The engine row is the latest run's own ticket, never an older run's. `--dry-run` prints the live states and sends
   nothing; `--test` sends one sample alert (it pushes to the phone, so it is an operator command, not a check).
-- **launchd job `com.vlad.signalalerts`** runs it every 5 minutes (log `~/Library/Logs/signalalerts.log`).
+- **launchd job `com.vlad.signalalerts`** runs it every 15 minutes of the regular session, on weekdays only
+  (`core/watch.ALERT_SLOTS_ET`, 09:35 to 15:50 ET; log `~/Library/Logs/signalalerts.log`). Daily price history is
+  downloaded once per ticker per day into `<data folder>/cache/` and shared by the job, the Day Scanner and the Edge Lab.
   `./setup.sh --schedule` installs it with the pipeline schedule; `--remove-schedule` removes both.

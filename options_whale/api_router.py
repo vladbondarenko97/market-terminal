@@ -2389,7 +2389,7 @@ def _scanner_payload(refresh=False):
             dip = _v2watch.dip_signal(closes, live, _v2watch.in_entry_window(), held, sym, _v2watch.fetch_blackout(sym))
             if not dip:
                 raise ValueError("no quote")
-            rows += [dip] + _v2watch.context_rows(closes, live, sym)
+            rows.append(dip)
         except Exception:
             failed.append(sym)                         # no history or quote right now: listed, so it can still be removed
     return {"status": "success", "scanner": rows, "watch_positions": positions, "symbols": symbols, "failed": failed,

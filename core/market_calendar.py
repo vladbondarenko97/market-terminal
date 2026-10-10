@@ -132,7 +132,7 @@ def scheduled_run_skip_reason(now=None, *, lead_minutes=FIRE_LEAD_MINUTES, grace
     return None
 
 
-def launchd_intervals(tz=None, days=371, start=None):
+def launchd_intervals(tz=None, days=371, start=None, slots=None):
     """The local fire times launchd needs to run every `SCHEDULE_ET` slot on every NYSE trading day of the
     coming `days` days (default a year plus a week), as a sorted list of distinct `(weekday, hour, minute)`.
 
@@ -141,7 +141,9 @@ def launchd_intervals(tz=None, days=371, start=None):
     crosses local midnight (Asia). Each day is converted with that day's own offsets, so a zone whose daylight
     saving changes on other dates than New York's (Europe, Australia) or never (Arizona, Asia) gets both clock
     times: the one that applies in each part of the year. `start` is the first Eastern date (default today).
-    A fire that lands on the wrong side of a clock change is harmless: `scheduled_run_skip_reason()` skips it."""
+    A fire that lands on the wrong side of a clock change is harmless: `scheduled_run_skip_reason()` skips it.
+    `slots` replaces `SCHEDULE_ET` with other Eastern times (the alert job's checks; its own session gate skips
+    a stray fire)."""
     if isinstance(tz, str):
         tz = ZoneInfo(tz)
     first = start or datetime.now(NEW_YORK).date()
@@ -150,7 +152,7 @@ def launchd_intervals(tz=None, days=371, start=None):
         d = first + timedelta(days=offset)
         if not is_trading_day(d):
             continue
-        for hour, minute in SCHEDULE_ET:
+        for hour, minute in slots or SCHEDULE_ET:
             local = _slot(d, hour, minute).astimezone(tz)
             fires.add(((local.weekday() + 1) % 7, local.hour, local.minute))
     return sorted(fires)

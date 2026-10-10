@@ -246,7 +246,14 @@ EOF
     LOCAL_TIMES="$(echo "$TIMES" | awk '{printf "%02d:%02d\n", $2, $3}' | sort -u | tr '\n' ' ')"
     echo "ok: $(echo "$TIMES" | wc -l | tr -d ' ') launch times, local clock times ${LOCAL_TIMES% }."
     echo "    A fire runs only at 09:31, 12:30 or 15:45 ET (up to 30 minutes late) on an NYSE trading day; 13:00 ET early closes skip the 15:45 run."
-    # Signal Watch alerts: every 5 minutes; the command itself exits outside the NYSE session and on holidays.
+    # Signal Watch alerts: every 15 minutes of the regular session (core/watch.ALERT_SLOTS_ET), on weekdays only. The
+    # command's own session gate skips holidays and a fire on the wrong side of a clock change.
+    ALERT_INTERVALS="$(cd "$ROOT" && "$VPY" -c '
+from core.market_calendar import launchd_intervals
+from core.watch import ALERT_SLOTS_ET
+for weekday, hour, minute in launchd_intervals(slots=ALERT_SLOTS_ET):
+    print(f"        <dict><key>Weekday</key><integer>{weekday}</integer><key>Hour</key><integer>{hour}</integer><key>Minute</key><integer>{minute}</integer></dict>")
+')"
     cat > "$ALERT_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -262,8 +269,10 @@ EOF
     </array>
     <key>WorkingDirectory</key>
     <string>$ROOT</string>
-    <key>StartInterval</key>
-    <integer>300</integer>
+    <key>StartCalendarInterval</key>
+    <array>
+$ALERT_INTERVALS
+    </array>
     <key>StandardOutPath</key>
     <string>$ALERT_LOG</string>
     <key>StandardErrorPath</key>
@@ -275,7 +284,7 @@ EOF
     launchctl bootout "$DOMAIN/$ALERT_LABEL" 2>/dev/null || true
     for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$ALERT_PLIST" 2>/dev/null && break; sleep 1; done
     launchctl print "$DOMAIN/$ALERT_LABEL" >/dev/null 2>&1 || warn "launchd did not load $ALERT_PLIST"
-    echo "ok: Signal Watch alerts every 5 minutes during the session (log: $ALERT_LOG)"
+    echo "ok: Signal Watch alerts every 15 minutes of the session, weekdays only (log: $ALERT_LOG)"
     # A sleeping Mac runs the missed job when it wakes; the run skips itself if that is more than 30 minutes late.
     SLEEP_MIN="$(pmset -g 2>/dev/null | awk '$1=="sleep"{print $2; exit}')"
     if [ -n "$SLEEP_MIN" ] && [ "$SLEEP_MIN" != "0" ]; then

@@ -2,7 +2,7 @@
 
 Rule ("dip in an uptrend"): 2-day RSI under 10 (SPY) or 5 (GOOGL) with the price above its 200-day average, judged in the last 30 minutes of
 the session (the rule is tested on closing prices). Structure: a narrow call debit spread around spot, ~25 DTE, sold
-after 5 trading days. Everything here is plain arithmetic on closes and quotes; the only network call is fetch_closes.
+after 5 trading days. Everything here is plain arithmetic on closes and quotes; the only network calls are fetch_bars and the earnings date.
 """
 import json
 import math
@@ -11,10 +11,11 @@ from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 
 import numpy as np
+import pandas as pd
 
 from config import DATA_DIR
 from core import lake
-from core.forecast import _signal_row
+from core.forecast import _SIZE as SIZE, _signal_row   # noqa: F401  (SIZE is shared with core/edges.py)
 from core.market_calendar import NEW_YORK, is_trading_day, session_close
 from core.positions import _mid
 
@@ -33,6 +34,10 @@ HOLD_DAYS = 5             # trading days until the exit alert
 HALF_WIDTH = 0.003        # long strike ~0.3% under spot, short strike ~0.3% over
 DTE_MIN, DTE_MAX, DTE_TARGET = 18, 35, 25
 ENTRY_MINUTES = 30        # the rule is judged in the last minutes of the session
+# When the alert job checks, Eastern: every 15 minutes from 09:35 to 15:50, so the entry window gets 15:35 and 15:50
+# (12:35 and 12:50 on an early close). setup.sh turns these into weekday launchd times; nothing fires on a weekend.
+ALERT_SLOTS_ET = tuple((h, m) for h in range(9, 16) for m in (5, 20, 35, 50) if (h, m) >= (9, 35))
+CACHE = DATA_DIR / "cache"
 OPEN_ET = time(9, 30)     # the regular session's open (its close comes from market_calendar.session_close)
 
 
@@ -44,17 +49,34 @@ def session_day(now=None):
 
 
 @lru_cache(maxsize=64)
-def _closes_on(symbol, day):
+def _bars_on(symbol, day):
+    path = CACHE / f"bars_{symbol}_{day}.csv"
+    if path.exists():
+        return pd.read_csv(path, index_col=0, parse_dates=True)
     import yfinance as yf
-    c = yf.Ticker(symbol).history(period="max")["Close"].dropna()
-    c.index = c.index.tz_localize(None).normalize()
-    return c[c.index.date < day]
+    b = yf.Ticker(symbol).history(period="max", auto_adjust=True)[["Open", "High", "Low", "Close"]].dropna()
+    b.index = b.index.tz_localize(None).normalize()
+    b = b[b.index.date < day]
+    if len(b) < 2:
+        raise ValueError(f"{symbol}: no price history")              # raised, so an empty answer is cached nowhere
+    CACHE.mkdir(exist_ok=True)
+    for old in CACHE.glob(f"bars_{symbol}_*.csv"):
+        old.unlink()
+    tmp = path.with_suffix(".tmp")
+    b.to_csv(tmp)
+    tmp.replace(path)
+    return b
+
+
+def fetch_bars(symbol="SPY"):
+    """Daily bars (adjusted open, high, low, close) of finished sessions, oldest first. Downloaded once per ticker
+    per session day and kept in a file in the data folder, so the terminal, the Edge Lab and every run of the alert
+    job share one download: finished sessions do not change."""
+    return _bars_on(symbol, session_day())
 
 
 def fetch_closes(symbol="SPY"):
-    """Every daily close of finished sessions (today's partial bar dropped), oldest first. Fetched once per day per
-    process: finished sessions do not change."""
-    return _closes_on(symbol, session_day())
+    return fetch_bars(symbol)["Close"]
 
 
 @lru_cache(maxsize=64)
@@ -77,9 +99,11 @@ def fetch_blackout(symbol, today=None):
 
 
 def refresh():
-    """Drop the per-day caches so the next read goes back to Yahoo."""
-    _closes_on.cache_clear()
+    """Drop the day's caches (memory and files) so the next read goes back to Yahoo."""
+    _bars_on.cache_clear()
     _earnings_on.cache_clear()
+    for old in CACHE.glob("bars_*.csv"):
+        old.unlink()
 
 
 def _extras():
@@ -157,33 +181,40 @@ def _history(closes):
     return c, gain, loss, 100 * gain / (gain + loss), c.rolling(200).mean(), c.shift(-HOLD_DAYS) / c - 1
 
 
+def grade(sig, base, min_up=0.05):
+    """The one evidence gate for the scanner and the Edge Lab: signal forward returns against baseline ones (both
+    date-indexed Series). Returns the stats and a grade: 'tested', 'thin' (under 30 cases) or 'none'."""
+    sig, base = sig.dropna(), base.dropna()
+    out = {"n": len(sig), "p": None, "base": None, "avg": None, "bavg": None, "t": None, "edge": "none"}
+    if len(sig) < 8 or len(base) < 8 or not sig.std():
+        return out
+    half = base.index[len(base) // 2]
+    steady = all(sig[k(sig)].mean() > base[k(base)].mean() for k in (lambda x: x.index < half, lambda x: x.index >= half) if k(sig).any())
+    se = math.sqrt(sig.var() / len(sig) + base.var() / len(base))
+    out.update(p=float((sig > 0).mean()), base=float((base > 0).mean()), avg=float(sig.mean() * 100), bavg=float(base.mean() * 100),
+               t=float((sig.mean() - base.mean()) / se) if se else 0.0)
+    # ponytail: fixed cut-offs (t >= 2, better than baseline in both halves of the history, min_up of up-rate). A screen,
+    # not a significance proof: many rules on many tickers produce some false passes.
+    if out["t"] >= 2 and steady and out["p"] - out["base"] >= min_up:
+        out["edge"] = "tested" if len(sig) >= 30 else "thin"
+    return out
+
+
 def _stats(mask, c, sma, fwd):
-    """The 5-day forward return after non-overlapping past signals against every uptrend day: up-rates, averages,
-    t-statistic of the difference, and an evidence grade."""
+    """grade() of the 5-day forward return after non-overlapping past signals, against every uptrend day."""
     up = (c > sma) & fwd.notna()
     picks, last = [], -HOLD_DAYS
     for i in np.flatnonzero((mask & up).values):
         if i - last >= HOLD_DAYS:
             picks.append(i)
             last = i
-    f, b, n = fwd.iloc[picks], fwd[up], len(picks)
-    out = {"n": n, "p": None, "base": float((b > 0).mean()), "avg": None, "bavg": float(b.mean() * 100), "t": -math.inf,
-           "edge": "none", "since": c.index[0].year}
-    if n < 5 or not f.std():
-        return out
-    half = c.index[len(c) // 2]
-    steady = all(f[k(f)].mean() > b[k(b)].mean() for k in (lambda x: x.index < half, lambda x: x.index >= half) if k(f).any())
-    out.update(p=float((f > 0).mean()), avg=float(f.mean() * 100), t=float((f.mean() - b.mean()) / (f.std() / math.sqrt(n))))
-    # ponytail: fixed cut-offs (5 points of up-rate, t >= 2, better than normal in both halves of the history). Anyone can
-    # add a ticker, so this is stricter than the pipeline cards' gate; it is still a screen, not a significance proof.
-    if out["p"] - out["base"] >= 0.05 and out["t"] >= 2 and steady:
-        out["edge"] = "tested" if n >= 30 else "thin"
-    return out
+    return {**grade(fwd.iloc[picks], fwd[up]), "since": c.index[0].year}
 
 
 def _evidence(symbol, st):
-    return "no history" if st["p"] is None else (f"{symbol} up {st['p']:.0%} vs {st['base']:.0%} normally {HOLD_DAYS} days later, avg "
-                                                 f"{st['avg']:+.2f}% vs {st['bavg']:+.2f}%, t {st['t']:.1f}, n={st['n']} since {st['since']}")
+    return f"too few past cases to test (n={st['n']})" if st["p"] is None else (
+        f"{symbol} up {st['p']:.0%} vs {st['base']:.0%} normally {HOLD_DAYS} days later, avg {st['avg']:+.2f}% vs {st['bavg']:+.2f}%, "
+        f"t {st['t']:.1f}, n={st['n']} since {st['since']}")
 
 
 def _rsi_level(prev, g0, l0, target):
@@ -204,7 +235,7 @@ def dip_signal(closes, live, in_window=True, has_open=False, symbol="SPY", block
     else:                                                                # added from the card: 10 or 5, whichever tested better
         trade = "shares"
         cands = [(_stats(rsi < th, c, sma, fwd), th) for th in (10, 5)]
-        st, entry = next((x for x in cands if x[0]["edge"] == "tested"), max(cands, key=lambda x: x[0]["t"]))   # 10 if it passes
+        st, entry = next((x for x in cands if x[0]["edge"] == "tested"), max(cands, key=lambda x: x[0]["t"] or -math.inf))   # 10 if it passes
     # today's bar with the live price: Wilder RSI(2) is one more step of the same averages
     g0, l0, prev = float(gain.iloc[-1]), float(loss.iloc[-1]), float(c.iloc[-1])
     g1, l1 = 0.5 * g0 + 0.5 * max(live - prev, 0), 0.5 * l0 + 0.5 * max(prev - live, 0)
@@ -229,44 +260,6 @@ def dip_signal(closes, live, in_window=True, has_open=False, symbol="SPY", block
         _evidence(symbol, st), st["edge"])
     row["rsi2"], row["trigger_price"], row["rsi_entry"] = rsi_now, level, entry
     return row
-
-
-def context_rows(closes, live, symbol="SPY"):
-    """Scanner rows for the other states worth knowing about. They never open a trade: each one states whether the
-    5 days after it were better than a normal uptrend day, from this symbol's own history."""
-    c, gain, loss, rsi, sma, fwd = _history(closes)
-    if len(c) < 260 or not live:
-        return []
-    r, m20, s20 = c.diff(), c.rolling(20).mean(), c.rolling(20).std()
-    prev, g0, l0 = float(c.iloc[-1]), float(gain.iloc[-1]), float(loss.iloc[-1])
-    today = np.append(c.iloc[-19:].values, live)                           # the 20-day window including the live price
-    band, high = float(today.mean() - 2 * today.std(ddof=1)), float(c.iloc[-19:].max())
-    downs = int((r.iloc[-2:] < 0).sum()) if (r.iloc[-1] < 0) else 0        # consecutive down closes through yesterday (max 2)
-    ob = _rsi_level(prev, g0, l0, 95)
-    uptrend = live > (float(c.iloc[-199:].sum()) + live) / 200
-    rules = [
-        ("Overbought: RSI(2) over 95", rsi > 95, live >= ob, f"{symbol} ≥ {ob:.2f}", f"{symbol} {live:.2f}",
-         "Two strong up days in a row. The question is whether chasing here pays."),
-        ("New 20-day closing high", c >= c.rolling(20).max(), live >= high, f"{symbol} ≥ {high:.2f}", f"{symbol} {live:.2f}",
-         "A breakout to the highest close in 20 sessions."),
-        ("3 down closes in a row", (r < 0) & (r.shift(1) < 0) & (r.shift(2) < 0), downs == 2 and live < prev,
-         f"{symbol} < {prev:.2f} today" if downs == 2 else f"{2 - downs} more down close(s) first, then a third",
-         f"{downs} down close(s) so far, today {'down' if live < prev else 'up'}", "Three losing sessions back to back inside an uptrend."),
-        ("Below the lower Bollinger band", c < m20 - 2 * s20, live < band, f"{symbol} < {band:.2f}", f"{symbol} {live:.2f}",
-         "More than 2 standard deviations under the 20-day average."),
-    ]
-    rows = []
-    for name, mask, fired, trigger, now, what in rules:
-        st = _stats(mask, c, sma, fwd)
-        edge = st["edge"]
-        rows.append(_signal_row(
-            symbol, name, "Day scanner · daily closes + live quote (core/watch.py)",
-            what + f" Context only: it shows how the next {HOLD_DAYS} days went historically and never opens a trade.",
-            now, trigger, fired and uptrend, "structure",
-            "Better odds than a normal day: supports a dip entry, not a trade alone" if edge != "none" else
-            "No measured edge: do not open a trade because of this",
-            _evidence(symbol, st), edge))
-    return rows
 
 
 def pick_expiry(expirations, today=None):

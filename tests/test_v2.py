@@ -350,9 +350,13 @@ class T06ForecastLab(unittest.TestCase):
         self.assertFalse(W.dip_signal(closes, level - 0.01, blocked="earnings")["fired"])  # or when blocked (earnings)
         deep = W.dip_signal(closes, level - 0.01, symbol="GOOGL")                         # GOOGL needs RSI(2) < 5 and trades shares
         self.assertTrue(deep["trigger_price"] < level and deep["plan"].startswith("Buy GOOGL shares"))
-        ctx = W.context_rows(closes, float(closes.iloc[-19:].max()) + 1)                  # above the 20-day high: context only
-        hi = next(r for r in ctx if r["name"] == "New 20-day closing high")
-        self.assertTrue(hi["fired"] and not hi["action"].startswith("Buy") and len(ctx) == 4)
+        # the alert job checks on weekdays only: every 15 minutes of the session, never on a weekend
+        from core.market_calendar import launchd_intervals
+        fires = launchd_intervals("America/Chicago", start=date(2026, 10, 9), slots=W.ALERT_SLOTS_ET)
+        self.assertEqual({wd for wd, _, _ in fires}, {1, 2, 3, 4, 5})
+        self.assertEqual(sorted({(h, m) for _, h, m in fires})[0], (8, 35))                # 09:35 ET
+        self.assertEqual(sorted({(h, m) for _, h, m in fires})[-1], (14, 50))              # 15:50 ET, inside the entry window
+        self.assertEqual(len({(h, m) for _, h, m in fires}), 26)
         wide = pd.DataFrame({"strike": [97.0, 98.0, 99.0, 101.0, 102.0, 103.0], "bid": [3.9, 3.1, 2.3, 1.0, 0.6, 0.3],
                              "ask": [4.1, 3.3, 2.5, 1.2, 0.8, 0.5], "lastPrice": [4, 3.2, 2.4, 1.1, 0.7, 0.4],
                              "contractSymbol": ["C97", "C98", "C99", "C101", "C102", "C103"]})
@@ -599,11 +603,11 @@ class T10Assistant(unittest.TestCase):
         self.assertEqual(A.fetch_source(app, "gex.spot", "ticker=SPY"), "769.43")            # source.path is accepted
         self.assertIn("must be one of", A.fetch_source(app, "", "", "spot"))                # a missing source says how to fix the call
 
-    def test_v3_empty_reply_reloads_once_and_thinking_switch(self):
+    def test_v3_empty_reply_is_asked_again_once_and_thinking_switch(self):
         sys.path.insert(0, str(ROOT / "options_whale"))
         import assistant as A
         import json
-        sent, reloads = [], []
+        sent = []
 
         class Stream:
             def __init__(self, chunks): self.status_code, self.chunks = 200, chunks
@@ -614,10 +618,10 @@ class T10Assistant(unittest.TestCase):
             sent.append(json)
             return Stream(replies.pop(0))
         app, _hits = self._app()
-        with mock.patch.object(A.requests, "post", side_effect=post), mock.patch.object(A, "_ollama", lambda *a, **k: reloads.append(a)), \
+        with mock.patch.object(A.requests, "post", side_effect=post), \
              mock.patch.object(A, "brief", lambda app: "BRIEF TEXT"):
             events = list(A.run_local(app, {"turns": []}, "hi", "m", "auto"))
-        self.assertEqual(len(reloads), 1)                                                   # dead model: reloaded once, asked again
+        self.assertEqual(len(sent), 2)                                                      # empty reply: asked again once
         self.assertEqual([e["type"] for e in events][-1], "done")
         self.assertIn({"type": "delta", "text": "Done."}, events)
         self.assertEqual(sent[0]["chat_template_kwargs"], {"enable_thinking": False})        # auto: no thinking on the first call
@@ -824,13 +828,12 @@ class T09EdgeLab(unittest.TestCase):
         b = self.bars(self.walk(2000, drift=0.0004))
         info = {"shortName": "Test Co", "quoteType": "EQUITY", "trailingPE": 20.0, "forwardPE": None, "returnOnEquity": 0.2, "beta": 1.1, "profitMargins": 0.1}
         ann = [pd.Timestamp(f"{b.index[k]:%Y-%m-%d} 16:05") for k in (-300, -100, -30)]
-        with mock.patch.object(edges, "_bars", return_value=b), mock.patch.object(edges, "_live", return_value=(float(b["Close"].iloc[-1]), 0.30)), \
-                mock.patch.object(edges, "_info", return_value=info), mock.patch.object(edges, "_earnings", return_value=ann), \
-                mock.patch.object(edges, "_fomc_dates", return_value=[]):
+        with mock.patch.object(edges.watch, "fetch_bars", return_value=b), mock.patch.object(edges, "_live", return_value=(float(b["Close"].iloc[-1]), 0.30)), \
+                mock.patch.object(edges, "_info", return_value=info), mock.patch.object(edges, "_earnings", return_value=ann):
             r = edges.analyze(" test ")
             self.assertTrue({"symbol", "name", "quote_type", "price", "history_since", "verdict", "edges"} <= set(r))
             self.assertEqual((r["symbol"], r["name"], r["quote_type"]), ("TEST", "Test Co", "EQUITY"))
-            self.assertEqual([e["key"] for e in r["edges"]], ["reversal", "earnings", "tom", "fed", "trend", "momentum", "volatility", "overnight", "factors"])
+            self.assertEqual([e["key"] for e in r["edges"]], ["reversal", "earnings", "tom", "trend", "momentum", "volatility", "overnight"])
             keys = {"key", "label", "name", "horizon", "source", "what", "now", "trigger", "active", "bias", "edge", "evidence", "action", "plan"}
             for e in r["edges"]:
                 self.assertEqual(set(e), keys)
@@ -841,7 +844,7 @@ class T09EdgeLab(unittest.TestCase):
             json.dumps(r)
             with self.assertRaises(ValueError):
                 edges.analyze("bad ticker!")
-            with mock.patch.object(edges, "_bars", return_value=b.iloc[:299]), self.assertRaises(ValueError):
+            with mock.patch.object(edges.watch, "fetch_bars", return_value=b.iloc[:299]), self.assertRaises(ValueError):
                 edges.analyze("TEST")
 
     def test_payload(self):
