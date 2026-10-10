@@ -546,9 +546,13 @@ One brief is built from a committed snapshot (prices, VMRI, Chaos / Peace, the e
 the calendar and headlines, each row with an id such as `[D3]` or `[S2]`), and a model explains it in two steps: a short
 memo, then a JSON note (tagline, three focus lines, three issues). Python computed every number; the model only
 explains. A validator drops any statement whose number is not in the brief, that cites an id that is not a stored item,
-or that uses causal or advice wording. The note says how many issues were kept and how many statements were dropped.
-Fewer than two surviving issues means no note: `{"status": "missing", "reason": ...}`. The note never says why a price
-moved or who moved it, and it recommends nothing.
+that uses causal or advice wording, whose direction word disagrees with a signed percent beside it ("fell +0.6%"), or
+that states a fact with neither a number nor a headline to check it against. The note says how many issues were kept
+and how many statements were dropped. Fewer than two surviving issues means no note:
+`{"status": "missing", "reason": ...}`. The note never says why a price moved or who moved it, and it recommends
+nothing. **What the validator cannot check:** a direction or comparison written without a signed percent, and whether
+two readings a statement puts side by side belong together. Read the Briefing as a summary to check against the
+report below it, not as a finding.
 
 - **In every live run** (`narrative` stage, before `render`): runs the local model when `ASSISTANT_LOCAL_URL` is set in
   `.env`; otherwise, and for offline runs, the stage is `skipped` (recorded in the run's stages with the reason). It has

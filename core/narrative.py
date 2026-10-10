@@ -56,9 +56,10 @@ KILL LIST: the items in the brief that do not matter today, one line."""
 NOTE_TASK = """Using the BRIEF and the MEMO, reply with ONLY a JSON object, no other text:
 {"tagline": str, "focus": [3 str], "issues": [3 x {"what_moved": str, "reaction": str, "contradiction": str, "would_change": str, "refs": ["S3", "D2"]}]}
 "focus": 3 short plain sentences, each with a number and an id. "what_moved": one sentence on what moved, numbers copied from the brief. "reaction": one sentence on what else moved \
-in the same period, joined with "; " (never "as" or "while"). "contradiction": two readings in the brief that point \
+in the same period, with its numbers, joined with "; " (never "as" or "while"). Use rose/fell exactly as the sign of the change in the brief says. "contradiction": two readings in the brief that point \
 different ways, or the word none. "would_change": one reading from the brief (name it and its current value) whose \
-change would alter this view; a reading, not advice. "tagline": one short sentence of two readings joined with ";". Each issue covers a different part of the brief. Every string \
+change would alter this view; a reading, not advice. "tagline" and each "focus" line follow this form exactly, with names and numbers taken from the brief: \
+"<name> <level> rose <change> [D#]; <name> <level> fell <change> [D#]". Each issue covers a different part of the brief. Every string \
 cites ids in square brackets like [D3] or [S2] and nothing else in brackets; "refs" lists the ids used."""
 
 CLI_NOTE = """You can look up more stored readings with the Bash tool, only through the read-only command `mtq <source> \
@@ -258,6 +259,10 @@ _CAUSAL_RE = re.compile(r"(?<![\w-])(" + "|".join(map(re.escape, CAUSAL)) + r")(
 _ADVICE_RE = re.compile(r"(?<![\w-])(" + "|".join(map(re.escape, ADVICE)) + r")(?![\w-])", re.I)
 _CITED = re.compile(r"\b([SD]\d+)\b")
 _BRACKET = re.compile(r"\[([^\]]*)\]")
+_UP = {"rose", "rise", "rises", "rising", "gained", "gain", "gains", "advanced", "climbed", "higher", "increased", "jumped", "surged", "rallied"}
+_DOWN = {"fell", "fall", "falls", "falling", "declined", "declines", "retreated", "dropped", "lower", "decreased", "slipped", "slid", "eased"}
+_SIGNED_PCT = re.compile(r"(?<![\w.])([+-])\d[\d,.]*\s?%")
+FACTS = ("tagline", "focus", "what_moved", "reaction")        # statements of fact: each carries a number from the brief or cites a headline
 _AS_OK = {"of", "well", "much", "many", "high", "low", "far", "long", "soon", "a", "an"}      # "as of", "as high as", "as well as"
 _AS_PREV = {"well", "such", "same", "as", "high", "low", "much", "many", "far", "long", "soon", "just", "twice"}
 
@@ -268,10 +273,17 @@ def _num_ok(token, numbers):
     return any(abs(x - v) <= 0.5 * 10 ** -dec + 1e-9 for x in numbers)
 
 
-def check_bullet(text, inp):
-    """None when the statement may be shown, else the reason it is dropped."""
+def check_bullet(text, inp, fact=False):
+    """None when the statement may be shown, else the reason it is dropped. `fact`: it must also carry a number.
+    What this cannot check: a direction or a comparison stated without a signed percent, and the logic between readings."""
     if not isinstance(text, str) or not text.strip():
         return "empty"
+    if text.strip().lower().rstrip(".") == "none":
+        return None
+    for clause in re.split(r";| and | while | but ", text):     # "VIX fell +3.70%": the word and the signed percent disagree
+        signs, words = set(_SIGNED_PCT.findall(clause)), set(re.findall(r"[a-z]+", clause.lower()))
+        if (words & _UP and signs == {"-"}) or (words & _DOWN and signs == {"+"}):
+            return "direction word contradicts the signed percent"
     for m in _CITED.finditer(text):
         if m.group(1) not in inp["refs"]:
             return f"unknown id {m.group(1)}"
@@ -291,6 +303,8 @@ def check_bullet(text, inp):
         tok = m.group().strip(",")
         if not _num_ok(tok, inp["numbers"]):
             return f"number {tok} is not in the brief"
+    if fact and not _NUM.search(_ID.sub(" ", text).replace("S&P 500", "")) and not re.search(r"\bS\d+\b", text):
+        return "a statement of fact with no number and no headline to check it against"
     return None
 
 
@@ -301,7 +315,7 @@ def validate(note, inp):
     def keep(where, text):
         nonlocal bullets_in, bullets_dropped
         bullets_in += 1
-        why = check_bullet(text, inp)
+        why = check_bullet(text, inp, fact=any(f in where for f in FACTS))
         if why:
             bullets_dropped += 1
             dropped.append({"where": where, "reason": why, "text": text if isinstance(text, str) else None})

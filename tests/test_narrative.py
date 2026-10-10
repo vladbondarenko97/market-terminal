@@ -48,7 +48,7 @@ def make_ctx(**over):
     return ctx
 
 
-NOTE = {"tagline": "Stocks and metals rose; volatility fell [D2]", "focus": ["SPY rose 4.64 [D2]", "VIX fell [D5]", "Chaos score is -13.9 [D8]"],
+NOTE = {"tagline": "SPY rose 4.64; VIX fell 0.57 [D2]", "focus": ["SPY rose 4.64 [D2]", "VIX fell 0.57 [D5]", "Chaos score is -13.9 [D8]"],
         "issues": [{"what_moved": "SPY rose 0.6% [D2]", "reaction": "Gold rose 59.3 [D4]", "contradiction": "none", "would_change": "VIX above 15 [D6]", "refs": ["D2", "S2"]},
                    {"what_moved": "Chaos score moved from -10.5 to -13.9 [D8]", "reaction": "Fed press release [S2]", "contradiction": "none",
                     "would_change": "Chaos score above -10 [D8]", "refs": ["D8", "S2"]},
@@ -128,6 +128,15 @@ class Validator(unittest.TestCase):
         for fine in ("short volume share rose", "Sell-side notes were mixed", "Treasury buybacks fell", "As of 2026-10-09 SPY is 778.57",
                      "SPY is as high as 778.57", "VIX fell; DXY rose"):
             self.assertIsNone(self.check(fine), fine)
+
+    def test_facts_need_a_number_or_a_headline_and_direction_words_agree_with_the_sign(self):
+        self.assertIn("no number", N.check_bullet("Yields retreated [D8]", self.inp, fact=True))      # seen live: yields had risen
+        self.assertIsNone(N.check_bullet("Yields retreated [D8]", self.inp))                          # not a statement-of-fact field
+        self.assertIsNone(N.check_bullet("Fed press release on rates [S2]", self.inp, fact=True))     # a headline the reader can open
+        self.assertIsNone(N.check_bullet("none", self.inp, fact=True))
+        self.assertIn("direction", self.check("VIX rose -3.70% [D5]"))
+        self.assertIn("direction", self.check("SPY fell +0.60% [D2]; VIX fell -3.70% [D5]"))
+        self.assertIsNone(self.check("SPY rose +0.60% [D2]; VIX fell -3.70% [D5]"))
 
     def test_validate_keeps_good_issues_and_drops_bad_refs(self):
         note = copy.deepcopy(NOTE)
@@ -461,8 +470,8 @@ def _child_main():
         brief = user.split("\n\nTASK")[0]
         if "MEMO" not in user:
             return "REGIME: calm [D2]"
-        note = {"tagline": "Stocks rose; volatility fell [D2]", "focus": ["SPY moved [D2]", "VIX moved [D3]", "Gold moved [D4]"],
-                "issues": [{"what_moved": "SPY moved [D2]", "reaction": "VIX moved [D3]", "contradiction": "none", "would_change": "VIX level [D3]", "refs": ["D2", "D3"]}
+        note = {"tagline": "Stocks rose in 2026; volatility fell [D2]", "focus": ["SPY moved in 2026 [D2]", "VIX moved in 2026 [D3]", "Gold moved in 2026 [D4]"],
+                "issues": [{"what_moved": "SPY moved in 2026 [D2]", "reaction": "VIX moved in 2026 [D3]", "contradiction": "none", "would_change": "VIX level [D3]", "refs": ["D2", "D3"]}
                            for _ in range(3)]}
         return json.dumps(note)
     f = live("http://x", chat=smart_chat)
