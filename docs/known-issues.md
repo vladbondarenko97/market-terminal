@@ -11,6 +11,7 @@ Last checked against the code: October 2026.
 | Issue | Where | Effect |
 |---|---|---|
 | Phones held sideways get the desktop layout | `options_whale/static/app.js` (`MOBILE_QUERY`), `options_whale/static/styles.css` | The phone layout (docked console bar, bottom Panels/Console bar) applies below 768 px wide. A phone in landscape is usually wider, so it shows the desktop layout, where the panels get about 200 px of height above the console. Use the phone upright, or press the console's [Minimize] (more room for panels) or [Maximize] (console only). |
+| Old macro ledger rows hold 0 where silver open interest and the paper:physical ratio were not recorded | `macro_master_ledger.csv` (`Silver_OI`, `Paper_Physical_Ratio`), served by `/api/macro_ledger_full` | Rows written before the pipeline recorded a missing value as empty carry `0` in these two columns. The rows are history and are not rewritten. Panel 4 treats a ratio or an open interest that is not above 0 as not recorded; any other reader of these columns must do the same. |
 | AlphaFlow stores fixed placeholder columns | `alphaflow/engine.py` `run_historical_scan()` | Every sweep row gets `term` "Mid Term", `entry` "NEXT OPEN", `max_risk` 500 and an `expiration` of scan date + 44 days. They are not computed from the trade. The AlphaFlow docs page says so; the email appendix prints them. |
 
 ## Deliberate design decisions

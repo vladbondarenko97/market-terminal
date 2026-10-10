@@ -574,225 +574,296 @@ def get_vmri_history():
 # --- ENDPOINT: VMRI CHART VIEWER ---
 @app.route('/vmri_chart')
 def vmri_chart_page():
-    """Serves a professional-grade interactive risk monitor."""
+    """The VMRI chart page shown in the terminal's panel 1 frame. It draws /api/vmri_history."""
     html_template = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>VMRI Systemic Risk Monitor</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>VMRI Macro Risk Index</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
         <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.1.0/dist/chartjs-plugin-annotation.min.js" integrity="sha384-dB7WWqy9+vERwKo2atAKw+KLNhfY0RX5ZjV1l4HHMBZz5wfSvX/GsytIpOyBY8dG" crossorigin="anonymous"></script>
         <style>
-            body { font-family: 'Courier New', monospace; background: transparent; color: #00ff00; padding: 10px; margin: 0; box-sizing: border-box; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-            .container { flex: 1; display: flex; flex-direction: column; background: #000; padding: 10px; border: 1px solid #1a1a1a; border-radius: 4px; position: relative; }
-            .header-bar { display: flex; justify-content: space-between; items-center: center; margin-bottom: 5px; }
-            h2 { color: #ff0000; letter-spacing: 3px; font-size: 14px; margin: 0; }
-            
-            /* Sleek Toggles */
-            .toggles { display: flex; gap: 5px; }
-            .overlay-btn { background: #111; border: 1px solid #333; color: #666; font-family: monospace; font-size: 9px; padding: 2px 6px; cursor: pointer; border-radius: 3px; transition: all 0.2s; }
-            .overlay-btn:hover { border-color: #888; color: #ccc; }
-            .overlay-btn.active { background: rgba(255, 255, 255, 0.1); color: #fff; border-color: #fff; box-shadow: 0 0 5px rgba(255,255,255,0.3); }
-            
-            .chart-wrapper { flex: 1; position: relative; min-height: 0; }
-            
-            /* The Insight Banner */
-            .insight-banner { margin-top: 5px; padding: 6px; background: #0a0a0a; border: 1px solid #222; border-radius: 3px; font-size: 9px; color: #aaa; text-align: center; font-weight: bold; letter-spacing: 1px; }
-            .insight-threat { color: #ff4444; }
-            .insight-safe { color: #44ff44; }
-            .insight-driver { color: #38bdf8; }
+            * { box-sizing: border-box; }
+            body { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; background: #000; color: #a1a1aa; margin: 0; padding: 10px 12px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+            .head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 14px; margin-bottom: 6px; }
+            .cap { font-size: 8px; text-transform: uppercase; letter-spacing: 1.5px; color: #71717a; }
+            .big { display: flex; align-items: center; gap: 8px; }
+            .score { font-size: 28px; font-weight: 800; line-height: 1.1; color: #fff; font-variant-numeric: tabular-nums; }
+            .chip { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 1px 5px; border: 1px solid #3f3f46; border-radius: 3px; color: #a1a1aa; }
+            .mid { font-size: 9px; line-height: 1.6; padding-top: 10px; }
+            .ctl { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+            .seg { display: flex; }
+            .seg button { font: inherit; font-size: 9px; background: #09090b; border: 1px solid #27272a; color: #a1a1aa; padding: 2px 7px; cursor: pointer; margin-left: -1px; }
+            .seg button:first-child { margin-left: 0; border-radius: 3px 0 0 3px; }
+            .seg button:last-child { border-radius: 0 3px 3px 0; }
+            .seg button[aria-pressed="true"] { color: #fff; border-color: #3f3f46; background: #18181b; position: relative; }
+            .chart-wrap { flex: 1; min-height: 0; position: relative; }
+            .foot { font-size: 9px; color: #71717a; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="header-bar">
-                <h2>🚨 VMRI SYSTEMIC RISK MONITOR</h2>
-                <div class="toggles">
-                    <button id="btnDXY" class="overlay-btn" onclick="toggleOverlay('dxy', this)">+ DXY</button>
-                    <button id="btnVIX" class="overlay-btn" onclick="toggleOverlay('vix', this)">+ VIX</button>
-                    <button id="btnYield" class="overlay-btn" onclick="toggleOverlay('yield', this)">+ 10Y</button>
-                    <button id="btnOAS" class="overlay-btn" onclick="toggleOverlay('oas', this)">+ OAS</button>
-                </div>
+        <div class="head">
+            <div>
+                <div class="cap" id="cap">VMRI</div>
+                <div class="big"><span class="score" id="score">&mdash;</span><span class="chip" id="chip" hidden></span></div>
             </div>
-            
-            <div class="chart-wrapper">
-                <canvas id="vmriChart"></canvas>
-            </div>
-            
-            <div id="insightBanner" class="insight-banner">
-                AWAITING TELEMETRY...
+            <div class="mid" id="mid"></div>
+            <div class="ctl">
+                <div class="seg" id="ranges"></div>
+                <div class="seg" id="overlays"></div>
             </div>
         </div>
+        <div class="chart-wrap"><canvas id="vmriChart"></canvas></div>
+        <div class="foot" id="foot"></div>
 
         <script>
-            let vmriChartInstance = null;
-            let masterData = null;
-            let activeOverlay = null;
+            var TIERS = [
+                { min: 350, name: 'SYSTEMIC THREAT', band: 'SYSTEMIC', color: '#ef4444', rgb: '239,68,68' },
+                { min: 250, name: 'ELEVATED RISK', band: 'ELEVATED', color: '#f97316', rgb: '249,115,22' },
+                { min: 150, name: 'MODERATE RISK', band: 'MODERATE', color: '#eab308', rgb: '234,179,8' },
+                { min: -Infinity, name: 'LOW RISK', band: 'LOW', color: '#22c55e', rgb: '34,197,94' }
+            ];
+            var RANGES = { '1M': 30, '3M': 91, 'ALL': null };
+            var OVERLAYS = { 'DXY': 'dxy', 'VIX': 'vix', '10Y': 'yield', 'OAS': 'oas' };
+            var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            var DAY = 86400000;
 
-            async function loadChart() {
-                try {
-                    const response = await fetch('/api/vmri_history');
-                    masterData = await response.json();
-                    
-                    // Safety Check: Did the API return an error?
-                    if (masterData.error) {
-                        console.error("API Error:", masterData.error);
-                        document.getElementById('insightBanner').innerHTML = `<span class="insight-threat">⚠️ API ERROR: ${masterData.error}</span>`;
-                        return;
-                    }
-                    
-                    renderChart();
-                    updateInsightBanner();
-                } catch (e) { 
-                    console.error("VMRI chart failed:", e); 
-                    document.getElementById('insightBanner').innerHTML = `<span class="insight-threat">⚠️ COULD NOT LOAD THE VMRI HISTORY</span>`;
-                }
+            Chart.defaults.font.family = "'JetBrains Mono', ui-monospace, Menlo, monospace";
+
+            var rows = [];
+            var range = '3M';
+            var overlay = null;
+            var chart = null;
+
+            function $(id) { return document.getElementById(id); }
+            function tierOf(v) { return TIERS.find(function (t) { return v >= t.min; }); }
+            function isNum(v) { return typeof v === 'number' && isFinite(v); }
+            function pad(n) { return (n < 10 ? '0' : '') + n; }
+            function dayText(t) { var d = new Date(t); return MONTHS[d.getMonth()] + ' ' + d.getDate(); }
+            function timeText(t) { var d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+
+            // Selected range: rows from the cutoff to the newest label, or everything when fewer than 2 scores fall inside.
+            function pickView() {
+                var days = RANGES[range], last = rows[rows.length - 1].t;
+                var min = days === null ? rows[0].t : last - days * DAY;
+                var view = rows.filter(function (r) { return r.t >= min; });
+                if (view.filter(function (r) { return isNum(r.y); }).length < 2) { view = rows; min = rows[0].t; }
+                return { view: view, min: min, max: last };
             }
 
-            function updateInsightBanner() {
-                const lastIdx = masterData.scores.length - 1;
-                const currentScore = masterData.scores[lastIdx];
-                const momentum = masterData.momentum_5[lastIdx];
-                const driver = masterData.primary_driver[lastIdx];
-
-                let statusHtml = '';
-                if (currentScore === null || currentScore === undefined || !isFinite(currentScore)) {
-                    // A run whose inputs were incomplete (for example no HY OAS from FRED) records no score.
-                    statusHtml = `<span class="insight-threat">⚠️ NO VMRI SCORE FOR THE LATEST RUN</span> | an input was missing (see the macro ledger row ${masterData.labels[lastIdx] || ''})`;
-                } else if (currentScore >= 250) {
-                    let trend = momentum > 0 ? "ACCELERATING UPWARD" : "DECAYING";
-                    statusHtml = `<span class="insight-threat">⚠️ SYSTEMIC THREAT ACTIVE (${currentScore.toFixed(0)})</span> | Primary Driver: <span class="insight-driver">${driver}</span> | Trend: ${trend}`;
-                } else {
-                    let trend = momentum < 0 ? "COOLING" : "BUILDING";
-                    statusHtml = `<span class="insight-safe">🟢 RISK ON ENVIRONMENT (${currentScore.toFixed(0)})</span> | Primary Driver: <span class="insight-driver">${driver}</span> | Trend: ${trend}`;
-                }
-                
-                document.getElementById('insightBanner').innerHTML = statusHtml;
+            // Y bounds that fit the visible scores, in steps of 50.
+            function yBounds(view) {
+                var ys = view.map(function (r) { return r.y; }).filter(isNum);
+                return {
+                    min: Math.max(0, Math.floor((Math.min.apply(null, ys) - 10) / 50) * 50),
+                    max: Math.ceil((Math.max.apply(null, ys) + 10) / 50) * 50
+                };
             }
 
-            function toggleOverlay(metric, btnElement) {
-                // Clear active states
-                document.querySelectorAll('.overlay-btn').forEach(btn => btn.classList.remove('active'));
-                
-                if (activeOverlay === metric) {
-                    // Turn it off if already active
-                    activeOverlay = null;
-                } else {
-                    // Turn it on
-                    activeOverlay = metric;
-                    btnElement.classList.add('active');
-                }
-                renderChart();
+            function lastIndex(list, key) {
+                for (var i = list.length - 1; i >= 0; i--) { if (isNum(list[i][key])) return i; }
+                return -1;
             }
+
+            function setText(id, text, color) {
+                var el = $(id);
+                el.textContent = text;
+                el.style.color = color || '';
+            }
+
+            function line(text, color) {
+                var d = document.createElement('div');
+                d.textContent = text;
+                if (color) d.style.color = color;
+                $('mid').appendChild(d);
+            }
+
+            function renderHeader(d, drivers) {
+                var n = rows.length - 1, r = rows[n];
+                $('cap').textContent = 'VMRI · ' + dayText(r.t) + ' ' + timeText(r.t);
+                $('mid').textContent = '';
+                var chip = $('chip');
+                chip.hidden = false;
+                if (!isNum(r.y)) {
+                    var k = lastIndex(rows, 'y');
+                    setText('score', '—');
+                    chip.textContent = 'NO SCORE';
+                    chip.style.cssText = '';
+                    line('Latest run (' + dayText(r.t) + ' ' + timeText(r.t) + ') recorded no score: an input was missing.');
+                    line('Last recorded: ' + rows[k].y.toFixed(1) + ' on ' + dayText(rows[k].t) + ' ' + timeText(rows[k].t));
+                    return;
+                }
+                var tier = tierOf(r.y);
+                setText('score', r.y.toFixed(1));
+                chip.textContent = tier.name;
+                chip.style.cssText = 'color:' + tier.color + ';border-color:rgba(' + tier.rgb + ',0.4);background:rgba(' + tier.rgb + ',0.1)';
+                var m = d.momentum_5[n];
+                if (isNum(m)) line((m > 0 ? '▲ +' : m < 0 ? '▼ ' : '') + m.toFixed(1) + ' over 5 runs', m > 0 ? '#f87171' : m < 0 ? '#4ade80' : '');
+                var drv = drivers[n];
+                if (drv && drv !== 'AWAITING DATA') line('Driver: ' + drv);
+            }
+
+            function renderFooter(view) {
+                var ys = view.map(function (r) { return r.y; }).filter(isNum);
+                var avg = lastIndex(rows, 'avg');
+                var text = ys.length + ' readings in view · low ' + Math.min.apply(null, ys).toFixed(1) +
+                    ' · high ' + Math.max.apply(null, ys).toFixed(1) +
+                    (avg >= 0 ? ' · 10-run avg ' + rows[avg].avg.toFixed(1) : '');
+                if (overlay) text += ' · right axis: ' + overlay;
+                setText('foot', text);
+            }
+
+            function showMessage(text, color) {
+                if (chart) { chart.destroy(); chart = null; }
+                setText('foot', text, color);
+            }
+
+            function annotations(yb) {
+                var a = {}, lo = [0, 150, 250, 350], hi = [150, 250, 350, Infinity];
+                TIERS.slice().reverse().forEach(function (t, i) {
+                    var y0 = Math.max(lo[i], yb.min), y1 = Math.min(hi[i], yb.max);
+                    if (y1 > y0) a['box' + i] = {
+                        type: 'box', yMin: y0, yMax: y1, backgroundColor: 'rgba(' + t.rgb + ',0.07)', borderWidth: 0,
+                        label: { display: true, content: t.band, position: { x: 'start', y: 'start' }, color: 'rgba(' + t.rgb + ',0.55)', font: { size: 8, weight: 'normal' }, padding: 3 }
+                    };
+                    if (i > 0 && lo[i] > yb.min && lo[i] < yb.max) a['line' + i] = {
+                        type: 'line', yMin: lo[i], yMax: lo[i], borderColor: 'rgba(' + t.rgb + ',0.45)', borderWidth: 1, borderDash: [4, 4],
+                        label: { display: true, content: String(lo[i]), position: 'end', yAdjust: -7, color: t.color, backgroundColor: 'rgba(0,0,0,0)', font: { size: 8, weight: 'normal' }, padding: 1 }
+                    };
+                });
+                return a;
+            }
+
+            var crosshair = {
+                id: 'crosshair',
+                beforeDatasetsDraw: function (c) {
+                    var act = c.tooltip && c.tooltip.getActiveElements();
+                    if (!act || !act.length) return;
+                    var x = act[0].element.x, ctx = c.ctx;
+                    ctx.save();
+                    ctx.strokeStyle = '#3f3f46';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(x, c.chartArea.top);
+                    ctx.lineTo(x, c.chartArea.bottom);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            };
 
             function renderChart() {
-                const ctx = document.getElementById('vmriChart').getContext('2d');
-                if (vmriChartInstance) vmriChartInstance.destroy();
-
-                let gradient = ctx.createLinearGradient(0, 0, 0, 400);
-                gradient.addColorStop(0, 'rgba(255, 0, 0, 0.4)');
-                gradient.addColorStop(0.6, 'rgba(255, 165, 0, 0.1)');
-                gradient.addColorStop(1, 'rgba(0, 255, 0, 0.02)');
-
-                // 1. Base VMRI Dataset
-                const datasets = [
+                var p = pickView(), view = p.view, yb = yBounds(view);
+                var lastIdx = lastIndex(view, 'y');
+                var datasets = [
                     {
-                        label: 'VMRI Score',
-                        data: masterData.scores,
-                        borderColor: '#00ff00',
-                        borderWidth: 2,
-                        fill: false, // Turn off fill so we can see the banding clearly
-                        tension: 0.2,
-                        pointRadius: 0,
-                        pointHoverRadius: 4,
-                        yAxisID: 'y'
+                        label: 'VMRI', data: view.map(function (r) { return { x: r.t, y: r.y }; }), parsing: false,
+                        borderColor: '#a1a1aa', borderWidth: 1.75, tension: 0.15, spanGaps: false, yAxisID: 'y',
+                        pointRadius: function (c) { return c.dataIndex === lastIdx ? 4 : 0; }, pointHoverRadius: 3,
+                        pointBackgroundColor: function (c) { return c.raw && isNum(c.raw.y) ? tierOf(c.raw.y).color : '#a1a1aa'; },
+                        pointBorderWidth: 0,
+                        segment: { borderColor: function (c) { var y = c.p1.parsed.y; return isNum(y) ? tierOf(y).color : '#a1a1aa'; } }
                     },
                     {
-                        label: '10-Period SMA',
-                        data: masterData.sma_10,
-                        borderColor: 'rgba(255, 255, 255, 0.4)',
-                        borderWidth: 1,
-                        borderDash: [5, 5],
-                        pointRadius: 0,
-                        yAxisID: 'y'
+                        label: '10-run avg', data: view.map(function (r) { return { x: r.t, y: r.avg }; }), parsing: false,
+                        borderColor: 'rgba(255,255,255,0.35)', borderWidth: 1, borderDash: [4, 4], pointRadius: 0, pointHoverRadius: 0, yAxisID: 'y'
                     }
                 ];
-
-                // 2. Dynamic Overlay Dataset
-                if (activeOverlay) {
-                    let overlayData = masterData.context[activeOverlay];
-                    let overlayLabel = activeOverlay.toUpperCase();
-                    
-                    datasets.push({
-                        label: overlayLabel + ' (Overlay)',
-                        data: overlayData,
-                        borderColor: '#38bdf8', // Neon Blue
-                        borderWidth: 1.5,
-                        borderDash: [2, 2],
-                        pointRadius: 0,
-                        yAxisID: 'y1' // Use secondary axis
-                    });
-                }
-
-                vmriChartInstance = new Chart(ctx, {
+                if (overlay) datasets.push({
+                    label: overlay, data: view.map(function (r) { return { x: r.t, y: r[OVERLAYS[overlay]] }; }), parsing: false,
+                    borderColor: '#38bdf8', borderWidth: 1.25, borderDash: [2, 2], pointRadius: 0, pointHoverRadius: 0, yAxisID: 'y1'
+                });
+                if (chart) chart.destroy();
+                chart = new Chart($('vmriChart').getContext('2d'), {
                     type: 'line',
-                    data: {
-                        labels: masterData.labels,
-                        datasets: datasets
-                    },
+                    data: { datasets: datasets },
+                    plugins: [crosshair],
                     options: {
-                        devicePixelRatio: 3,
                         responsive: true,
                         maintainAspectRatio: false,
-                        interaction: { mode: 'index', intersect: false },
+                        animation: false,
+                        interaction: { mode: 'nearest', axis: 'x', intersect: false },
                         plugins: {
                             legend: { display: false },
-                            // --- RISK REGIME BANDING ---
-                            annotation: {
-                                annotations: {
-                                    box1: { type: 'box', yMin: 0, yMax: 150, backgroundColor: 'rgba(34, 197, 94, 0.05)', borderWidth: 0 },
-                                    box2: { type: 'box', yMin: 150, yMax: 250, backgroundColor: 'rgba(234, 179, 8, 0.05)', borderWidth: 0 },
-                                    box3: { type: 'box', yMin: 250, yMax: 350, backgroundColor: 'rgba(249, 115, 22, 0.05)', borderWidth: 0 },
-                                    box4: { type: 'box', yMin: 350, yMax: 1000, backgroundColor: 'rgba(239, 68, 68, 0.05)', borderWidth: 0 }
-                                }
-                            },
+                            annotation: { annotations: annotations(yb) },
                             tooltip: {
-                                backgroundColor: 'rgba(10, 10, 10, 0.95)',
-                                titleFont: { size: 10, family: 'monospace' },
-                                titleColor: '#aaa',
-                                bodyFont: { family: 'monospace', size: 11 },
-                                borderColor: '#333',
-                                borderWidth: 1,
-                                padding: 10,
+                                backgroundColor: 'rgba(9,9,11,0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, displayColors: false,
+                                titleColor: '#a1a1aa', bodyColor: '#e4e4e7',
+                                titleFont: { size: 10 }, bodyFont: { size: 11 },
+                                filter: function (item, i) { return i === 0; },
                                 callbacks: {
-                                    label: function(context) {
-                                        let label = context.dataset.label || '';
-                                        if (label) { label += ': '; }
-                                        if (context.parsed.y !== null) { label += context.parsed.y.toFixed(2); }
-                                        return label;
+                                    title: function (items) { return dayText(items[0].parsed.x) + ', ' + timeText(items[0].parsed.x); },
+                                    label: function (item) {
+                                        // The rows come from the run at that x, whichever line was hit.
+                                        var r = view.find(function (v) { return v.t === item.parsed.x; });
+                                        if (!r) return '';
+                                        var out = [isNum(r.y) ? 'VMRI ' + r.y.toFixed(1) + ' · ' + tierOf(r.y).name : 'VMRI no score'];
+                                        if (isNum(r.avg)) out.push('10-run avg ' + r.avg.toFixed(1));
+                                        if (overlay && isNum(r[OVERLAYS[overlay]])) out.push(overlay + ' ' + r[OVERLAYS[overlay]].toFixed(2));
+                                        return out;
                                     }
                                 }
                             }
                         },
                         scales: {
-                            x: { display: false },
-                            y: { 
-                                min: 50, 
-                                max: 400, // Lock axis so banding stays consistent
-                                grid: { color: '#111' }, 
-                                ticks: { color: '#666', font: {size: 9} } 
+                            x: {
+                                type: 'linear', min: p.min, max: p.max, grid: { display: false }, border: { color: '#27272a' },
+                                ticks: { color: '#71717a', font: { size: 9 }, maxTicksLimit: 6, maxRotation: 0, includeBounds: false, callback: function (v) { return dayText(v); } }
                             },
-                            y1: {
-                                display: activeOverlay ? true : false,
-                                position: 'right',
-                                grid: { display: false },
-                                ticks: { color: '#38bdf8', font: {size: 9} }
-                            }
+                            y: { min: yb.min, max: yb.max, grid: { color: '#18181b' }, border: { display: false }, ticks: { color: '#71717a', font: { size: 9 } } },
+                            y1: { display: !!overlay, position: 'right', grid: { display: false }, ticks: { color: '#38bdf8', font: { size: 9 } } }
                         }
                     }
                 });
+                renderFooter(view);
             }
-            
+
+            function makeButtons(id, names, isOn, onClick) {
+                var box = $(id);
+                box.textContent = '';
+                names.forEach(function (name) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = name;
+                    b.setAttribute('aria-pressed', String(isOn(name)));
+                    b.addEventListener('click', function () { onClick(name); });
+                    box.appendChild(b);
+                });
+            }
+
+            function refresh() {
+                makeButtons('ranges', Object.keys(RANGES), function (n) { return n === range; }, function (n) { range = n; refresh(); });
+                makeButtons('overlays', Object.keys(OVERLAYS), function (n) { return n === overlay; }, function (n) { overlay = overlay === n ? null : n; refresh(); });
+                renderChart();
+            }
+
+            async function loadChart() {
+                try {
+                    var response = await fetch('/api/vmri_history');
+                    var d = await response.json();
+                    if (!response.ok || d.status === 'error' || !d.labels) {
+                        showMessage('Could not load the VMRI history: ' + ((d && d.message) || 'the server returned an error.'), '#f87171');
+                        return;
+                    }
+                    var ctxs = d.context || {};
+                    rows = d.labels.map(function (l, i) {
+                        var r = { t: new Date(l.replace(' ', 'T')).getTime(), y: d.scores[i], avg: d.sma_10[i] };
+                        Object.keys(OVERLAYS).forEach(function (k) { var key = OVERLAYS[k]; r[key] = (ctxs[key] || [])[i]; });
+                        return r;
+                    });
+                    if (!rows.length || lastIndex(rows, 'y') < 0) {
+                        showMessage('No VMRI history recorded yet.');
+                        return;
+                    }
+                    renderHeader(d, Array.isArray(d.primary_driver) ? d.primary_driver : []);
+                    refresh();
+                } catch (e) {
+                    console.error('VMRI chart failed:', e);
+                    showMessage('Could not load the VMRI history.', '#f87171');
+                }
+            }
+
             loadChart();
         </script>
     </body>

@@ -96,6 +96,8 @@ iframe { filter: contrast(1.1) brightness(0.9); }
 .war-mark { position: absolute; top: 50%; transform: translate(-50%, -50%); transition: left 0.25s ease; }
 .war-mark-scenario { width: 14px; height: 14px; border-radius: 50%; background: #22c55e; border: 2px solid #09090b; z-index: 2; }
 .war-mark-live { width: 2px; height: 16px; background: #e4e4e7; z-index: 1; }
+.pp-mark { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #09090b; z-index: 2; }
+.pp-range { position: absolute; top: -5px; height: 3px; border-radius: 999px; background: rgba(228, 228, 231, 0.7); }
 .war-ticks { position: relative; height: 10px; margin-top: 2px; letter-spacing: 0.08em; }
 .war-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .war-ticks span:first-child { transform: none; }

@@ -1208,76 +1208,152 @@ document.addEventListener('keydown', e => {
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
-// Fetches the live XML dump and extracts the Paper:Physical ratio
+// COMEX Paper:Physical card. ppState keeps the last XML reading and ledger statistics for the COPY button.
+let ppState = { xml: null, stats: null };
+let ppHistoryChartInstance = null;
+const PP_TIER = { // text colour of the number, text colour of the tier, marker colour (the zone colours)
+    NOMINAL: ['text-white', 'text-green-500', '#16a34a'], ELEVATED: ['text-yellow-500', 'text-yellow-500', '#ca8a04'],
+    HIGH: ['text-orange-500', 'text-orange-500', '#ea580c'], CRITICAL: ['text-red-500', 'text-red-500', '#dc2626'],
+};
+const ppDate = iso => { const [, m, d] = String(iso).slice(0, 10).split('-').map(Number); return m ? `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${d}` : DASH; };
+const ppPct = v => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%`;
+const ppSet = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+
+// Pure statistics of the ledger columns. A ratio or open interest that is null or not above 0 is a gap, not a reading.
+function ppHistoryStats(labels, ratios, ois) {
+    const ok = v => Number.isFinite(v) && v > 0;
+    const rows = [];
+    labels.forEach((label, i) => { if (ok(ratios[i])) rows.push({ label, t: new Date(label.replace(' ', 'T')).getTime(), ratio: ratios[i], oi: ok(ois[i]) ? ois[i] : null }); });
+    const n = rows.length;
+    if (!n) return null;
+    const sorted = rows.map(r => r.ratio).sort((a, b) => a - b);
+    const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+    const last = rows[n - 1];
+    const stats = { n, low: sorted[0], high: sorted[n - 1], median, firstLabel: rows[0].label, excluded: labels.length - n,
+        latest: { ratio: last.ratio, label: last.label }, percentile: null, d30: null };
+    if (n >= 20) {
+        const below = sorted.filter(v => v < last.ratio).length / n * 100, above = sorted.filter(v => v > last.ratio).length / n * 100;
+        stats.percentile = last.ratio < median ? { side: 'below', pct: Math.round(above) } : { side: 'above', pct: Math.round(below) };
+    }
+    const ref = rows.filter(r => r.t <= last.t - 30 * 864e5).pop();
+    if (ref) {
+        stats.d30 = { label: ref.label, ratio: ref.ratio, ratio_chg_pct: (last.ratio / ref.ratio - 1) * 100, oi_chg_pct: null, registered_chg_pct: null };
+        if (last.oi && ref.oi) { // registered = open interest × 5,000 ÷ ratio
+            stats.d30.oi_chg_pct = (last.oi / ref.oi - 1) * 100;
+            stats.d30.registered_chg_pct = ((last.oi / last.ratio) / (ref.oi / ref.ratio) - 1) * 100;
+        }
+    }
+    return stats;
+}
+
+// Re-reads the XML dump (headline numbers) and the ledger (history); each fails on its own
 async function syncComexModule() {
     try {
-        const res = await fetch(`${API_BASE}/api/dump`);
-        const xmlText = await res.text();
-        
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-        
-        // Find the node in the XML
-        const ratioNode = xmlDoc.querySelector("comex_default_risk leverage_ratio");
-        
-        if (ratioNode) {
-            // The XML outputs "7.17:1", so we split by ':' to grab just the number
-            const ratioStr = ratioNode.textContent.split(':')[0]; 
-            const ratio = parseFloat(ratioStr);
-            
-            // Push the live data to the UI (a ratio that did not parse is left out, not drawn as NaN)
-            if (Number.isFinite(ratio)) updateComexRatioUI(ratio);
+        const xmlText = await (await fetch(`${API_BASE}/api/dump`)).text();
+        if (xmlErrorText(xmlText)) throw new Error(xmlErrorText(xmlText));
+        const doc = new DOMParser().parseFromString(xmlText, "text/xml");
+        const node = doc.querySelector("paper_physical");
+        const a = name => node ? toNum(node.getAttribute(name)) : null;
+        const s = name => (node && node.getAttribute(name)) || null;
+        updateComexRatioUI({
+            tier: s('tier'), ratio: a('ratio'), si_open_interest: a('si_open_interest'), paper_claims_oz: a('paper_claims_oz'),
+            registered_oz: a('registered_oz'), oi_trade_date: s('oi_trade_date'), inventory_report_date: s('inventory_report_date'),
+            run: doc.documentElement.getAttribute('source_folder'),
+        });
+    } catch (e) {
+        console.error("Failed to sync COMEX module:", e);
+    }
+    let stats = null, note = '';
+    try {
+        const json = await fetchJson(`${API_BASE}/api/macro_ledger_full?limit=500`);
+        if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
+        const d = json.data;
+        stats = ppHistoryStats(d.labels || [], d.paper_physical_ratio || [], d.silver_oi || []);
+        note = stats ? '' : 'No ratio recorded yet.';
+        if (stats) ppDrawHistory(d.labels, d.paper_physical_ratio, stats);
+    } catch (e) {
+        note = `Could not load the recorded history: ${e.message}`;
+    }
+    ppState.stats = stats;
+    if (!stats && ppHistoryChartInstance) { ppHistoryChartInstance.destroy(); ppHistoryChartInstance = null; }
+    ppSet('ppHistTitle', stats ? `Recorded ratio · since ${ppDate(stats.firstLabel)}` : 'Recorded ratio');
+    ppSet('ppHistCount', stats ? `${stats.n} readings` : '');
+    const range = document.getElementById('ppRange');
+    if (range) {
+        range.classList.toggle('hidden', !stats);
+        if (stats) {
+            range.style.left = `${Math.min(stats.low, 50) / 50 * 100}%`;
+            range.style.width = `${(Math.min(stats.high, 50) - Math.min(stats.low, 50)) / 50 * 100}%`;
+            range.title = `Recorded range ${stats.low.toFixed(2)} to ${stats.high.toFixed(2)}`;
         }
-    } catch (e) { 
-        console.error("Failed to sync COMEX module:", e); 
+    }
+    if (stats) {
+        const d30 = stats.d30;
+        note = `Low ${stats.low.toFixed(2)} · median ${stats.median.toFixed(2)} · high ${stats.high.toFixed(2)}.`
+            + (d30 && d30.oi_chg_pct !== null ? ` 30 days: open interest ${ppPct(d30.oi_chg_pct)}, registered stock ${ppPct(d30.registered_chg_pct)} (implied).` : '')
+            + (stats.excluded ? ` ${stats.excluded} runs recorded no ratio.` : '');
+    }
+    ppSet('ppHistNote', note);
+    const p30 = document.getElementById('pp30d'), pPct = document.getElementById('ppPercentile');
+    if (p30) {
+        const d30 = stats && stats.d30;
+        p30.innerHTML = d30 ? `30d ago <span class="text-zinc-200 font-bold">${d30.ratio.toFixed(2)}</span> <span class="${d30.ratio_chg_pct > 0 ? 'text-red-400' : 'text-green-400'}">(${ppPct(d30.ratio_chg_pct)})</span>` : '';
+        const pc = stats && stats.percentile;
+        pPct.innerHTML = pc ? `${pc.side} <span class="text-zinc-200 font-bold">${pc.pct}%</span> of readings` : '';
     }
 }
 
-// Updates the COMEX Paper:Physical Module UI based on the current ratio
-function updateComexRatioUI(ratio) {
+function ppDrawHistory(labels, ratios, stats) {
+    const canvas = document.getElementById('ppHistoryChart');
+    if (!canvas) return;
+    if (ppHistoryChartInstance) ppHistoryChartInstance.destroy();
+    const data = ratios.map(v => (Number.isFinite(v) && v > 0 ? v : null));
+    const lastIdx = labels.lastIndexOf(stats.latest.label);
+    ppHistoryChartInstance = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: { labels, datasets: [{ data, borderColor: '#e4e4e7', backgroundColor: 'rgba(228,228,231,0.06)', borderWidth: 1.5, fill: true, spanGaps: false,
+            pointRadius: data.map((_, i) => (i === lastIdx ? 3 : 0)), pointHoverRadius: 3, pointBackgroundColor: '#e4e4e7' }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: { backgroundColor: 'rgba(9, 9, 11, 0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, titleColor: '#fff', bodyColor: '#a1a1aa',
+                    callbacks: { label: c => (c.parsed.y == null ? '' : `${c.parsed.y.toFixed(2)}:1`) } },
+            },
+            scales: {
+                x: { display: false },
+                y: { grid: { color: '#18181b' }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 4 } },
+            },
+        },
+    });
+}
+
+// Paints the headline numbers of the card from the XML reading; the tier attribute is the model's own and is not recomputed here
+function updateComexRatioUI(x) {
     const display = document.getElementById('livePaperRatio');
     const banner = document.getElementById('liveRatioStatusBanner');
-    const claims = document.getElementById('livePaperOz');
-    const statusIcon = document.getElementById('ratioStatusIcon');
-    const statusText = document.getElementById('ratioStatusText');
-    const needle = document.getElementById('ratioNeedle'); // Grab the needle
-
     if (!display) return;
-
-    // 1. Update text numbers
-    display.innerText = `${ratio.toFixed(0)}:1`;
-    claims.innerText = ratio.toFixed(0);
-
-    // 2. Animate the Gauge Needle
-    // Math: Maps a 0 to 50 ratio scale to a -90 to +90 degree angle.
-    let degrees = -90 + (ratio / 50) * 180;
-    if (degrees > 90) degrees = 90;   // Cap it at far right
-    if (degrees < -90) degrees = -90; // Cap it at far left
-    
-    if (needle) {
-        needle.style.transform = `rotate(${degrees}deg)`;
-    }
-
-    // 3. Dynamic Threat Tiering Colors
-    if (ratio >= 40) {
-        display.className = "text-4xl font-bold tracking-tighter text-red-500 drop-shadow-[0_0_12px_rgba(239,68,68,0.4)]";
-        banner.className = "text-[9px] uppercase font-bold text-red-500 mt-1 tracking-widest";
-        banner.innerText = "CRITICAL LEVERAGE";
-        statusIcon.className = "text-red-500 mt-[1px]";
-        statusText.innerHTML = "<span class='text-red-400 font-bold'>Critical ratio level</span>";
-    } else if (ratio >= 25) {
-        display.className = "text-4xl font-bold tracking-tighter text-yellow-500 drop-shadow-[0_0_12px_rgba(234,179,8,0.3)]";
-        banner.className = "text-[9px] uppercase font-bold text-yellow-500 mt-1 tracking-widest";
-        banner.innerText = "DELIVERY STRESS";
-        statusIcon.className = "text-yellow-500 mt-[1px]";
-        statusText.innerHTML = "<span class='text-yellow-400 font-bold'>Elevated ratio level</span>";
-    } else {
-        display.className = "text-4xl font-bold tracking-tighter text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.2)]";
-        banner.className = "text-[9px] uppercase font-bold text-green-500 mt-1 tracking-widest";
-        banner.innerText = "MARKET NOMINAL";
-        statusIcon.className = "text-green-500 mt-[1px]";
-        statusText.innerHTML = "<span class='text-green-400'>Standard leverage level</span>";
-    }
+    ppState.xml = x;
+    const has = x.tier !== null && x.tier !== 'UNAVAILABLE' && x.ratio !== null && x.ratio > 0;
+    const [numCls, tierCls, color] = (has && PP_TIER[x.tier]) || ['text-white', 'text-zinc-500', '#71717a'];
+    const big = n => `${(n / 1e6).toFixed(1)}M oz`;
+    display.textContent = has ? `${x.ratio.toFixed(2)}:1` : DASH;
+    display.className = `war-score ${has ? numCls : 'text-white'}`;
+    banner.textContent = has ? x.tier : 'NO RATIO THIS RUN';
+    banner.className = `text-[9px] font-bold uppercase tracking-widest ${has ? tierCls : 'text-zinc-500'}`;
+    const mark = document.getElementById('ppMark');
+    mark.classList.toggle('hidden', !has);
+    mark.style.left = `${Math.min(x.ratio, 50) / 50 * 100}%`;
+    mark.style.background = color;
+    const claims = has && x.paper_claims_oz !== null, reg = has && x.registered_oz !== null;
+    ppSet('ppClaims', claims ? big(x.paper_claims_oz) : DASH);
+    ppSet('ppContracts', has && x.si_open_interest !== null ? `${x.si_open_interest.toLocaleString('en-US')} contracts × 5,000` : 'contracts × 5,000');
+    ppSet('ppRegistered', reg ? big(x.registered_oz) : DASH);
+    ppSet('ppRatioTile', has ? x.ratio.toFixed(2) : DASH);
+    document.getElementById('ppCover').innerHTML = claims && reg ? `Metal cover <span class="text-zinc-200 font-bold">${(x.registered_oz / x.paper_claims_oz * 100).toFixed(1)}%</span>` : '';
+    ppSet('ppDates', has ? [x.oi_trade_date && `OI trade date ${ppDate(x.oi_trade_date)}`, x.inventory_report_date && `inventory report ${ppDate(x.inventory_report_date)}`, x.run && `run ${x.run}`].filter(Boolean).join(' · ')
+        : 'Silver open interest or registered inventory was unavailable for the latest run.');
 }
 
 
@@ -1920,16 +1996,17 @@ function copyPanelData(panelId) {
 
         else if (panelId === 'panel4') {
             // COMEX Paper:Physical ratio panel
-            const ratio = document.getElementById('livePaperRatio').innerText;
-            const status = document.getElementById('liveRatioStatusBanner').innerText;
-            const claims = document.getElementById('livePaperOz').innerText;
-            const statusText = document.getElementById('ratioStatusText').innerText;
+            const x = ppState.xml || {};
             payload = JSON.stringify({
                 panel: PANEL_LABELS[panelId],
-                paper_to_physical_ratio: ratio,
-                oz_paper_claims_per_physical: claims,
-                status_banner: status,
-                status_detail: statusText
+                paper_to_physical_ratio: document.getElementById('livePaperRatio').innerText,
+                tier: x.tier ?? null,
+                paper_claims_oz: x.paper_claims_oz ?? null,
+                registered_oz: x.registered_oz ?? null,
+                si_open_interest: x.si_open_interest ?? null,
+                oi_trade_date: x.oi_trade_date ?? null,
+                inventory_report_date: x.inventory_report_date ?? null,
+                history: ppState.stats
             }, null, 2);
         }
 
