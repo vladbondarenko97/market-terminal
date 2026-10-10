@@ -81,6 +81,8 @@ means `main_pipeline.py`; "terminal" means `options_whale/api_router.py`.
 | `DATABENTO_API_KEY` | `""`. Legacy alias: `DB_API_KEY` (used when this is unset or blank) | `config.DATABENTO_API_KEY` for the pipeline (`core/collect.py`, `core/sources.py databento_trades()`); `config.DATABENTO_API_KEY` in `options_whale/api_router.py` `databento_client()` (first dark pool request); `setup.sh`; `alphaflow/engine.py` | Pipeline: the SPY and SLV block-trade flow sections report `missing`; the run continues. Terminal: the server starts, and `/api/darkpool` answers 503 naming the missing key. `setup.sh` warns. |
 | `FRED_API_KEY` | `""` | `core/collect.py` (macro series, Forecast Lab inputs, CPI dates) | Every FRED series reports `missing`. This includes the high-yield spread, so **VMRI shows `INCOMPLETE DATA`** (its credit input comes from FRED). Forecast Lab cards 5 and 6 lose their FRED inputs, and card 7 loses the CPI dates. |
 | `EIA_API_KEY` | `""` | `core/sources.py eia_weekly()` | The public EIA `.xls` history file is used instead. Nothing is lost. |
+| `SEC_USER_AGENT` | `""` | `core/sources.py` (`sec_company_tickers()`, `sec_submissions()`, `sec_form4()`), run by `scripts/backfill_form4.py` | Not a key. A contact string, `Name email`, that SEC asks automated clients to send. Unset: every SEC fetcher raises `not_configured` and the backfill script stops before any request; the Edge Lab insider edge shows no Form 4 history. |
+| `NEWS_FEEDS_FILE` | `""` (the bundled `core/news_feeds.json`) | `core/collect.py collect_news()` | Not a key. Path to a JSON list of `{name, category, url, enabled}` feeds. A file that is absent or not valid JSON makes the snapshot's `news` section `missing` with that reason; the run continues. |
 | `GOLD_API_KEY` | `""` | `core/collect.py _spot()` (goldapi.io spot silver) | `prices.silver_spot` reports `missing`; the futures-minus-spot basis is empty. |
 | `EBAY_APP_ID`, `EBAY_CERT_ID` | `""` | `core/collect.py collect_ebay()`; `ebay.py` (run by the terminal's `/api/silver_eagle_prices`) | Silver Eagle listings report `missing`. Both are needed. `ebay.py` exits with "Cannot proceed without a valid eBay API token". |
 
@@ -113,6 +115,7 @@ set, some empty: `failed`**, with the empty names in the detail, and the run end
 | `SMTP_SERVER` | `""` | `send_email.py` | Same as above. |
 | `SMTP_PORT` | `587` | `config.SMTP_PORT` | Empty or blank: 587. Text that is not a number from 1 to 65535 is a `ConfigError`. |
 | `RECIPIENT_EMAIL` | `""` | `send_email.py` (To header) | Same as above. |
+| `IMAP_SERVER` | `SMTP_SERVER` | `send_email.bounced_runs()` | Mailbox of `EMAIL_SENDER` (IMAP over TLS, port 993, the SMTP login), read only to find bounce notices of earlier report emails. A mailbox that cannot be read changes nothing. |
 | `REPORT_SENDER` | `EMAIL_SENDER` | `scripts/import_email_positions.py` only | The script uses `EMAIL_SENDER`. If both are empty it exits and asks you to set one. |
 
 ### Phone push and dashboard link
@@ -229,7 +232,7 @@ Places that read `.env` without importing `config`, and why:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ASSISTANT_LOCAL_URL` | `http://127.0.0.1:11434/v1` | OpenAI-compatible model server (Ollama, oMLX, LM Studio, llama.cpp) |
+| `ASSISTANT_LOCAL_URL` | `http://127.0.0.1:11434/v1` for the console | OpenAI-compatible model server (Ollama, oMLX, LM Studio, llama.cpp). **Unset or blank also turns off the pipeline's Briefing stage** (`narrative` is `skipped`; the console still falls back to the default); the stage runs only when you set it |
 | `ASSISTANT_LOCAL_MODEL` | `qwen3.6:35b-a3b` | Model that answers; the console's menu lists the server's other models |
 | `ASSISTANT_LOCAL_API_KEY` | `local` | Bearer token for the server, if it wants one |
 | `ASSISTANT_LOCAL_REASONING` | `auto` | `auto`, `none`, `low`, `medium`, `high`. `auto`: none to route or answer from the brief, low over fetched data |

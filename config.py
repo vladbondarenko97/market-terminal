@@ -127,6 +127,8 @@ def flag_env(name):
 DATABENTO_API_KEY = optional_env("DATABENTO_API_KEY", default="", alt_name="DB_API_KEY")
 FRED_API_KEY = optional_env("FRED_API_KEY", default="")
 EIA_API_KEY = optional_env("EIA_API_KEY", default="")
+SEC_USER_AGENT = optional_env("SEC_USER_AGENT", default="")   # "Name email": the contact string SEC asks automated clients to send
+NEWS_FEEDS_FILE = optional_env("NEWS_FEEDS_FILE", default="")   # empty: the bundled core/news_feeds.json
 GOLD_API_KEY = optional_env("GOLD_API_KEY", default="")
 EBAY_APP_ID = optional_env("EBAY_APP_ID", default="")
 EBAY_CERT_ID = optional_env("EBAY_CERT_ID", default="")
@@ -139,6 +141,7 @@ CME_LOGIN_PASSWORD = optional_env("CME_LOGIN_PASSWORD", default="")
 SMTP_SERVER = optional_env("SMTP_SERVER", default="")
 SMTP_PORT = int_env("SMTP_PORT", 587, minimum=1, maximum=65535)
 RECIPIENT_EMAIL = optional_env("RECIPIENT_EMAIL", default="")
+IMAP_SERVER = optional_env("IMAP_SERVER", default="") or SMTP_SERVER      # the sender's mailbox, read only to find bounce notices
 NTFY_URL = optional_env("NTFY_URL", default="")
 DASHBOARD_URL = optional_env("DASHBOARD_URL", default="")
 UPLOAD_URL = optional_env("UPLOAD_URL", default="")

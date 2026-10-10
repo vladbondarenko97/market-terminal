@@ -15,6 +15,7 @@ nothing here makes network requests. Outputs are plain dicts stored in the commi
 9 scorecard              logged forecasts graded after the fact + walk-forward backtests
 """
 import math
+import re
 from datetime import date, timedelta
 
 import numpy as np
@@ -22,7 +23,7 @@ import pandas as pd
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-VERSION = "forecast_v1"
+VERSION = "forecast_v2"
 HORIZONS = [{"key": "1d", "days": 1, "td": 1}, {"key": "1w", "days": 7, "td": 5},
             {"key": "1m", "days": 30, "td": 21}, {"key": "1y", "days": 365, "td": 252}]
 R = 0.05
@@ -579,7 +580,7 @@ def _third_friday(y, m):
     return d + timedelta(days=(4 - d.weekday()) % 7)
 
 
-def calendar_effects(df, fomc_dates, cpi_dates, today):
+def calendar_effects(df, fomc_dates, cpi_dates, today, releases=None, speeches=None):
     c = _naive_index(_closes(df))
     if len(c) < 500:
         return {"status": "missing", "reason": "need >= 500 daily closes"}
@@ -606,6 +607,27 @@ def calendar_effects(df, fomc_dates, cpi_dates, today):
     cpi = [r.iloc[pos[d]] for d in cd if d in pos]
     eff["cpi_day"] = {**stats(cpi, base_mean), "avg_abs_vs_normal": (np.mean(np.abs(cpi)) * 100 / base_abs) if cpi else None,
                       "definition": "CPI release day close-to-close"}
+    # release days (close-to-close) graded against every other day with the Day Scanner's evidence gate
+    from core.watch import grade
+    mins = [(x + timedelta(days=21)).isoformat() for x in fd]
+    for key, label, dates in (("payrolls_day", "payrolls", (releases or {}).get("payrolls")), ("ppi_day", "PPI", (releases or {}).get("ppi")),
+                              ("gdp_day", "GDP", (releases or {}).get("gdp")), ("pce_day", "PCE", (releases or {}).get("pce")),
+                              ("retail_sales_day", "retail sales", (releases or {}).get("retail_sales")),
+                              ("fomc_minutes_day", "FOMC minutes", mins if fd else None)):
+        if not dates:
+            eff[key] = {"status": "missing", "reason": f"no {label} release dates"}
+            continue
+        hit = r.index.normalize().isin(pd.to_datetime(list(dates)))
+        eff[key] = {**stats(list(r[hit]), base_mean), "grade": grade(r[hit], r[~hit])["edge"],
+                    "definition": f"{label} release day close-to-close" + (" (decision + 21 days, by rule)" if key == "fomc_minutes_day" else "")}
+    # days with at least one speech by a Board member (Chair, Vice Chair or Governor; regional bank presidents are not counted)
+    board = sorted({x["date"] for x in speeches or [] if re.search(r"\b(Governor|Chair|Chairman)\b", x.get("speaker") or "")})
+    if not board:
+        eff["fed_speaker_day"] = {"status": "missing", "reason": "no Fed Board speech dates"}
+    else:
+        hit = r.index.normalize().isin(pd.to_datetime(board))
+        eff["fed_speaker_day"] = {**stats(list(r[hit]), base_mean), "grade": grade(r[hit], r[~hit])["edge"],
+                                  "definition": "a day with at least one speech by a Fed Board member (Chair, Vice Chair, Governor), close-to-close"}
     # OPEX week (Mon-Fri week containing the 3rd Friday) vs all weeks
     wk = c.resample("W-FRI").last().pct_change().dropna()
     opex = [v for d, v in wk.items() if d.date() == _third_friday(d.year, d.month)]
@@ -725,7 +747,7 @@ def build(inputs):
                                    prior_spot=float(prior.iloc[-1]) if len(prior) else None)
         vol = vol_forecast(fr.get(key), imp, spot)
         tr = trend_model(fr.get(key))
-        cal = calendar_effects(fr.get(key), inputs.get("fomc"), inputs.get("cpi"), today)
+        cal = calendar_effects(fr.get(key), inputs.get("fomc"), inputs.get("cpi"), today, inputs.get("releases"), inputs.get("speeches"))
         flows = mechanical_flows(sym, fr.get(key), inputs.get("aum", {}), gx, tr, spot)
         out[sym] = {"spot": spot, "implied": imp, "vol_forecast": vol, "trend": tr, "calendar": cal, "flows": flows}
     out["positioning"] = positioning(inputs.get("cot", {}).get("silver"), inputs.get("cot", {}).get("sp"),
@@ -1005,5 +1027,14 @@ def signal_watch(fc, ticket=None):
             f"{mr['regime']} · recession 12m {mr.get('recession_prob_12m') or 0:.0%}", "any flag raised", bool(mr.get("flags")), "structure",
             "Risk-off: halve call size and wait for trend confirmation (" + "; ".join(mr.get("flags") or []) + ")",
             "regime filter, not backtested", "none")
+    ch = fc.get("chaos") or {}
+    if ch.get("score") is not None:
+        pv = ch.get("prev") or {}
+        add("ALL", "Chaos/Peace regime", "Card 14 · Chaos / Peace index (score, regime, components)",
+            "The Chaos/Peace score is the mean of up to 12 stress z-scores. This row fires on the run where its regime differs from the previous trading day's.",
+            f"{ch['score']:+.0f} {ch['regime']} ({ch['components_used']} of {ch['components_total']} components)", "regime differs from the previous trading day",
+            bool(ch.get("regime_changed")), "structure",
+            f"Chaos/Peace regime changed: {pv.get('regime')} -> {ch['regime']} (a description of the reading, not a trade signal)",
+            f"fixed, uncalibrated cut-offs at -30 / 30 / 60; previous day {pv.get('score')}", "none")
     rows.sort(key=lambda r: (not r["fired"], r["asset"]))      # fired first, then grouped by asset
     return rows

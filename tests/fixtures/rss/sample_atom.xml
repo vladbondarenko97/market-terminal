@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Example Atom</title><id>urn:example:feed</id><updated>2026-10-10T15:00:00Z</updated>
+<entry><title>Treasury yields edge higher</title><id>urn:example:1</id><link href="https://example.test/b1"/><updated>2026-10-10T15:00:00Z</updated></entry>
+</feed>

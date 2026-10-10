@@ -20,7 +20,8 @@ os.environ["PORTFOLIO_DATA_DIR"] = str(DATA)
 for k in ("DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOLD_API_KEY",
           "EBAY_APP_ID", "EBAY_CERT_ID", "CME_LOGIN_USERNAME", "CME_LOGIN_PASSWORD", "EMAIL_SENDER",
           "EMAIL_PASSWORD", "SMTP_SERVER", "RECIPIENT_EMAIL", "REPORT_SENDER", "NTFY_URL", "DASHBOARD_URL",
-          "UPLOAD_URL", "UPLOAD_TOKEN", "REPORT_UPLOAD", "SCHEDULED_RUNS"):
+          "UPLOAD_URL", "UPLOAD_TOKEN", "REPORT_UPLOAD", "SCHEDULED_RUNS",
+          "ASSISTANT_LOCAL_URL", "ASSISTANT_LOCAL_MODEL", "ASSISTANT_LOCAL_API_KEY"):
     os.environ[k] = ""
 sys.path.insert(0, str(ROOT))
 
@@ -28,7 +29,8 @@ sys.path.insert(0, str(ROOT))
 def build_installation():
     DATA.mkdir(parents=True, exist_ok=True)
     for f in FIX.iterdir():
-        shutil.copy(f, DATA / f.name)
+        if f.is_file():           # sub-folders (fixtures/rss, fixtures/chaos) hold parser fixtures, not data files
+            shutil.copy(f, DATA / f.name)
     # a download-dated duplicate like the real archive has (same bytes, different name)
     shutil.copy(FIX / "daily_volume_20260819.xlsx", DATA / "daily_volume_20260820.xlsx")
     (DATA / "state.json").write_text('{"cookies": [{"name": "secret"}]}')

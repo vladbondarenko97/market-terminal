@@ -91,9 +91,9 @@ you less than your own first run. If you fork this, keep `CME_Data/` and `.env` 
     liquidity, Shanghai–COMEX spread and the Engine Positions card.
   - **Time Arbitrage**: option analytics for a ticker: dealer positioning, IV vs realised volatility, term
     structure, a probability matrix and an option chain explorer with a Black-Scholes calculator.
-  - **Forecast Lab**: eleven model cards for SPY or SLV: market-implied range, volatility forecast, trend/CTA,
+  - **Forecast Lab**: twelve model cards for SPY or SLV: market-implied range, volatility forecast, trend/CTA,
     positioning (COT), silver fair value, macro regime, calendar effects, mechanical flows, a forecast scorecard,
-    diesel & refining (with a Texas refinery outage tracker) and EIA inventories. Three rule cards sit beside
+    diesel & refining (with a Texas refinery outage tracker), EIA inventories and a Chaos / Peace stress index. Three rule cards sit beside
     them: **Signal Watch** (every trigger, fired or waiting, with what to do), **Day Scanner** (a dip-in-an-uptrend
     rule on your own ticker list) and **Edge Lab** (seven published edges tested on any ticker's own history).
 - **Evidence before action**: a rule only says "buy" when its own history clears a fixed test (enough cases, the

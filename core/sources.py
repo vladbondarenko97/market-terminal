@@ -16,7 +16,10 @@ import pandas as pd
 from core import lake
 
 PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forexfactory": 1, "databento": 1, "goldapi": 1, "akshare": 1,
-                   "ebay": 1, "cme": 1}
+                   "ebay": 1, "cme": 1,
+                   "cboe": 1, "finra": 1, "treasury": 1, "rss": 6,
+                   "federalreserve": 1,
+                   "sec": 2}
 
 
 class SourceUnavailable(Exception):
@@ -623,6 +626,250 @@ def eia_refinery_capacity(s):
     return t.rename(columns={"QUANTITY": "capacity_bpd"}), res["year"], pid
 
 
+def cboe_putcall(s, day):
+    """CBOE daily market statistics for one trading day -> (equity put/call ratio, payload_id). The CDN answers 403 for a day with no file."""
+    import requests
+    day = str(day)
+
+    def call():
+        r = requests.get(f"https://cdn.cboe.com/data/us/options/market_statistics/daily/{day}_daily_options", timeout=30,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            raise SourceUnavailable("cboe", f"http_{r.status_code}", day)
+        return r.content
+    content, pid = s.fetch("cboe", {"day": day, "stat": "daily_options"}, call, kind="cboe_daily_stats", fmt="json",
+                           capture=lambda c: (c, None, None), source_date=day)
+    try:
+        ratio = next(float(x["value"]) for x in json.loads(content)["ratios"] if x["name"] == "EQUITY PUT/CALL RATIO")
+    except (StopIteration, KeyError, TypeError, ValueError) as e:
+        raise SourceUnavailable("cboe", "parse", f"{day}: no equity put/call ratio ({type(e).__name__})")
+    return ratio, pid
+
+
+def finra_short_volume(s, day, symbol="SPY"):
+    """FINRA consolidated daily short sale volume for one symbol -> (ShortVolume / TotalVolume, payload_id)."""
+    import requests
+    day = str(day).replace("-", "")
+
+    def call():
+        r = requests.get(f"https://cdn.finra.org/equity/regsho/daily/CNMSshvol{day}.txt", timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            raise SourceUnavailable("finra", f"http_{r.status_code}", day)
+        return r.text
+
+    def cap(text):      # the file is ~535 KB a day: keep only the header and the requested symbol's line
+        rows = text.splitlines()
+        keep = [l for l in rows[1:] if l.split("|")[1:2] == [symbol]][:1]
+        return "\n".join(rows[:1] + keep).encode(), None, {"rows_in_file": len(rows) - 1, "kept": [symbol]}
+    text, pid = s.fetch("finra", {"day": day, "symbol": symbol}, call, kind="finra_short_volume", fmt="txt", capture=cap)
+    for line in text.splitlines()[1:]:
+        f = line.split("|")
+        if len(f) >= 5 and f[1] == symbol:
+            try:
+                short, total = float(f[2]), float(f[4])
+            except ValueError:
+                break
+            if total > 0:
+                return short / total, pid
+            break
+    raise SourceUnavailable("finra", "parse", f"{day}: {symbol} absent or zero total volume")
+
+
+def treasury_auctions(s, days=60):
+    """Treasury auctions announced or held in the last `days` days (TreasuryDirect): auctionDate, securityType, offeringAmount (USD, strings)."""
+    import requests
+
+    def call():
+        r = requests.get("https://www.treasurydirect.gov/TA_WS/securities/auctioned", timeout=30, headers={"User-Agent": "Mozilla/5.0"},
+                         params={"format": "json", "days": days})
+        if r.status_code != 200:
+            raise SourceUnavailable("treasury", f"http_{r.status_code}", "auctions")
+        rows = r.json()
+        if not rows:
+            raise SourceUnavailable("treasury", "empty", "auctions")
+        return rows
+    rows, pid = s.fetch("treasury", {"fn": "auctions", "days": days}, call, kind="treasury_auctions", fmt="json",
+                        capture=lambda r: (json.dumps(r).encode(), None, {"rows": len(r)}))
+    return [{k: x.get(k) for k in ("auctionDate", "securityType", "offeringAmount")} for x in rows], pid
+
+
+def treasury_buybacks(s, since):
+    """Treasury buyback operations since a date (Fiscal Data): operation_date, total_par_amt_accepted (USD string, can be 'null')."""
+    import requests
+    since = str(since)
+
+    def call():
+        r = requests.get("https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/buybacks_operations", timeout=30,
+                         headers={"User-Agent": "Mozilla/5.0"},
+                         params={"filter": f"operation_date:gte:{since}", "sort": "-operation_date", "page[size]": 200})
+        if r.status_code != 200:
+            raise SourceUnavailable("treasury", f"http_{r.status_code}", "buybacks")
+        return r.json().get("data", [])
+    rows, pid = s.fetch("treasury", {"fn": "buybacks", "since": since}, call, kind="treasury_buybacks", fmt="json",
+                        capture=lambda r: (json.dumps(r).encode(), None, {"rows": len(r)}))
+    return [{k: x.get(k) for k in ("operation_date", "total_par_amt_accepted")} for x in rows], pid
+
+
+def yf_long_history(s, symbol):
+    """Full daily Close history (period=max) as a date-indexed Series. It changes by one row a day and the event study does not need
+    today's row, so a capture under 30 days old is reused (offline: any stored capture)."""
+    with lake._WRITE_LOCK:
+        row = s.conn.execute("""SELECT payload_id, fetched_at FROM v2_payloads WHERE kind = 'ohlcv' AND request_json LIKE ? AND request_json LIKE ?
+                                ORDER BY fetched_at DESC LIMIT 1""", (f'%"symbol": "{symbol}"%', '%"period": "max"%')).fetchone()
+    if row and row["fetched_at"]:
+        f = datetime.fromisoformat(row["fetched_at"])
+        if s.offline or datetime.now(timezone.utc) - (f if f.tzinfo else f.replace(tzinfo=timezone.utc)) < timedelta(days=30):
+            with lake._WRITE_LOCK:
+                _, content = lake.load_payload(s.conn, row["payload_id"])
+            if content:
+                s._count(s.cache_hits, "yahoo")
+                df = pd.read_csv(io.BytesIO(content), index_col=0)
+                return pd.Series(df["Close"].values, index=pd.to_datetime(df.index, utc=True).tz_localize(None).normalize()).dropna()
+    df, _ = yf_history(s, symbol, "max", "1d")
+    c = df["Close"].dropna()
+    return pd.Series(c.values, index=pd.DatetimeIndex(c.index).tz_localize(None).normalize())
+
+
+def _stored_payload(s, kind, max_days):
+    """(payload_id, content) of the newest stored capture of `kind` that is under `max_days` old (offline: any age), else None."""
+    with lake._WRITE_LOCK:
+        row = s.conn.execute("SELECT payload_id, fetched_at FROM v2_payloads WHERE kind = ? ORDER BY fetched_at DESC LIMIT 1", (kind,)).fetchone()
+    if not row or not row["fetched_at"]:
+        return None
+    f = datetime.fromisoformat(row["fetched_at"])
+    if not s.offline and datetime.now(timezone.utc) - (f if f.tzinfo else f.replace(tzinfo=timezone.utc)) >= timedelta(days=max_days):
+        return None
+    with lake._WRITE_LOCK:
+        _, content = lake.load_payload(s.conn, row["payload_id"])
+    if not content:
+        return None
+    s._count(s.cache_hits, kind)
+    return row["payload_id"], content
+
+
+def fed_speeches(s):
+    """Every Federal Reserve speech since 2006 from the one JSON file the Fed publishes -> ([{date, speaker, title}], payload_id).
+    The list changes by a few entries a week, so a capture under 7 days old is reused (offline: any stored capture)."""
+    import requests
+    hit = _stored_payload(s, "fed_speeches", 7)
+    if hit:
+        pid, content = hit
+    else:
+        def call():
+            r = requests.get("https://www.federalreserve.gov/json/ne-speeches.json", timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                raise SourceUnavailable("federalreserve", f"http_{r.status_code}", "speeches")
+            return r.content
+        content, pid = s.fetch("federalreserve", {"page": "ne-speeches"}, call, kind="fed_speeches", fmt="json",
+                               capture=lambda c: (c, None, None))
+    try:
+        rows = json.loads(content.decode("utf-8-sig"))
+        out = [{"date": datetime.strptime(x["d"].split()[0], "%m/%d/%Y").date().isoformat(), "speaker": x.get("s") or "",
+                "title": x.get("t") or ""} for x in rows if (x.get("d") or "").strip()]      # "10/8/2026 4:30:00 AM"; older entries are date only
+    except (ValueError, TypeError, AttributeError, KeyError) as e:
+        raise SourceUnavailable("federalreserve", "parse", f"speeches list ({type(e).__name__})")
+    if not out:
+        raise SourceUnavailable("federalreserve", "empty", "no dated speeches")
+    return out, pid
+
+
+# ---------------------------------------------------------------- SEC EDGAR (insider filings)
+def _sec_headers():
+    import config
+    if not config.SEC_USER_AGENT.strip():
+        raise SourceUnavailable("sec", "not_configured", "SEC_USER_AGENT missing")
+    return {"User-Agent": config.SEC_USER_AGENT.strip(), "Accept-Encoding": "gzip, deflate"}
+
+
+def _sec_get(url):
+    import requests
+    r = requests.get(url, timeout=30, headers=_sec_headers())
+    if r.status_code != 200:
+        raise SourceUnavailable("sec", f"http_{r.status_code}", url.rsplit("/", 1)[-1])
+    return r.content
+
+
+def sec_company_tickers(s):
+    """ticker -> 10-digit CIK for every SEC registrant with a ticker. A capture under 30 days old is reused (offline: any stored capture)."""
+    hit = _stored_payload(s, "sec_company_tickers", 30)
+    if hit:
+        pid, content = hit
+    else:
+        _sec_headers()
+        content, pid = s.fetch("sec", {"fn": "company_tickers"}, lambda: _sec_get("https://www.sec.gov/files/company_tickers.json"),
+                               kind="sec_company_tickers", fmt="json", capture=lambda c: (c, None, None))
+    try:
+        return {v["ticker"].upper(): f"{int(v['cik_str']):010d}" for v in json.loads(content).values()}, pid
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
+        raise SourceUnavailable("sec", "parse", f"company tickers ({type(e).__name__})")
+
+
+def sec_submissions(s, cik, since="1900-01-01"):
+    """Form 4 filings of one issuer filed on or after `since` -> ([{accession, filing_date, primary_document}], payload_id).
+    `filings.recent` holds about the last 1,000 filings; the older ones sit in extra files, fetched only when `since` reaches back to them."""
+    cik = f"{int(cik):010d}"
+
+    def get(name):
+        content, pid = s.fetch("sec", {"fn": "submissions", "file": name}, lambda: _sec_get(f"https://data.sec.gov/submissions/{name}"),
+                               kind="sec_submissions", fmt="json", capture=lambda c: (c, None, None))
+        try:
+            return json.loads(content), pid
+        except ValueError as e:
+            raise SourceUnavailable("sec", "parse", f"{name} ({type(e).__name__})")
+    _sec_headers()
+    top, pid = get(f"CIK{cik}.json")
+    try:
+        parts = [top["filings"]["recent"]]
+        for f in top["filings"].get("files", []):
+            if f.get("filingTo", "9999") >= since:
+                parts.append(get(f["name"])[0])
+        rows = [{"accession": acc, "filing_date": d, "primary_document": doc}
+                for p in parts for form, d, acc, doc in zip(p["form"], p["filingDate"], p["accessionNumber"], p["primaryDocument"])
+                if form == "4" and d >= since]
+    except (KeyError, TypeError) as e:
+        raise SourceUnavailable("sec", "parse", f"submissions CIK{cik} ({type(e).__name__})")
+    return sorted(rows, key=lambda r: r["filing_date"]), pid
+
+
+def parse_form4(content):
+    """Ownership XML -> {issuer_cik, owner, is_officer, is_director, officer_title, transactions[{date, code, acquired, shares, price}]}.
+    Only non-derivative transaction rows are read. The first reporting owner describes the filing. A missing price stays None."""
+    def text(node, path):
+        n = node.find(path)
+        return n.text.strip() if n is not None and n.text and n.text.strip() else None
+
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    try:
+        root = ET.fromstring(content)
+        own = root.find("reportingOwner")
+        rel = own.find("reportingOwnerRelationship")
+        tx = []
+        for t in root.findall("nonDerivativeTable/nonDerivativeTransaction"):
+            tx.append({"date": text(t, "transactionDate/value"), "code": text(t, "transactionCoding/transactionCode"),
+                       "acquired": text(t, "transactionAmounts/transactionAcquiredDisposedCode/value") == "A",
+                       "shares": num(text(t, "transactionAmounts/transactionShares/value")),
+                       "price": num(text(t, "transactionAmounts/transactionPricePerShare/value"))})
+        return {"issuer_cik": text(root, "issuer/issuerCik"), "owner": text(own, "reportingOwnerId/rptOwnerName"),
+                "is_officer": text(rel, "isOfficer") in ("1", "true"), "is_director": text(rel, "isDirector") in ("1", "true"),
+                "officer_title": text(rel, "officerTitle"), "transactions": tx}
+    except (ET.ParseError, AttributeError) as e:
+        raise SourceUnavailable("sec", "parse", f"ownership XML ({type(e).__name__})")
+
+
+def sec_form4(s, cik, accession, primary_document):
+    """One Form 4 -> (parse_form4 dict, payload_id). `primaryDocument` may name the rendered view (xslF345X05/doc.xml): the raw XML is the file in the filing folder."""
+    doc = str(primary_document).rsplit("/", 1)[-1]
+    url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{str(accession).replace('-', '')}/{doc}"
+    _sec_headers()
+    content, pid = s.fetch("sec", {"fn": "form4", "accession": accession}, lambda: _sec_get(url), kind="sec_form4", fmt="xml",
+                           capture=lambda c: (c, None, {"accession": accession}))
+    return parse_form4(content), pid
+
+
 def tceq_feed(s):
     """TCEQ Air Emission Event Reports RSS (hourly refreshed, ~5 days of events)."""
     import requests
@@ -642,6 +889,36 @@ def tceq_feed(s):
         items.append({"event_id": m.group(1) if m else None, "rn": m.group(2) if m else None,
                       "name": (m.group(3) if m else title).strip(), "link": it.findtext("link"),
                       "published": it.findtext("pubDate")})
+    return items, pid
+
+
+def rss_feed(s, name, url):
+    """One RSS/Atom feed -> ([{title, url, published_at}], payload_id). Titles, links and timestamps only; an entry
+    without a parseable date has published_at None (never invented)."""
+    import calendar
+    import feedparser
+    import requests
+
+    def entries(content):
+        d = feedparser.parse(content)
+        if d.bozo and not d.entries:
+            raise SourceUnavailable("rss", "invalid", name)
+        out = []
+        for e in d.entries:
+            title, link = (e.get("title") or "").strip(), (e.get("link") or "").strip()
+            t = e.get("published_parsed") or e.get("updated_parsed")
+            if title and link:
+                out.append({"title": title, "url": link, "published_at":
+                            datetime.fromtimestamp(calendar.timegm(t), timezone.utc).isoformat() if t else None})
+        return out
+
+    def call():
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if r.status_code != 200:
+            raise SourceUnavailable("rss", f"http_{r.status_code}", name)
+        return r.content, entries(r.content)
+    (content, items), pid = s.fetch("rss", {"feed": name, "url": url}, call, kind="rss_xml", fmt="xml",
+                                    capture=lambda r: (r[0], None, {"items": len(r[1])}))
     return items, pid
 
 

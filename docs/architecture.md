@@ -30,20 +30,25 @@ Both run on one Mac. Data lives in its own folder, never in git (`CME_Data/`, se
    │            deduplicated per run, concurrency-limited per provider, logged,
    │            raw response stored (v2_payloads, SHA-256 dedup)
    │            models are computed here too                                         core/metrics.py, core/forecast.py,
-   │                                                                                 core/refining.py
+   │                                                                                 core/refining.py, core/chaos.py
    ├─ capture   lake.record_observations(): typed rows in v2_observations           core/lake.py
    ├─ commit    lake.commit_snapshot(): one immutable JSON document (v2_snapshots)
    │            then the snapshot is re-loaded; everything after reads only it
    │
    ├─ export    live runs only: append legacy ledgers (CSV + SQLite),               main_pipeline.export_ledgers()
    │            record the engine ticket, log gradable forecasts                     core/positions.py, core/forecast.py
+   ├─ narrative live runs with ASSISTANT_LOCAL_URL set: the local model writes the      core/narrative.py
+   │            Briefing (memo, note), a validator drops what the brief does not
+   │            support; stored as payloads + CME_Data/analyst_notes/; never in the snapshot
    ├─ render    HTML dashboard, XML, report text, CSV, charts, email.eml            core/render.py, visualize_volume.py
-   │            into CME_Data/<Mon-DD-YY>/
+   │            into CME_Data/<Mon-DD-YY>/ (the Briefing goes into the email only)
    └─ deliver   SMTP email, ntfy push, report + database upload                     send_email.py, upload_data.py
 ```
 
 The terminal reads the snapshot (`v2_latest_snapshot`), the SQLite tables and the CSV ledgers. See
 [API](api.md) for which routes read stored data and which call providers live.
+
+OpenBB is not used. Revisit it only if the Claude Code analyst keeps asking for data the console routes lack.
 
 ## Design rules
 
@@ -92,9 +97,16 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/metrics.py` | VMRI, GEX and walls, zero gamma, max pain, block flow, execution engine, model features |
 | `core/forecast.py` | Forecast Lab models (cards 1–9), forecast logging and grading |
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
+| `core/narrative.py` | The Briefing (analyst note): the brief built from a snapshot, the shared prompts, the validator (numbers, ids, causal and advice wording), the local and Claude Code drivers, the shapers the console reuses |
+| `options_whale/analyst_bin/mtq` | Read-only command the Claude Code analyst may run: one stored console source in-process, from an allowlist (`MTQ_SOURCES`) |
+| `core/chaos.py` | Chaos / Peace index: twelve stress z-scores, levers and the midterm studies (card 14), pure functions |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
+| `core/news.py` | Headline clustering (title normalisation, Jaccard de-duplication, recency windows, priority bucketing); pure functions |
+| `core/news_feeds.json` | The RSS feed list (`name`, `category`, `url`, `enabled`); `NEWS_FEEDS_FILE` replaces it |
+| `THIRD_PARTY_NOTICES.md` | Credit and MIT notice for the MarketBrief ideas `core/news.py` adapts |
 | `core/watch.py` | Day Scanner: the dip-in-an-uptrend rule on live quotes, the saved watchlist, paper positions (`v2_watch_positions`) |
-| `core/edges.py` | Edge Lab: published edges tested on one ticker's own history, tracked list |
+| `core/edges.py` | Edge Lab: published edges tested on one ticker's own history (the insider cluster edge reads stored Form 4 filings), tracked list |
+| `core/backfill.py` | Shared frame of the `scripts/backfill_*.py` loaders: run lock, a `mode='backfill'` run row, a SourceSession |
 | `options_whale/assistant.py`, `options_whale/static/assistant.js` | Console engine v3: brief, read-only data sources, local model, console UI |
 | `core/market_calendar.py` | NYSE holidays and early closes, the scheduled-run gate (`scheduled_run_skip_reason()`), and the local fire times `setup.sh --schedule` installs (`launchd_intervals()`) |
 | `core/runlock.py` | `RunLock`, the exclusive run lock (`DATA_DIR/.v2_run.lock`), and `lock_is_held()`, a non-blocking probe that never keeps the lock |
@@ -136,6 +148,9 @@ These rules hold across the codebase. A change that breaks one needs a very good
 |---|---|
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
 | `scripts/backfill_crypto_metals.py` | Adds up to one year of BTC, silver and gold history to `crypto_metrics_history` |
+| `scripts/backfill_chaos_history.py` | Operator-run: loads 3 years of CBOE put/call and FINRA SPY short-volume days (the two Chaos / Peace components that need them). Takes the run lock; see [Backfills](operations.md#backfills) |
+| `scripts/backfill_form4.py` | Operator-run: loads SEC Form 4 filings for the Edge Lab's tracked symbols (needs `SEC_USER_AGENT`). Takes the run lock |
+| `scripts/console_eval.py` | Grades the console engine: asks a running terminal 22 fixed questions and checks each answer against the terminal's own routes. Read-only; uses the local model and Yahoo through the terminal. Manual only. |
 | `scripts/record_demo.py` | Records `docs/demo.gif` from a terminal that is already running (Playwright video, then ffmpeg). Read-only. |
 | `scripts/dump_spy_wicks.py` | Downloads SPY one-minute candles (last 5 days) to `spy_wicks_1m.json` in the repository root, where `import-history` picks them up. Uses the network; manual only. |
 | `download_volume.py` | Manual, bounded CME volume backfill (needs a saved CME session) |
@@ -170,7 +185,7 @@ Thin wrappers kept so old entry points still work. Each reads the latest snapsho
 | [Configuration](configuration.md) | Every `.env` setting, data folder, ports |
 | [Data](data.md) | SQLite tables, snapshot contents, daily files, ledgers |
 | [Terminal](terminal.md) | The web UI, tab by tab |
-| [Forecast Lab](forecast-lab.md) | The eleven model cards and how to add one |
+| [Forecast Lab](forecast-lab.md) | The twelve model cards and how to add one |
 | [API](api.md) | Every HTTP route |
 | [Value changes](value-changes.md) | Changes to how values are computed; model versions |
 | [Known issues](known-issues.md) | Verified bugs and gaps |

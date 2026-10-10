@@ -6,7 +6,7 @@ same screen for all of them: a t-statistic of 2 or more, the same sign in both h
 multi-day holds, 5 points of up-rate. Only an edge that passes can drive a horizon verdict; the rest are context.
 
 Edges: short-term reversal, post-earnings drift, turn of the month (short horizon); trend, 12-month momentum,
-volatility premium (mid); overnight versus intraday (long). Network: Yahoo only. Price history comes from
+volatility premium, insider cluster buys (mid); overnight versus intraday (long). Network: Yahoo only (insider filings are read from the lake, filled by scripts/backfill_form4.py). Price history comes from
 watch.fetch_bars (one download per ticker per day, shared through a file); earnings dates and fund info are cached
 per day in memory, quotes for a minute.
 """
@@ -20,14 +20,15 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from config import DATA_DIR
-from core import watch
+from config import DATA_DIR, DB_PATH
+from core import lake, watch
 from core.watch import SIZE as _SIZE, grade as _grade
 
 TRACKED = DATA_DIR / "edges_tracked.json"
 DEFAULT_TRACKED = ["SPY", "INTC", "SLV", "GOOGL"]
 MAX_TRACKED = 20
 MONTH = 21                                           # trading days in the mid-horizon hold
+CLUSTER_OFFICERS, CLUSTER_DAYS = 3, 10                # insider cluster: distinct officers buying on the open market, within this many calendar days
 DRIFT_DAYS, DRIFT_MOVE = 20, 0.02                    # post-earnings drift: hold, and the reaction that counts as strong
 VOL_INDEX = {"SPY": "^VIX", "QQQ": "^VXN", "DIA": "^VXD", "GLD": "^GVZ", "USO": "^OVX"}      # implied-vol history, where one exists
 
@@ -217,6 +218,59 @@ def _vol_premium(sym, c, iv, day):
                  rich or cheap, "neutral", grade, evidence, "Use spreads when options are rich, outright options when cheap", note)
 
 
+def _form4_filings(sym):
+    """Stored Form 4 filings of one symbol (oldest first, by filing date), or None when the database or the table is not there."""
+    try:
+        conn = lake.connect_readonly(DB_PATH)
+        try:
+            rows = conn.execute("SELECT entity, observed_at, value_json FROM v2_observations WHERE metric_id = 'edgar.form4' AND status = 'fresh' "
+                                "AND json_extract(dims_json, '$.symbol') = ? ORDER BY observed_at", (sym,)).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    return [{**json.loads(r["value_json"]), "accession": r["entity"], "date": r["observed_at"][:10]} for r in rows if r["value_json"]]
+
+
+def insider_clusters(filings):
+    """Filing dates on which a cluster starts: CLUSTER_OFFICERS or more distinct officers who each filed a Form 4 holding an open-market
+    purchase (code P, acquired) within the trailing CLUSTER_DAYS calendar days (the filing day included). A cluster counts once: the day
+    after a day that already had enough officers is not a new start."""
+    buys = sorted((f["date"], f.get("owner") or "") for f in filings
+                  if f.get("is_officer") and any(t.get("code") == "P" and t.get("acquired") for t in f.get("transactions", [])))
+
+    def officers(day):
+        lo = (date.fromisoformat(day) - timedelta(days=CLUSTER_DAYS - 1)).isoformat()
+        return len({o for d, o in buys if lo <= d <= day})
+    out = []
+    for day in sorted({d for d, _ in buys}):
+        before = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+        if officers(day) >= CLUSTER_OFFICERS and officers(before) < CLUSTER_OFFICERS:
+            out.append(day)
+    return out
+
+
+def _insider_cluster(sym, c, filings, kind="EQUITY"):
+    def edge(now, trigger, active, grade, evidence, plan, note=None):
+        return _edge("insider", "Insiders", "Insider cluster buys", "mid", "Lakonishok & Lee 2001; Cohen, Malloy & Pomorski 2012",
+                     f"When {CLUSTER_OFFICERS} or more different officers of a company buy its shares on the open market within {CLUSTER_DAYS} days, "
+                     "the stock has tended to do better over the following months. This describes what was filed and what the price did afterwards.",
+                     now, trigger, active, "bullish", grade, evidence, plan, note)
+    trigger = f"{CLUSTER_OFFICERS}+ officers filed open-market purchases within {CLUSTER_DAYS} days, in the last {MONTH} trading days"
+    plan = f"Consider shares after a cluster of officer purchases; hold until {MONTH} trading days after the cluster"
+    if kind not in (None, "EQUITY"):
+        return edge("no officers: this is a fund", trigger, False, "n/a", "funds have no insiders filing Form 4", plan, "Not applicable")
+    if not filings:
+        return edge("no Form 4 history stored", trigger, False, "n/a", "no Form 4 history stored (run scripts/backfill_form4.py)", plan, "Not checked")
+    days = insider_clusters(filings)
+    idx = [int(c.index.searchsorted(pd.Timestamp(d), side="right")) for d in days]       # first session after the filing day: no look-ahead
+    fwd = c.shift(-MONTH) / c - 1
+    g = _grade(fwd.iloc[[i for i in idx if i < len(c)]], fwd.iloc[::MONTH])
+    stored = f"{len(filings)} Form 4 filings stored through {filings[-1]['date']}"
+    return edge(f"{stored}; last cluster {days[-1]}" if days else f"{stored}; no cluster on record", trigger,
+                bool(days) and len(c) - 1 - idx[-1] < MONTH, g["edge"], "after a cluster: " + _ev(g, f"{MONTH} days later"), plan)
+
+
 def _overnight(sym, b):
     b = b[b.index >= "2005-01-01"]
     night, dayret = (b["Open"] / b["Close"].shift(1) - 1).dropna(), (b["Close"] / b["Open"] - 1).iloc[1:]
@@ -272,7 +326,8 @@ def analyze(symbol):
     kind = info.get("quoteType")
     announcements = soft(_earnings, sym, day) if kind == "EQUITY" else None if kind is None else []
     edges = [_reversal(sym, c, price), _earnings_drift(sym, c, announcements), _turn_of_month(sym, c, today),
-             _trend(sym, c, price), _momentum(sym, c), _vol_premium(sym, c, iv, day), _overnight(sym, b)]
+             _trend(sym, c, price), _momentum(sym, c), _vol_premium(sym, c, iv, day), _overnight(sym, b),
+             _insider_cluster(sym, c, _form4_filings(sym), kind)]
     v = _verdict(edges)
     v["summary"] = f"{sym}: " + "; ".join(
         f"{h} term {v[h]['label'].lower()}" + (f" ({', '.join(v[h]['edges'])})" if v[h]["edges"] else "") for h in ("short", "mid", "long")) + "."

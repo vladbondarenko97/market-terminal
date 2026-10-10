@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Example Wire</title><link>https://example.test/</link>
+<item><title>Central bank holds rates steady</title><link>https://example.test/a1</link><pubDate>Sat, 10 Oct 2026 14:00:00 GMT</pubDate></item>
+<item><title>Oil settles lower on supply outlook</title><link>https://example.test/a2</link><pubDate>Sat, 10 Oct 2026 13:00:00 GMT</pubDate></item>
+<item><title>Undated placeholder headline</title><link>https://example.test/a3</link></item>
+<item><title></title><link>https://example.test/a4</link><pubDate>Sat, 10 Oct 2026 12:00:00 GMT</pubDate></item>
+</channel></rss>

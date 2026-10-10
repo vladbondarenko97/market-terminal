@@ -30,7 +30,6 @@ if ROOT_DIR not in sys.path:
 import config
 from config import DATA_DIR as _DATA_DIR, DB_PATH as _V2_DB_PATH, PROJECT_ROOT as _PROJECT_ROOT
 from core import forecast as _v2fc, lake as _v2lake, metrics, positions as _v2pos, runlock
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from quant_engine import QuantEngine
 
 
@@ -45,7 +44,6 @@ LEDGER_FILE = os.path.join(DATA_DIR, "physical_arbitrage_ledger.csv")
 INSTITUTIONAL_LEDGER_CSV = os.path.join(DATA_DIR, "equities_darkpool_gex_ledger.csv")
 MANUAL_RUN_LOG = os.path.join(DATA_DIR, ".v2_manual_run.log")        # output of runs started by POST /run
 
-analyzer = SentimentIntensityAnalyzer()
 quant = QuantEngine(LEDGER_CSV)
 
 # Suppress pandas FutureWarnings for clean terminal output
@@ -1294,8 +1292,8 @@ def api_help():
       <description>Upcoming macro events (date, time, impact, title, forecast, previous) from the newest tactical_ruling.txt.</description>
       <parameters />
     </endpoint>
-    <endpoint method="GET" path="/api/macro_news" format="xml" source="live">
-      <description>Top 10 headlines from the Yahoo Finance RSS feed, each with a VADER sentiment score.</description>
+    <endpoint method="GET" path="/api/macro_news" format="xml" source="stored">
+      <description>Up to 30 de-duplicated headlines from the newest snapshot's news section (RSS feeds collected by the pipeline), newest first and always including the newest 10 from official sources, each with a VADER sentiment score, its feed names and an official flag; the root carries the run time and how many feeds answered.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/macro_ledger_full" format="json" source="stored">
@@ -1417,6 +1415,10 @@ def api_help():
     </endpoint>
     <endpoint method="GET" path="/api/eia_history" format="json" source="stored">
       <description>Weekly EIA stock and days-of-supply history behind Forecast Lab card 11, built from files the pipeline captured.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/chaos" format="json" source="stored">
+      <description>The Chaos / Peace block (Forecast Lab card 14) of the latest committed snapshot: score, regime, components, levers, election studies. 503 until a pipeline run has created the database; 404 when the snapshot has no chaos block.</description>
       <parameters />
     </endpoint>
   </group>
@@ -1689,53 +1691,36 @@ def get_vmri():
         return xml_error("Failed to parse the VMRI data (see the server log).", 500)
 
 @app.route('/api/macro_news', methods=['GET'])
+@guarded("Macro news", 502, xml=True)
 def api_macro_news():
-    """Fetches general macroeconomic news via public RSS without an API key."""
+    """Headlines of the latest snapshot's `news` section (collected by the pipeline from the RSS registry)."""
+    conn = _open_readonly()
+    if conn is None:
+        return xml_error("database not initialised: run the pipeline once", 503)
     try:
-        # Switched to Yahoo Finance (Much more scraper-friendly than CNBC)
-        rss_url = "https://finance.yahoo.com/news/rss"
-        
-        # A more robust set of headers to mimic a real browser
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5'
-        }
-        
-        response = requests.get(rss_url, headers=headers, timeout=5)
-        
-        if response.status_code != 200:
-            return xml_error(f"Failed to fetch the news feed (HTTP {response.status_code}).", 502)
-            
-        # Parse the XML feed
-        feed_tree = ET.fromstring(response.content)
-        items = feed_tree.findall(".//item")[:10] # Grab top 10 headlines
-        
-        # Build our custom XML tree
-        root = ET.Element("macro_news", timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'), source="Yahoo_Finance")
-        
-        for item in items:
-            title = item.findtext("title", "No Title")
-            pub_date = item.findtext("pubDate", "Unknown Date")
-            link = item.findtext("link", "No Link")
-            
-            # NEW: Sentiment Analysis
-            sentiment_score = analyzer.polarity_scores(title)['compound']
-            
-            article = ET.SubElement(root, "article")
-            article.set("published", pub_date.replace(" GMT", "").replace(" +0000", ""))
-            article.set("title", title.strip())
-            article.set("link", link.strip())
-            article.set("sentiment", str(round(sentiment_score, 2)))
-            
-        xml_str = minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
-        xml_str = os.linesep.join([s for s in xml_str.splitlines() if s.strip()]) # Clean blank lines
-        
-        return Response(xml_str, mimetype='application/xml')
-
-    except Exception as e:
-        app.logger.error("Macro news failed: %s", e, exc_info=e)
-        return xml_error("Macro news failed (see the server log).", 502)
+        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+        ctx = _v2lake.load_snapshot(conn, row["run_id"]) if row else {}
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return xml_error("database not initialised: run the pipeline once", 503)
+        raise
+    finally:
+        conn.close()
+    news = ctx.get("news") or {}
+    if news.get("status") not in ("fresh", "partial") or not news.get("clusters"):
+        return xml_error("Macro news unavailable: " + (news.get("reason") or "no news section in the latest snapshot; run the pipeline"), 503)
+    cov = news.get("coverage") or {}
+    root = ET.Element("macro_news", timestamp=news.get("as_of") or "", as_of=news.get("as_of") or "", status=news["status"],
+                      feeds_answered=str(cov.get("answered")), feeds_enabled=str(cov.get("enabled")), source="stored")
+    official = [c for c in news["clusters"] if c.get("official")][:10]        # never crowded out by a busy wire day
+    shown = sorted(official + [c for c in news["clusters"] if not c.get("official")][:30 - len(official)],
+                   key=lambda c: c["published_at"], reverse=True)
+    for c in shown:
+        pub = datetime.fromisoformat(c["published_at"]).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        ET.SubElement(root, "article", published=pub, title=c["title"], link=c["sources"][0]["url"], sentiment=str(c["sentiment"]),
+                      source=",".join(dict.fromkeys(u["name"] for u in c["sources"])), official=str(bool(c.get("official"))).lower())
+    xml_str = minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
+    return Response(os.linesep.join([ln for ln in xml_str.splitlines() if ln.strip()]), mimetype='application/xml')
 
 # ==========================================
 # --- INSTITUTIONAL FLOW HISTORY API ---
@@ -2445,9 +2430,9 @@ def _latest_forecast(conn):
     hit = data_cache.get(key)
     if hit is None:
         ctx = _v2lake.load_snapshot(conn, row["run_id"])
-        hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining")}
+        hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining"), "chaos": ctx.get("chaos")}
         data_cache.set(key, hit)
-    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"))
+    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"), chaos=hit.get("chaos"))
 
 
 @app.route('/api/forecast', methods=['GET'])
@@ -2478,8 +2463,28 @@ def api_forecast():
                     "data": fc.get(ticker), "consensus": (fc.get("consensus") or {}).get(ticker),
                     "positioning": fc.get("positioning"), "silver_fair_value": fc.get("silver_fair_value"),
                     "macro_regime": fc.get("macro_regime"), "source_errors": fc.get("source_errors"),
-                    "refining": fc.get("_refining"),
+                    "refining": fc.get("_refining"), "chaos": fc.get("chaos"),
                     "scorecard": score, "signals": signals})
+
+
+@app.route('/api/chaos', methods=['GET'])
+@guarded("Chaos")
+def api_chaos():
+    """The latest committed snapshot's Chaos / Peace block (Forecast Lab card 14)."""
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        run, fc = _latest_forecast(conn)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    if not run or not fc or not fc.get("chaos"):
+        return json_error("no Chaos / Peace data yet: run the pipeline", 404)
+    return jsonify({"status": "success", "run": run, "as_of": fc["chaos"].get("as_of"), "data": fc["chaos"]})
 
 
 _EIA_HISTORY_CACHE = {}

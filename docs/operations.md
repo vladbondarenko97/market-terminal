@@ -171,6 +171,7 @@ flags, so `python main_pipeline.py --no-deliver` is an argument error (exit 2); 
 | `status` | none | Prints the last 10 runs, then the contents of `.v2_run_status.json`. A run row or a status file that says `running` while nothing holds the run lock is shown as `interrupted`. Opens the database read-only, so it needs a database that a run or import has already created. | 0; 1 no database | no |
 | `import-history` | `--no-backup` | Copies `portfolio.db` to `backups/` first (see [Backups and rollback](#backups-and-rollback)), then imports old files and tables into the lake. Idempotent. | 0; 1 the backup failed (nothing imported); 75 busy | yes |
 | `backfill-positions` | none | Records an engine ticket (a `v2_trade_signals` row) for every committed live run that has none (see [Engine positions](#engine-positions)). Idempotent. | 0; 1 no database; 75 busy | yes |
+| `narrative` | `--engine local\|claude` (local), `--model NAME` (local: `ASSISTANT_LOCAL_MODEL`; claude: `sonnet` or `haiku`, default `sonnet`), `--run RUN_ID` (latest), `--budget-usd X` (claude only, per call, default 0.50) | Writes the Briefing (analyst note) for a saved run, validates it, stores it and prints it with the kept and dropped counts (see [Briefing](#briefing-analyst-note)). Never delivers anything and never changes the snapshot. `--engine claude` is the only way Claude Code runs. | 0 done (also when the note came back `missing`); 1 no database, no run, or `ASSISTANT_LOCAL_URL` unset for the local engine; 2 bad model name | no |
 | `ntfy-test` | none | Sends the latest run's phone brief (summary plus report attachment) to `NTFY_URL`. Does not upload. Prints the result. | 0 sent (also `sent_without_attachment`); 2 not sent (`skipped`, `failed` or `outcome_unknown`); 1 no database, no run or no saved report | no |
 
 ### `run` flags
@@ -219,7 +220,8 @@ The lock is an exclusive `flock` on `.v2_run.lock` (`core/runlock.py`), so a cra
 Do not delete the file and do not work around the lock.
 
 These take the lock because they write to the lake or share the CME Chromium profile: `run`, `cme-login`,
-`import-history`, `backfill-positions`, `download_volume.py` and `update_inventory.py` (when it downloads). `replay`,
+`import-history`, `backfill-positions`, `download_volume.py`, `update_inventory.py` (when it downloads) and the two
+`scripts/backfill_*.py` history loaders (see [Backfills](#backfills)). `replay`,
 `resend`, `catalog`, `status`, `ntfy-test` and the terminal do not take it: they read stored data (`resend` sends a
 stored message). The terminal asks whether the lock is held (`lock_is_held()`) without taking it.
 
@@ -452,6 +454,7 @@ Full list and meanings: [Configuration](configuration.md). An empty value switch
 | Status | Meaning |
 |---|---|
 | `smtp_accepted` | The server accepted the message. This is not proof of inbox delivery. |
+| `bounced` | The recipient's server rejected the message after your SMTP server had accepted it, and the bounce notice arrived in the sender's mailbox. Set by a LATER run (see below); the detail keeps the reason. |
 | `skipped` | Email is not configured: all of `EMAIL_SENDER`, `EMAIL_PASSWORD`, `SMTP_SERVER` and `RECIPIENT_EMAIL` are empty. Not a warning. |
 | `failed` | Partly configured (some of the four set; the detail names the empty ones), could not connect or log in, or the server rejected the message. |
 | `outcome_unknown` | The connection dropped during the send. Not retried. Check the mailbox before you `resend`. |
@@ -510,6 +513,12 @@ The final status is `completed_with_warnings`, and the exit code is 3, when any 
 
 - a stage raised (see above), or one ledger step failed (`ledger errors: ...`);
 - the email status is `failed` or `outcome_unknown`;
+- an EARLIER run's email bounced. Every delivering run reads the bounce notices in the sender's mailbox (`IMAP_SERVER`,
+  read-only), marks those runs `bounced` with the recipient server's reason, warns once per bounce, and puts one line
+  at the top of the phone push. `smtp_accepted` only means your own mail server took the message: a recipient such as
+  Gmail can still reject it a minute later (for example `550 5.7.1 ... very low reputation of the sending domain`), and
+  nothing but the bounce notice says so. If that keeps happening, send to a mailbox on the sender's own mail server, or
+  send through the recipient provider's SMTP server;
 - a configured ntfy push is `failed` or `outcome_unknown`;
 - the report upload or the database/dashboard upload is `failed` (the receiver did not answer `ok` for every file, or
   the request failed).
@@ -537,6 +546,42 @@ resends automatically.
 | `catalog` | Prints Markdown to stdout. Redirect it to a file. |
 | `status` | Last 10 runs (`run_id`, `mode`, `status`, `started_at`, `elapsed_s`, `delivery_status`), then the current status JSON. A run whose process is gone shows `interrupted` (see [The run lock](#the-run-lock)). |
 | `import-history` | Takes the run lock and copies `portfolio.db` to `backups/` first (`--no-backup` skips the copy). Then imports legacy tables, CME workbooks, ledger CSVs, daily files and JSON state from the data folder. Safe to repeat: files are keyed by SHA-256. Credentials and system files (`state.json`, `.env`, `.DS_Store`) are never imported. Details in [Data](data.md). |
+
+## Briefing (analyst note)
+
+One brief is built from a committed snapshot (prices, VMRI, Chaos / Peace, the engine ticket, fired Signal Watch rows,
+the calendar and headlines, each row with an id such as `[D3]` or `[S2]`), and a model explains it in two steps: a short
+memo, then a JSON note (tagline, three focus lines, three issues). Python computed every number; the model only
+explains. A validator drops any statement whose number is not in the brief, that cites an id that is not a stored item,
+that uses causal or advice wording, whose direction word disagrees with a signed percent beside it ("fell +0.6%"), or
+that states a fact with neither a number nor a headline to check it against. The note says how many issues were kept
+and how many statements were dropped. Fewer than two surviving issues means no note:
+`{"status": "missing", "reason": ...}`. The note never says why a price moved or who moved it, and it recommends
+nothing. **What the validator cannot check:** a direction or comparison written without a signed percent, and whether
+two readings a statement puts side by side belong together. Read the Briefing as a summary to check against the
+report below it, not as a finding.
+
+- **In every live run** (`narrative` stage, before `render`): runs the local model when `ASSISTANT_LOCAL_URL` is set in
+  `.env`; otherwise, and for offline runs, the stage is `skipped` (recorded in the run's stages with the reason). It has
+  a 150 second budget for both calls. A note that comes back `missing` (model not reachable, timeout, invalid JSON, too
+  little survived the validator) is a normal outcome, not a warning; only an unexpected exception is a warning (exit
+  code 3), and the other stages still run. The Briefing goes **above the report in the email** (plain and HTML part). It
+  is never put in `daily_market_report.txt`, so it is not uploaded and not attached to the phone push. The push text
+  starts with the tagline and focus lines. With no note for the run, the email is exactly the report; if a note was
+  attempted and is missing, the email starts with one line, `Briefing unavailable: <reason>`.
+- **On demand**: `python main_pipeline.py narrative [--engine local|claude] [--model NAME] [--run RUN_ID]`. The Claude Code
+  engine runs `claude -p` in an empty folder (`analyst_sandbox/` in the data folder) with the same prompts, one
+  allowed tool (`Bash(mtq *)`, the read-only `options_whale/analyst_bin/mtq` command for stored console sources) and a
+  spend cap per call. Claude Code lets read-only shell commands such as `ls` and `cat` through an allowlist by itself, so
+  the runner also installs its own check on every tool call (`mtq --guard`, a PreToolUse hook): anything that is not one
+  plain `mtq <source> ...` call is blocked, and your own Claude Code settings and plugins are not loaded
+  (`--setting-sources project`). It uses your Claude Code login (no API key) and spends Claude plan quota (a Haiku note
+  measured about $0.15 and 3.5 minutes on 2026-10-10); run it by hand, a pipeline run never starts it. The figures it looks up count as inputs for the validator; the tool output is stored in
+  `narrative_prompt`. A local and a Claude note for the same run coexist.
+- **Where it is stored**: three payloads per note (`narrative_prompt`, `narrative_json`, `narrative_text`, see
+  [Data](data.md)), listed in the run's `artifacts_json`, and a dated file `analyst_notes/<date>_<HHMM>_<engine>_<run id>.md`
+  in the data folder (Chicago time). A snapshot never contains a note.
+- **Replay** re-renders the email with the run's stored local note and makes no model call.
 
 ## Engine positions
 
@@ -680,6 +725,27 @@ to `CME_Data`, and keeps the legacy ledger tables and CSV headers unchanged. See
   [Value changes](value-changes.md).
 - **Undo a schedule** with `./setup.sh --remove-schedule`.
 
+
+## Backfills
+
+Two one-off loaders fill history the pipeline would otherwise take years to accumulate. You read them and run them; the
+pipeline never does. Both take the run lock (exit 75 when a run or another job holds it), are idempotent (stored days and
+filings are skipped, so re-running only fetches what is missing), are bounded (`--limit`, `--sleep`), print what they
+stored, skipped and failed, store every response in `v2_payloads` through `SourceSession.fetch()`, and record a run row with
+`mode='backfill'` and no snapshot, so they can never be the latest run. Try either with a small `--limit` and, to see
+what they do first, a scratch `PORTFOLIO_DATA_DIR`.
+
+| Script | What it downloads | How long |
+|---|---|---|
+| `scripts/backfill_chaos_history.py [--years 3] [--limit N] [--sleep 0.25]` | For every NYSE trading day of the last `--years` years plus 45 days (newest first) not yet stored: the CBOE daily statistics file (small JSON, about 750 files for 3 years) and FINRA's consolidated short-volume file (about 0.5 MB text each, about 750 files, of which only the header and the SPY line are kept). Stores `chaos.equity_put_call` and `chaos.short_volume_spy`. A day with no file (HTTP 403 or 404) is counted and reported, not retried in that run. | Roughly 15 to 30 minutes for 3 years. Once both series span 3 years, the two Chaos / Peace components stop being `missing`; the pipeline keeps them current with its 5-day catch-up. |
+| `scripts/backfill_form4.py [--symbols A,B] [--years 5] [--limit N] [--sleep 0.3]` | For each Edge Lab tracked symbol (or `--symbols`): the symbol's CIK from SEC's ticker list, its EDGAR submissions file (older files only if `--years` reaches back to them) and one small Form 4 XML per filing not yet stored. Stores one `edgar.form4` observation per filing (see [data](data.md)). A symbol with no CIK (a fund) is reported and skipped. | A few minutes per symbol. Re-run it to pick up new filings; the pipeline does not fetch Form 4 itself. |
+
+`backfill_form4.py` needs `SEC_USER_AGENT` in `.env` (`Name email`, see [configuration](configuration.md)); without it the script stops before any
+request. It uses each company's submissions file instead of SEC's daily index files: one request per company instead of
+about 250 index files a year. SEC allows 10 requests a second; the script stays far below that.
+
+Fed speech days (Forecast Lab card 7) need no script: the Fed publishes every speech since 2006 in one JSON file, which the
+pipeline fetches (and reuses for 7 days).
 
 ## Other scripts
 

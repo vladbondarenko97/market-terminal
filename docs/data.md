@@ -56,7 +56,7 @@ SLV trust are not separate tables; they are observations and payloads (below).
 
 Run `status` values: `running`, `committed` (snapshot stored, export pending), `completed`,
 `completed_with_warnings`, `failed` (before the snapshot was committed), and `interrupted` (a run that was still
-`running` when it was killed; the next run marks it). `delivery_status` values: `smtp_accepted`, `failed`,
+`running` when it was killed; the next run marks it). `delivery_status` values: `smtp_accepted`, `bounced` (set by a later run that found the bounce notice), `failed`,
 `outcome_unknown`, `skipped` (email not configured), `not_requested` (`--no-deliver`, offline, replay) and
 `attempting`. The manual helpers `download_volume.py`
 and `update_inventory.py` store payloads under the pseudo run ids `manual-download` and `manual-inventory`, which
@@ -73,7 +73,7 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 `vmri`, `paper_physical`, `oi_divergence`, `es_put_call`, `options`, `flow`, `technicals`, `weather`, `breadth`,
 `execution`, `ebay`, `sources`, `stage_seconds`, the model-feature sections from `extended_features()`
 (`price_stats`, `vol_regime`, `cme_positioning`, `silver_options_cme`, `inventory_trend`, `silver_basis`,
-`regime_context`), `position_marks`, `forecast`, `refining` and `appendix`. A section that could not be built is
+`regime_context`), `position_marks`, `forecast`, `refining`, `chaos`, `news` and `appendix`. A section that could not be built is
 `{"status": "missing", "reason": "..."}`. The daily file `report_snapshot.json` is this document, indented.
 `python main_pipeline.py catalog` lists the metrics with their paths.
 
@@ -86,15 +86,18 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 | Catalog metrics (`core/catalog.py METRICS`, one per report value) | `quote.SLV.price`, `flow.SLV.block_vwap`, `options.SPY.call_wall`, `fred.WALCL`, `sge.*`, `comex.*`, `ebay.*`, `execution.*`, `run.generated_at` |
 | CME facts | `cme.<product>.volume`, `cme.<product>.open_interest`, `cme.asset_class.row`, `comex.silver.registered`, `.eligible`, `.total`, `.depository`, `.reconciliation` and the change and adjustment fields |
 | Per-run records | `options.<SYM>.gex_profile`, `options.<SYM>.selection`, `flow.<SYM>.summary`, `trade.block` (one per block print), `execution.engine`, `vmri.components`, `ebay.listing`, `calendar.event` |
-| Stored series and events | `refinery.event` (TCEQ filings, one per event id), `slv.ounces_in_trust`, `position.mark` (real mid-price of an open ticket contract, from the chains the run already downloaded) |
+| Stored series and events | `refinery.event` (TCEQ filings, one per event id), `slv.ounces_in_trust`, `chaos.equity_put_call` (CBOE equity put/call ratio, one per trading day) and `chaos.short_volume_spy` (FINRA SPY short volume / total volume, one per trading day; `observed_at` is the trading date; each run stores the last 5 trading days it lacks), `position.mark` (real mid-price of an open ticket contract, from the chains the run already downloaded), `edgar.form4` (one SEC Form 4 insider filing: `entity` is the accession number, `observed_at` the FILING date, dims `{"symbol"}`, `value_json` = `{issuer_cik, owner, is_officer, is_director, officer_title, transactions[{date, code, acquired, shares, price}]}` from the non-derivative rows; written only by `scripts/backfill_form4.py`) |
 | Imported history | `legacy.<table>.row` (a legacy ledger row, status `historical`) |
 
 `v2_payloads.kind` values: `ohlcv`, `option_expirations`, `option_chain`, `fred_series`, `fred_release_dates`,
 `calendar_xml`, `spot_quote`, `sge_benchmark`, `trades`, `listing`, `cot`, `etf_page`, `fomc_calendar`,
-`fund_info`, `eia_weekly`, `refinery_capacity`, `tceq_rss`, `tceq_event`; CME `volume_workbook`,
+`fund_info`, `eia_weekly`, `refinery_capacity`, `tceq_rss`, `tceq_event`, `cboe_daily_stats`, `finra_short_volume`, `treasury_auctions`,
+`treasury_buybacks`, `rss_xml` (one raw RSS or Atom feed), `fed_speeches` (the Fed's one speech list, reused for 7 days),
+`sec_company_tickers` (reused for 30 days), `sec_submissions` and `sec_form4` (raw SEC XML); CME `volume_workbook`,
 `inventory_workbook`, `*_workbook_invalid` and `*_rejected`; run output `daily_market_report` and `email_mime`;
+analyst note (source `narrative`) `narrative_prompt`, `narrative_json`, `narrative_text` (an analyst note is a payload and a run artifact, never part of a snapshot);
 imported files `ledger_csv`, the daily file name, `spy_wicks_1m`, `deployment_simulation`. The eBay OAuth token is
-never stored (kind `auth`).
+never stored (kind `auth`). The FINRA daily file is 535 KB, so its capture keeps only the header line and the requested symbol's line, with coverage `{"rows_in_file": n, "kept": [symbol]}`; every other capture is the whole response. `scripts/backfill_chaos_history.py` loads the `chaos.equity_put_call` and `chaos.short_volume_spy` history (3 years) in one go, which completes those two Chaos / Peace components. Backfill runs are `v2_runs` rows with `mode='backfill'` and never carry a snapshot. The `ohlcv` capture with `period=max` for ^GSPC and ^VIX (Chaos / Peace event study) is reused for 30 days.
 
 ## Legacy ledgers
 
@@ -146,6 +149,8 @@ CME_Data/
 ├── daily_volume_YYYYMMDD.xlsx        archived CME volume workbooks
 ├── silver_stocks_YYYY-MM-DD.xls      archived COMEX inventory workbooks
 ├── _rejected_downloads/              downloads that failed validation
+├── analyst_notes/                    <date>_<HHMM>_<engine>_<run id>.md: the Briefing of each run, one file per note (never in git)
+├── analyst_sandbox/                  empty working folder of the Claude Code analyst (`narrative --engine claude`)
 ├── backups/                          portfolio-<UTC time>.db copies made before import-history
 ├── macro_master_ledger.csv  ...      the five ledger CSVs
 └── Sep-29-26/                        one folder per Chicago day (see Daily folder)
@@ -262,6 +267,26 @@ sqlite3 CME_Data/portfolio.db ".backup 'portfolio-copy.db'"
 ```
 
 `state.json` and `.cme_browser_profile/` hold a live CME login. Copy them only to machines you trust.
+
+## News
+
+- Snapshot key **`news`**: `{status, reason, as_of, window, feeds, coverage, items, clusters}`. `feeds` maps each enabled feed to
+  `{status, count, payload_id, reason, category}`; `coverage` is `{enabled, answered, priority_answered}`. `status` is `fresh` when
+  an official feed answered and at least half of the enabled feeds did, `partial` when any feed answered, else `missing` (an offline
+  run is `missing` with the offline reason). `clusters` are near-identical headlines merged (newest first, ids `S1`...): `title`,
+  `published_at`, `category`, `official`, `sentiment` (VADER), `new` (first seen in this run), `sources` (`name`, `url` of every
+  copy) and `cluster_key`. `items` counts fetched, in-window (36 hours; 7 days for the official category), undated (excluded,
+  never treated as fresh), new this run, clusters formed, and clusters dropped by the caps (60 keyword-relevant and 20 other
+  non-official clusters, then 120 in total; official clusters are never dropped). Only titles, links, source names and
+  timestamps are stored, never article text. The feed list is `core/news_feeds.json` (or `NEWS_FEEDS_FILE`).
+- **`v2_news_items`** (lake table, additive): one row per distinct URL ever fetched: `url_hash` (SHA-256 of the URL, primary key),
+  `title`, `url`, `source`, `category`, `published_at` (NULL when the feed gave no date), `first_seen_run`, `first_seen_at`,
+  `cluster_key`, `sentiment`. `INSERT OR IGNORE`, so a rerun adds nothing. RSS has no archive: **history starts the day this
+  shipped** and cannot be back-filled.
+- `calendar.upcoming_releases` and `calendar.releases`: release dates after the Forex Factory coverage and within 45 days
+  (FRED release calendars for CPI, payrolls, PPI, GDP, PCE and retail sales, `source: "fred"`; FOMC minutes as decision + 21 days,
+  `source: "fed_rule"`, a rule and not a confirmed date). Dates only. `releases` says how many of the 7 parts answered. The
+  existing `calendar.upcoming` (7 days, Forex Factory) is unchanged.
 
 ## Rule cards: tables and files
 

@@ -79,8 +79,22 @@ WATCH_DDL = """CREATE TABLE IF NOT EXISTS v2_watch_positions (
     UNIQUE(rule, opened_on)
 )"""
 
+NEWS_DDL = """CREATE TABLE IF NOT EXISTS v2_news_items (
+    url_hash TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    source TEXT NOT NULL,
+    category TEXT,
+    published_at TEXT,
+    first_seen_run TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    cluster_key TEXT,
+    sentiment REAL
+)"""
+
 MIGRATIONS = [
     SIGNALS_DDL,
+    NEWS_DDL,
     FORECASTS_DDL,
     WATCH_DDL,
     """CREATE TABLE IF NOT EXISTS v2_runs (

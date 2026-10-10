@@ -9,6 +9,8 @@
   python main_pipeline.py backfill-positions                     # record engine tickets for old live runs that have none
   python main_pipeline.py resend [--run RUN_ID]                  # explicit resend of a saved email.eml
   python main_pipeline.py catalog [--run RUN_ID]                 # variable catalog + lineage (Markdown)
+  python main_pipeline.py narrative [--engine local|claude] [--model NAME] [--run RUN_ID] [--budget-usd X]
+                                                                 # write + validate + store a Briefing for a saved run; delivers nothing
   python main_pipeline.py status                                 # last 10 runs + the current run's status
   python main_pipeline.py ntfy-test                              # send the latest run's phone brief to NTFY_URL
 
@@ -155,8 +157,9 @@ def flow_history(conn, as_of):
     return out
 
 
-def render_outputs(conn, ctx, out_dir, *, rows=None):
-    """Render every file for one context. Pure: no provider calls. Returns (artifacts, report_text, manifest)."""
+def render_outputs(conn, ctx, out_dir, *, rows=None, briefing=None):
+    """Render every file for one context. Pure: no provider calls. `briefing` (text) goes into the email only, never into
+    daily_market_report.txt. Returns (artifacts, report_text, manifest, eml)."""
     import visualize_volume
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -179,7 +182,7 @@ def render_outputs(conn, ctx, out_dir, *, rows=None):
     for name, data in files.items():
         write_atomic(out_dir / name, data)
     from send_email import build_email, save_eml
-    msg = build_email(ctx, report, manifest, str(out_dir))
+    msg = build_email(ctx, report, manifest, str(out_dir), briefing=briefing)
     eml = save_eml(msg, out_dir / "email.eml")
     artifacts = {name: {"sha256": lake.sha256_bytes(d.encode() if isinstance(d, str) else d)} for name, d in files.items()}
     artifacts["email.eml"] = {"sha256": lake.sha256_bytes(eml), "bytes": len(eml)}
@@ -187,6 +190,61 @@ def render_outputs(conn, ctx, out_dir, *, rows=None):
                     "charts": [{k: v for k, v in c.items() if k != "trace"} for c in manifest]}
     write_atomic(out_dir / "run_manifest.json", json.dumps(manifest_doc, indent=2, default=str))
     return artifacts, report, manifest, eml
+
+
+# ============================================================ analyst note (Briefing)
+NARRATIVE_BUDGET_S = 150
+NARRATIVE_CLAUDE_BUDGET_S = 600
+
+
+def save_narrative(conn, result):
+    """Store a note as three payloads and a dated file in <data>/analyst_notes/. Never touches the snapshot.
+    Returns the `files` entries for the run's artifacts_json and the note file path."""
+    from core import narrative
+    run_id, engine = result["run_id"], result["engine"]
+    text = narrative.render_text(result)
+    docs = {"narrative_prompt": ("json", json.dumps(result.get("prompt"), indent=2, default=str)),
+            "narrative_json": ("json", json.dumps(result, indent=2, default=str)),
+            "narrative_text": ("text", text)}
+    files = {}
+    for kind, (fmt, content) in docs.items():
+        pid = lake.store_payload(conn, source="narrative", kind=kind, content=content, fmt=fmt, run_id=run_id)
+        files[f"{kind}.{engine}"] = {"sha256": lake.sha256_bytes(content.encode()), "payload_id": pid, "engine": engine}
+    when = datetime.fromisoformat(result["generated_at"])
+    path = DATA_DIR / "analyst_notes" / f"{when:%Y-%m-%d_%H%M}_{engine}_{run_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, text + "\n")
+    return files, path
+
+
+def stored_narrative(conn, run_id, engine="local"):
+    """The newest stored note of `engine` for a run, or None."""
+    for row in conn.execute("SELECT payload_id FROM v2_payloads WHERE source = 'narrative' AND kind = 'narrative_json' "
+                            "AND first_run_id = ? ORDER BY payload_id DESC", (run_id,)):
+        note = json.loads(lake.load_payload(conn, row["payload_id"])[1])
+        if note.get("engine") == engine:
+            return note
+    return None
+
+
+def _narrative_stage(conn, ctx, run_id, mode, stages):
+    """The local-model Briefing: skipped for offline runs and when ASSISTANT_LOCAL_URL is unset. A note that comes back
+    missing is a normal outcome. Returns (result or None, files for artifacts_json)."""
+    from core import narrative
+    url, model, _ = narrative.local_settings()
+    if mode != "live":
+        stages["narrative"] = {"status": "skipped", "reason": "offline run"}
+        return None, {}
+    if not url:
+        stages["narrative"] = {"status": "skipped", "reason": "ASSISTANT_LOCAL_URL is not set"}
+        return None, {}
+    set_status(stage="narrative")
+    result = narrative.write(ctx, narrative.chat_local, engine="local", model=model, budget_s=NARRATIVE_BUDGET_S)
+    files, path = save_narrative(conn, result)
+    stages["narrative"] = {"status": result["status"], "reason": result["reason"], "seconds": result["seconds"], "model": model,
+                           "counts": result["counts"], "file": path.name}
+    print(f"📝 Briefing: {result['status']}" + (f" ({result['reason']})" if result["reason"] else "") + f" in {result['seconds']} s")
+    return result, files
 
 
 # ============================================================ run
@@ -320,10 +378,18 @@ def _post_commit(conn, ctx, run_id, mode, out_dir, stages, *, deliver, upload):
             _stage_error(stages, warnings, "forecast_log", e)
     else:
         stages["ledgers"] = "skipped (offline run does not append legacy ledgers)"
+    note, note_files = None, {}
+    try:
+        note, note_files = _narrative_stage(conn, ctx, run_id, mode, stages)
+    except Exception as e:
+        _stage_error(stages, warnings, "narrative", e)
     rendered = False
     report = None
     try:
-        artifacts, report, manifest, eml = render_outputs(conn, ctx, out_dir, rows=rows)
+        from core import narrative
+        artifacts, report, manifest, eml = render_outputs(conn, ctx, out_dir, rows=rows,
+                                                          briefing=narrative.render_text(note) if note else None)
+        artifacts.update(note_files)
         rendered = True
         stages["export"] = {"status": "done", "charts": {c["file"]: c["status"] for c in manifest}}
         print(f"📁 Exports written to {out_dir}")
@@ -356,13 +422,33 @@ def _post_commit(conn, ctx, run_id, mode, out_dir, stages, *, deliver, upload):
         set_status(stage="delivering")
         try:
             lake.update_run(conn, run_id, delivery_status="attempting")
-            warnings.extend(_deliver(conn, ctx, run_id, out_dir, report, upload=upload))
+            warnings.extend(_deliver(conn, ctx, run_id, out_dir, report, upload=upload, note=note))
         except Exception as e:
             _stage_error(stages, warnings, "delivery", e)
     return warnings
 
 
-def _deliver(conn, ctx, run_id, out_dir, report, *, upload):
+def mark_bounces(conn):
+    """Earlier runs whose email the recipient's server rejected after our SMTP server had accepted it: their
+    delivery_status becomes `bounced` (with the reason). Returns one warning per newly found bounce; never raises."""
+    import send_email
+    if not all((send_email.EMAIL_SENDER, send_email.EMAIL_PASSWORD, send_email.IMAP_SERVER)):
+        return []
+    try:
+        found = send_email.bounced_runs()
+    except Exception:
+        return []                                  # no IMAP on this mail server, or it is down: nothing is known, nothing changes
+    out = []
+    for rid, why in sorted(found.items()):
+        row = lake.get_run(conn, rid)
+        if row and row["delivery_status"] == "smtp_accepted":
+            detail = {**json.loads(row["delivery_detail"] or "{}"), "bounce": lake.redact(why)}
+            lake.update_run(conn, rid, delivery_status="bounced", delivery_detail=json.dumps(detail))
+            out.append(f"email of run {rid} bounced: {lake.redact(why)[:160]}")
+    return out
+
+
+def _deliver(conn, ctx, run_id, out_dir, report, *, upload, note=None):
     """Email, report upload, phone pushes, then the database/dashboard upload. Every channel is attempted whatever
     the others did. A channel that is not configured is `skipped`; one that is configured and fails is a warning.
     Records `delivery_status` (the email outcome) and `delivery_detail` (all channels). Returns the warnings."""
@@ -391,9 +477,12 @@ def _deliver(conn, ctx, run_id, out_dir, report, *, upload):
         if report_up["status"] == "failed":
             warnings.append(f"report upload failed: {report_up.get('detail')}")
 
+    bounced = mark_bounces(conn)               # earlier emails that came back; the phone is told, since the inbox was not
+    warnings.extend(bounced)
     pushes = []
     try:
-        pushes.append(ntfy_brief(ctx, report, config.DASHBOARD_URL, report_up.get("url")))
+        pushes.append(ntfy_brief(ctx, report, config.DASHBOARD_URL, report_up.get("url"), narrative=note,
+                                 notice=f"⚠ {len(bounced)} report email(s) bounced: {bounced[-1].split(': ', 1)[1][:110]}" if bounced else None))
     except Exception as e:
         pushes.append({"title": "daily brief", "status": "failed", "error": failure(e)})
     try:
@@ -473,7 +562,7 @@ def signal_alerts(dry_run=False, test=False):
         ticket = positions.run_ticket(conn, run_id)          # the latest run's own ticket; never an older run's
         quotes = _live_quotes()
         spy = quotes.get("SPY")
-        rows = F.signal_watch(F.live_overlay(ctx["forecast"], quotes), ticket)
+        rows = F.signal_watch(F.live_overlay({**ctx["forecast"], "chaos": ctx.get("chaos")}, quotes), ticket)
         today, now, window = datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%-I:%M %p"), W.in_entry_window()
         tail = (f"Engine: {ticket['bias']}\n" if ticket else "") + \
                f"Live quotes {now} ({', '.join(f'{k} {v:.2f}' for k, v in list(quotes.items())[:3]) or 'none'}); " \
@@ -602,12 +691,15 @@ def replay(run_id=None, *, out_dir=None, deliver=False):
     orig = lake.get_run(conn, run_id)
     # never re-render into the shared day folder: later runs that day and the delivered files live there
     out = Path(out_dir) if out_dir else DATA_DIR / ctx["run"]["run_folder"] / f"replay_{run_id}"
-    artifacts, report, manifest, eml = render_outputs(conn, ctx, out)
+    from core import narrative
+    note = stored_narrative(conn, run_id)           # the original run's local note, never a new model call
+    briefing = narrative.render_text(note) if note else None
+    artifacts, report, manifest, eml = render_outputs(conn, ctx, out, briefing=briefing)
     saved = json.loads(orig["artifacts_json"] or "{}").get("files", {})
     orig_report_sha = (saved.get("daily_market_report.txt") or {}).get("sha256")
     same = orig_report_sha == artifacts["daily_market_report.txt"]["sha256"] if orig_report_sha else None
-    from send_email import load_eml, plain_body
-    body_matches = plain_body(load_eml(out / "email.eml")).rstrip("\n") == report.rstrip("\n")
+    from send_email import compose_plain, load_eml, plain_body
+    body_matches = plain_body(load_eml(out / "email.eml")).rstrip("\n") == compose_plain(report, briefing).rstrip("\n")
     replay_id = f"{run_id}-replay-{secrets.token_hex(2)}"
     lake.create_run(conn, replay_id, mode="replay", trigger="replay", run_folder=ctx["run"]["run_folder"],
                     code_version=code_version(), parent_run_id=run_id)
@@ -616,6 +708,46 @@ def replay(run_id=None, *, out_dir=None, deliver=False):
                                     "email_body_equals_report": body_matches})
     conn.close()
     print(f"🔁 Replayed {run_id} → {out}  (report identical to original: {same}; email body == report: {body_matches})")
+    return 0
+
+
+def narrative_command(engine="local", model=None, run_id=None, budget_usd=None):
+    """Write, validate and store a Briefing for a committed run with the chosen driver. Delivers nothing."""
+    from core import narrative
+    conn = lake.connect(DB_PATH)
+    lake.migrate(conn)
+    run_id = run_id or _latest_run_id(conn)
+    if not run_id:
+        print("No committed snapshot to write a note for.")
+        return 1
+    ctx = lake.load_snapshot(conn, run_id)
+    if engine == "claude":
+        try:
+            chat = narrative.ClaudeChat(model or "sonnet", budget_usd or narrative.CLAUDE_BUDGET_USD)
+        except narrative.DriverError as e:
+            print(f"Error: {e}")
+            return 2
+        label, budget = chat.model, NARRATIVE_CLAUDE_BUDGET_S
+    else:
+        url, label, _ = narrative.local_settings()
+        if not url:
+            print("ASSISTANT_LOCAL_URL is not set; the local engine needs it.")
+            return 1
+        chat, label, budget = narrative.chat_local, model or label, NARRATIVE_BUDGET_S
+    result = narrative.write(ctx, chat, engine=engine, model=label, budget_s=budget)
+    files, path = save_narrative(conn, result)
+    saved = lake.get_run(conn, run_id)
+    arts = json.loads(saved["artifacts_json"] or "{}")
+    arts.setdefault("files", {}).update(files)
+    lake.update_run(conn, run_id, artifacts_json=arts)
+    conn.close()
+    print(narrative.render_text(result))
+    print(f"\nstatus {result['status']}" + (f" ({result['reason']})" if result["reason"] else "") + f"; {result['seconds']} s; counts {result['counts']}")
+    for d in result["dropped"]:
+        print(f"  dropped {d['where']}: {d['reason']}")
+    if engine == "claude":
+        print(f"Claude Code: {chat.turns} turns, ${chat.cost:.3f} (plan quota)")
+    print(f"Note file: {path}")
     return 0
 
 
@@ -769,6 +901,13 @@ def main(argv=None):
     ih.add_argument("--no-backup", action="store_true", help="do not back portfolio.db up before importing")
     sub.add_parser("backfill-positions", help="record engine tickets for committed live runs that have none "
                                               "(idempotent; takes the run lock)")
+    nv = sub.add_parser("narrative", help="write the Briefing (analyst note) for a saved run with a model, validate it and store it "
+                                          "(never delivers; --engine claude spends Claude plan quota)")
+    nv.add_argument("--engine", choices=("local", "claude"), default="local",
+                    help="local = the ASSISTANT_LOCAL_URL model (default); claude = Claude Code on demand (needs its login, no API key)")
+    nv.add_argument("--model", help="local: model name (default ASSISTANT_LOCAL_MODEL); claude: sonnet (default) or haiku")
+    nv.add_argument("--run", help="run id (default: the latest committed snapshot)")
+    nv.add_argument("--budget-usd", type=float, help="claude only: spend cap per call (default 0.50)")
     rs = sub.add_parser("resend", help="send a saved run's email.eml again (explicit; never automatic)")
     rs.add_argument("--run", help="run id to resend (default: the latest committed snapshot)")
     c = sub.add_parser("catalog", help="print the variable catalog + lineage (Markdown) for a run")
@@ -820,6 +959,8 @@ def _dispatch(a):
         return replay(a.run, out_dir=a.out)
     if a.cmd == "resend":
         return resend(a.run)
+    if a.cmd == "narrative":
+        return narrative_command(a.engine, a.model, a.run, a.budget_usd)
     if a.cmd == "catalog":
         return print_catalog(a.run)
     if a.cmd == "status":

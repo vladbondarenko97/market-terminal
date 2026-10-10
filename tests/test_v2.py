@@ -845,7 +845,8 @@ class T09EdgeLab(unittest.TestCase):
             r = edges.analyze(" test ")
             self.assertTrue({"symbol", "name", "quote_type", "price", "history_since", "verdict", "edges"} <= set(r))
             self.assertEqual((r["symbol"], r["name"], r["quote_type"]), ("TEST", "Test Co", "EQUITY"))
-            self.assertEqual([e["key"] for e in r["edges"]], ["reversal", "earnings", "tom", "trend", "momentum", "volatility", "overnight"])
+            self.assertEqual([e["key"] for e in r["edges"]], ["reversal", "earnings", "tom", "trend", "momentum", "volatility", "overnight",
+                                                           "insider"])
             keys = {"key", "label", "name", "horizon", "source", "what", "now", "trigger", "active", "bias", "edge", "evidence", "action", "plan"}
             for e in r["edges"]:
                 self.assertEqual(set(e), keys)

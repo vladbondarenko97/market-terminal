@@ -25,8 +25,9 @@ When you change how a stored value is computed:
 | `DIVERGENCE_VERSION` (`core/metrics.py`) | `oi_divergence_v2` | OI divergence |
 | `EXECUTION_VERSION` (`core/metrics.py`) | `execution_v2` | Execution engine votes and ticket |
 | `FEATURES_VERSION` (`core/metrics.py`) | `features_v1` | `<model_features>` block in the tactical XML |
-| `VERSION` (`core/forecast.py`) | `forecast_v1` | Forecast Lab cards 1–9 |
+| `VERSION` (`core/forecast.py`) | `forecast_v2` | Forecast Lab cards 1–9 |
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
+| `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
 | `SCHEMA_VERSION` (`core/lake.py`) | `v2.1` | SQLite `v2_*` schema, stored on every `v2_runs` row |
 | `HORIZON_VERSION` (`core/positions.py`) | `horizons_v2` | Engine ticket +1D / +1W / +2W values. Not stored in a snapshot: positions are priced when the terminal asks, so the version is returned as `_version` inside each ticket's `horizons` dict. |
 
@@ -36,6 +37,15 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 ## Changes
 
 Newest first, then the changes that came with the v2 pipeline.
+
+- **Forecast Lab card 7 (`forecast_v2`)**: `calendar.effects` gained `payrolls_day`, `ppi_day`, `gdp_day`, `pce_day`,
+  `retail_sales_day` and `fomc_minutes_day` rows (release-day close-to-close, each also graded with `core.watch.grade()`), and a
+  `fed_speaker_day` row (days with at least one speech by a Fed Board member: Chair, Vice Chair or Governor, from the Fed's speech list; same grading).
+  Existing rows and `upcoming_7d` are computed as before; no existing value changed.
+- **News section and release calendar**: new snapshot key `news` and `calendar.upcoming_releases`; `/api/macro_news` now reads
+  the stored `news` section instead of one live Yahoo feed. No existing stored value changed.
+- **Chaos / Peace index** (`CHAOS_VERSION` `chaos_v1`, new): snapshot key `chaos`; no earlier value changes meaning. The ^VIX history
+  behind `price_stats.VIX` stays 1 year; the index fetches its own 3-year ^VIX and the six new volatility series.
 
 - **Terminal live routes** (computed per request, never stored; listed here because the numbers on screen move):
   - `/api/gex` computes zero gamma with the pipeline's `gex_profile()` (`gex_v2`, `zero_gamma_v1`) instead of

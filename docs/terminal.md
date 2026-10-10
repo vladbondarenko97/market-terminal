@@ -198,7 +198,7 @@ Fifteen panels in a three-column grid (two on medium screens, one on phones). Na
 | 9 | SLV INSTITUTIONAL FLOW | Sentiment, VWAP, Call Wall, Put Wall. Chart toggles: Sentiment, Block Vol, GEX Walls. | `/api/institutional_history?ticker=SLV&limit=100` | stored (`equities_darkpool_gex_ledger`) |
 | 10 | SLV DEALER MAP (GEX) | Same as panel 6 for SLV. SCAN button. | `/api/gex?ticker=SLV` | live |
 | 11 | CATALYST CALENDAR | Upcoming macro events with date, time, impact, forecast and previous. REFRESH. | `/api/macro_calendar` | stored (`upcoming_macro_events` in the newest `tactical_ruling.txt`) |
-| 12 | MACRO NEWS FEED | Top Yahoo Finance headlines, each tagged BULLISH, NEUTRAL or BEARISH from a sentiment score (beyond plus or minus 0.05). REFRESH. | `/api/macro_news` | live (RSS, 10 items) |
+| 12 | MACRO NEWS FEED | Up to 30 de-duplicated headlines from the latest run (the newest 10 from official sources always included), each tagged BULLISH, NEUTRAL or BEARISH from a sentiment score (beyond plus or minus 0.05), with the feeds that carried it. A line above them shows how many feeds answered, the run time and the status. REFRESH. | `/api/macro_news` | stored (`news` in the latest snapshot) |
 | 13 | FED LIQUIDITY PLUMBING | Reverse Repo ($B) and Fed Balance Sheet ($B), with a chart. | `/api/macro_ledger_full?limit=200` | stored |
 | 14 | SHANGHAI-COMEX ARB | SHFE Silver, COMEX Silver, Premium, with a chart. | `/api/macro_ledger_full?limit=200` | stored |
 | 15 | ENGINE POSITIONS | Execution-engine tickets and how they moved. See [Engine Positions](#engine-positions). | `/api/positions` | stored and live |
@@ -280,14 +280,14 @@ Things to know:
 
 ## Forecast Lab tab
 
-Eleven model cards (full reference: [Forecast Lab](forecast-lab.md)). Controls above the cards:
+Twelve model cards, 1 to 11 and 14 (full reference: [Forecast Lab](forecast-lab.md)). Controls above the cards:
 
 - **SPY** / **SLV** choose the ticker for the per-ticker cards. **REFRESH** reloads.
 - The status line reads `TICKER · run <run id> · <time>` and adds `· N source issue(s)` when the run could not fetch some inputs.
 - The data loads every time the tab is opened and on each button press. There is no automatic refresh.
 - Each card has **?** (help), **⛶** (full screen) and **COPY**. Esc closes help or leaves full screen.
 - A card whose data is missing or failed shows `Unavailable: <reason>`. That includes cards 4, 9 and 10 when the pipeline
-  recorded an error for their block, and card 11 when the whole refining block failed. If `/api/forecast` itself fails
+  recorded an error for their block, card 11 when the whole refining block failed, and card 14 when the chaos block is missing or failed (it prints the reason). If `/api/forecast` itself fails
   (for example `503` before the first run), every card shows the server's message.
 
 ## Engine Positions
@@ -368,19 +368,36 @@ Browser storage (`localStorage`, per browser and per origin):
 Three cards are plain rules on stored runs and live Yahoo quotes: no model output. Every row is graded on history
 and only a row with tested evidence can say "Buy"; hover any cell for what it means and where it comes from.
 
+- **14 · Chaos / Peace** (`core/chaos.py`, in `/api/forecast` and `/api/chaos`): score from -100 to +100 with regime, components
+  "x of 12", trading days to or after the 2026-11-03 midterm, the three largest z-scores, a 60-day score line, the components table
+  (missing ones show their reason), the lever panel (labelled as outside the score), the midterm event-study table (with n and
+  grade) and the lever-study table. Evidence is thin by construction. Nothing on it is computed in the browser.
 - **0 · Signal Watch** (`core/forecast.py: signal_watch`): the triggers the model cards compute (fair value, momentum
-  flip, positioning, option pricing, dealer gamma, macro, engine ticket), fired or waiting, with the action.
+  flip, positioning, option pricing, dealer gamma, macro, engine ticket), fired or waiting, with the action. The
+  "Chaos/Peace regime" row (from card 14) fires on the run where the regime differs from the previous trading day's; its action
+  text only states the change, and the usual once-a-day phone alert applies.
 - **12 · Day Scanner** (`core/watch.py`, `/api/scanner`): the dip-in-an-uptrend rule (2-day RSI under 10 or 5, above
   the 200-day average) on a saved watchlist (`+ ADD`, stored in `scanner_watchlist.json`). SPY trades as a call spread
   of at most $300 and opens a paper position (`v2_watch_positions`) that a sell alert closes 5 trading days later.
 - **13 · Edge Lab** (`core/edges.py`, `/api/edges`): the published edges (reversal, post-earnings drift, turn of month,
-  trend, 12-month momentum, volatility premium, overnight vs intraday) tested on any ticker's own history; `QUERY` analyses a symbol, `+ TRACK` saves it (`edges_tracked.json`).
+  trend, 12-month momentum, volatility premium, overnight vs intraday, insider cluster buys) tested on any ticker's own history; `QUERY` analyses a symbol, `+ TRACK` saves it (`edges_tracked.json`).
+  The insider edge (mid horizon) counts a day when 3 or more different officers have each filed a Form 4 with an open-market purchase (code P) within 10 calendar days, first day
+  of a cluster only, and compares the 21 trading days after it with normal months. It describes what was filed and what the price did afterwards, nothing about why.
+  It reads Form 4 filings stored by `scripts/backfill_form4.py` (re-run to update); a symbol with none reads "no Form 4 history stored", a fund reads "not applicable".
+  Two planned edges are not built: news sentiment against the VMRI, and a news-shock gate on the reversal edge. RSS has no archive, so they wait for about 60 pipeline runs of `v2_news_items` history.
+  Forecast Lab card 7 gains a "Fed Board speech day" row.
 
 Alerts: `python main_pipeline.py signal-alerts` (launchd `com.vlad.signalalerts`, every 15 minutes of the session on weekdays, installed by
 `./setup.sh --schedule`) pushes to `NTFY_URL` and raises a macOS banner when a row goes from waiting to FIRED; it
 exits outside the NYSE session. `--dry-run` prints the live states, `--test` sends a sample.
 
 ## Ask the terminal (console engine v3)
+
+Two sources came with the Briefing: `chaos` (the Chaos / Peace block as labelled rows: score, regime, previous day, the
+components used and missing, drivers, lever rows, the midterm event study with n and grade, the 60-day record) and
+`macro_news`, now dated lines (Chicago time, feed, sentiment, title; newest first) in two lists, `official_sources` and
+`other_sources`, with the run time and feed coverage. The brief carries one Chaos / Peace line. Both shapers are in `core/narrative.py`
+and are shared with the Briefing.
 
 The console answers questions typed in words with a model on this machine. `options_whale/assistant.py` holds
 everything server-side; v3 restored the October 3 version (branch `ai-terminal`, never merged), dropped the Claude
@@ -391,7 +408,7 @@ Code engine and added the routing below.
   waiting Signal Watch rows, macro regime and the next CPI / Fed / OPEX dates, and what the brief leaves out. It has
   no clock and no live readings, so it only changes when the data does and a server with a prompt cache reads it
   once per run. The question carries the time. `GET /api/assistant/data?source=brief` shows it.
-- **Then routing.** For anything the brief does not show, the model calls `fetch_source` for one to three of the 25
+- **Then routing.** For anything the brief does not show, the model calls `fetch_source` for one to three of the 26
   read-only GET sources in `SOURCES` (Flask test client, unlisted parameters dropped). Large results come back as an
   outline that the model opens with `path=` and `last=`. Positions, Signal Watch, the Day Scanner, the Edge Lab,
   gamma and the VMRI history are pre-shaped (`SHAPERS`): plain contract names, local times, trades apart from cash
@@ -411,6 +428,10 @@ Code engine and added the routing below.
 - **Measured here (M4 Pro, 48 GB, 2026-10-09), 17 graded questions** (5 answerable from the brief, 5 needing one
   lookup, 7 multi-step): Ollama `qwen3.6:35b-a3b` with reasoning off 14-15/17, median 5-8 s; reasoning low 17/17,
   median 20 s. The old default `qwen3.8:27b-mlx` on Ollama read prompts at about 90 tokens/s: 96 s for the
-  engine-position question. oMLX has not been graded yet: it was busy with an agent run during testing.
+  engine-position question.
+- **Graded again 2026-10-10 with `scripts/console_eval.py`** (now 22 questions: the 17 above plus 4 on Chaos / Peace and 1
+  on the stored headlines), on a copy of the data, oMLX `Qwen3.5-9B-MLX-8bit` with reasoning off: 16/17 on the original
+  questions both before and after cards 14 and the news section were added (the same multi-step silver question fails),
+  5/5 on the new ones, median about 15 s. Run it against a running terminal: `--base http://127.0.0.1:<port>`.
 - **Conversations** live in server memory (the last 40; 8 turns each) and are lost on restart. "New chat" starts one.
 - The server has no login. Anyone who can reach the port can ask questions. Keep the port on a private network.

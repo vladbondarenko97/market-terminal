@@ -6,6 +6,7 @@ import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from xml.dom import minidom
+from zoneinfo import ZoneInfo
 
 from core import metrics
 
@@ -482,14 +483,29 @@ def refining_xml(parent, rf):
         _el(re_, "ulsd_managed_money", date=u["latest_date"], net=(u["net"], "int"), cot_index=u["cot_index"], read=u["read"])
 
 
-def ntfy_summary(ctx):
+def chaos_line(ctx):
+    """One line for the brief and the push. A missing or failed block prints its reason, not a number. Old snapshots have no block."""
+    c = ctx.get("chaos")
+    if not c:
+        return "Chaos/Peace: not in this snapshot"
+    if c.get("score") is None:
+        return f"Chaos/Peace: {c.get('status')} ({str(c.get('reason'))[:160]})"
+    top = ", ".join(f"{d['label'].split(' (')[0]} {d['z']:+.1f}z" for d in c.get("drivers") or [])
+    n = g(c, "election", "trading_days_to")
+    when = "" if n is None else f"; midterm in {n} trading days" if n >= 0 else f"; {-n} trading days after the midterm"
+    return (f"Chaos/Peace: {c['score']:+.0f} {c['regime']} ({c['components_used']} of {c['components_total']} components)"
+            + (f"; top: {top}" if top else "") + when + ("; REGIME CHANGED" if c.get("regime_changed") else ""))
+
+
+def ntfy_summary(ctx, narrative=None):
     """Lock-screen summary for the single daily push: (title, message, priority 1-5, tags). Plain text (phones do not
     render Markdown); ranked by what is actionable; well under ntfy's 4,096-byte message limit."""
     from zoneinfo import ZoneInfo
     run = ctx["run"]
     t = datetime.fromisoformat(run["generated_at"]).astimezone(ZoneInfo("America/Chicago"))
     P, vm, e, fc = ctx["prices"], ctx["vmri"], ctx["execution"], ctx.get("forecast") or {}
-    lines, prio, tags = [], 3, []
+    from core import narrative as _nar
+    lines, prio, tags = [x[:160] for x in _nar.push_lines(narrative)], 3, []     # the Briefing's tagline and focus lines lead
 
     def price(k):
         v = g(P, k, "value")
@@ -502,6 +518,7 @@ def ntfy_summary(ctx):
     lines.append(head + (f" · VIX {vix:.1f} {term}" if vix is not None else ""))
     if tier.startswith(("ELEVATED", "SYSTEMIC")):
         prio = max(prio, 5 if tier.startswith("SYSTEMIC") else 4)
+    lines.append(chaos_line(ctx))
     # 2. execution engine
     score = e.get("total_score")
     tk = e.get("ticket")
@@ -762,6 +779,21 @@ def master_market_csv(ctx):
 
 
 # ============================================================ report text
+def headlines_text(ctx, limit=15):
+    """Official-source headlines only (new in this run first, then newest). Never an empty heading."""
+    n = ctx.get("news") or {}
+    cov = g(n, "coverage") or {}
+    note = f"feeds answered {cov.get('answered', 0)} of {cov.get('enabled', 0)}, official {cov.get('priority_answered', 0)}"
+    rows = sorted((c for c in n.get("clusters") or [] if c.get("official")), key=lambda c: c["published_at"], reverse=True)
+    rows = sorted(rows, key=lambda c: not c.get("new"))[:limit]       # stable: new ones first, each group newest first
+    if not rows:
+        why = n.get("reason") or ("no official-source headline in the window" if n else "no news section in this snapshot")
+        return f"  - No official-source headlines (status: {n.get('status', 'missing')}; {why}); {note}"
+    ct = ZoneInfo("America/Chicago")
+    return "\n".join(f"  - {datetime.fromisoformat(c['published_at']).astimezone(ct).strftime('%Y-%m-%d %H:%M')} CT | "
+                     f"{c['sources'][0]['name']} | {c['title']} | {c['sources'][0]['url']}" for c in rows) + f"\n  - ({note})"
+
+
 def calendar_text(ctx):
     cal = ctx["calendar"]
     out = ["📅 7-DAY MACRO OUTLOOK (USD)", "=" * 40]
@@ -779,6 +811,12 @@ def calendar_text(ctx):
         out.append("No High/Medium impact USD events in the covered window.")
     if cal["status"] == "partial":
         out.append(f"⚠️ Coverage incomplete: {cal['reason']}")
+    rel, meta = cal.get("upcoming_releases") or [], cal.get("releases") or {}
+    if rel or meta.get("reason"):
+        out += ["", f"Later releases, dates only (to {meta.get('to')}):"]
+        out += [f"  {r['date_ct']}  {r['title']} [{r['source']}]" for r in rel]
+        if meta.get("reason"):
+            out.append(f"  ({meta['status']}: {meta['reason']})")
     return "\n".join(out)
 
 
@@ -922,11 +960,15 @@ def market_brief_text(ctx):
 🚨 VLAD MACRO RISK INDEX (VMRI)
   - Score: {f2(vm.get('score'), na='UNAVAILABLE')}
   - Threat Level: {vm.get('tier')}{'' if vm.get('score') is not None else ' — ' + str(vm.get('reason'))}
+  - {chaos_line(ctx)}
 
 ⏰ CATALYST CALENDAR
   - Status: {cal.get('catalyst_status')}
   - Scheduled Events:
   - {events}
+
+📰 HEADLINES SINCE LAST RUN (official sources)
+{headlines_text(ctx)}
 
 🏦 COMEX INVENTORY{inv_note}
   - Registered: {metrics.fmt_moz(inv.get('registered'))}
