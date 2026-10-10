@@ -38,6 +38,13 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **Silver Eagle premium history** (`/api/arbitrage_history`, terminal panel 5, October 2026): every premium is now the retail price over the
+  silver futures price recorded by the same pipeline run (`macro_master_ledger`: `Retail_Silver_Cheapest`, `Retail_Silver_Avg`, `COMEX_Silver`).
+  The route used to serve the premium columns of `physical_arbitrage_ledger.csv`, whose benchmark was a fixed $67.80 in 69 rows and a stale
+  price in many more before 2026-09-29: that series ran from -2.1% to +39.0%, the paired one runs from 8.2% to 20.7%. Rows of the last
+  two weeks are identical in both. `labels` now carry the year (`YYYY-MM-DD HH:MM`), and scans started by hand with the Silver Eagle
+  button no longer appear in the history (they are still appended to the CSV). No stored value and no model version changed.
+
 - **Forecast Lab card 7 (`forecast_v2`)**: `calendar.effects` gained `payrolls_day`, `ppi_day`, `gdp_day`, `pce_day`,
   `retail_sales_day` and `fomc_minutes_day` rows (release-day close-to-close, each also graded with `core.watch.grade()`), and a
   `fed_speaker_day` row (days with at least one speech by a Fed Board member: Chair, Vice Chair or Governor, from the Fed's speech list; same grading).

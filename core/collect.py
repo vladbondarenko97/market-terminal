@@ -530,6 +530,7 @@ def collect_ebay(session, benchmark):
             "available_qty": (f"{avail['availabilityThreshold']}+" if "availabilityThreshold" in avail
                               else avail.get("estimatedAvailableQuantity")),
             "sold_qty": avail.get("estimatedSoldQuantity"),
+            "seller": (j.get("seller") or {}).get("username"),
             "premium_dollars": total - bench if (total is not None and bench) else None,
             "premium_percent": (total - bench) / bench * 100 if (total is not None and bench) else None,
             "payload_id": l["payload_id"],

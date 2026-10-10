@@ -37,7 +37,7 @@ NOT_INITIALISED = "database not initialised: run the pipeline once"
 
 # api_router constants that hold paths under the data folder
 PATH_NAMES = {
-    "DATA_DIR": "", "LEDGER_CSV": "macro_master_ledger.csv", "LEDGER_FILE": "physical_arbitrage_ledger.csv",
+    "DATA_DIR": "", "LEDGER_CSV": "macro_master_ledger.csv",
     "INSTITUTIONAL_LEDGER_CSV": "equities_darkpool_gex_ledger.csv", "INVENTORY_CSV": "comex_inventory_history.csv",
     "MANUAL_RUN_LOG": ".v2_manual_run.log", "_V2_DB_PATH": "portfolio.db",
 }
@@ -1020,6 +1020,89 @@ class QuantEngineUnits(ApiCase):
         self.assertIsNone(out["iv_signal"])
         self.assertEqual(set(out["missing"]), {"hv_pct", "iv_signal", "market_price"})   # no price was given either
         self.assertIsNone(out["market_price"])
+
+
+# ============================================================ /api/arbitrage_history
+def ledger_frame(rows):
+    """Macro-ledger rows: (Datetime, COMEX_Silver, Retail_Silver_Cheapest, Retail_Silver_Avg)."""
+    return pd.DataFrame(rows, columns=["Datetime", "COMEX_Silver", "Retail_Silver_Cheapest", "Retail_Silver_Avg"])
+
+
+def eagle_run(at, **sold):
+    """A run at an ISO UTC time; `sold` maps an item id to its sold_qty (a listing per key)."""
+    return {"run_at": datetime.fromisoformat(at), "listings": {
+        k: {"title": k, "total_cost": 70.0, "premium_percent": 10.0, "status": "IN_STOCK", "sold_qty": v}
+        for k, v in sold.items()}}
+
+
+class ArbitrageHistory(ApiCase):
+    def test_series_keeps_only_verified_readings_paired_within_the_row(self):
+        df = ledger_frame([
+            ("10/1/26 10:00", 50.0, 55.0, 60.0),
+            ("10/1/26 11:00", None, 55.0, 60.0),        # no silver price
+            ("10/1/26 12:00", 50.0, 0.0, 60.0),         # zero retail price
+            ("not a date", 50.0, 55.0, 60.0),
+            ("10/2/26 10:00", 40.0, 44.0, None),        # no average
+        ])
+        out = api_router.build_arbitrage_series(df, 50)
+        self.assertEqual(out["labels"], ["2026-10-01 10:00", "2026-10-02 10:00"])
+        self.assertEqual(out["spot"], [50.0, 40.0])
+        self.assertEqual(out["cheapest_pct"], [10.0, 10.0])
+        self.assertEqual(out["cheapest_dollar"], [5.0, 4.0])
+        self.assertEqual((out["avg_price"], out["avg_dollar"], out["avg_pct"]), ([60.0, None], [10.0, None], [20.0, None]))
+        self.assertEqual(api_router.build_arbitrage_series(df, 1)["labels"], ["2026-10-02 10:00"])
+        self.assertIsNone(api_router.build_arbitrage_series(df.iloc[1:4], 50))
+        json.dumps(out, allow_nan=False)
+
+    def test_stats_use_the_last_reading_of_each_day(self):
+        # day 1: 10% then 20% (counts as 20); day 2: 30%; day 3: 40%; every spot is 100
+        df = ledger_frame([("10/1/26 09:00", 100, 110, None), ("10/1/26 15:00", 100, 120, None),
+                           ("10/2/26 15:00", 100, 130, None), ("10/3/26 15:00", 100, 140, None)])
+        s = api_router.build_arbitrage_series(df, 50)["stats"]
+        self.assertEqual((s["n"], s["mean"], s["std"], s["median"], s["min"], s["max"]), (3, 30.0, 10.0, 30.0, 20.0, 40.0))
+        self.assertEqual((s["zscore"], s["pct_rank"]), (None, None))      # under 20 days
+        self.assertEqual((s["history"]["n"], s["history"]["days"], s["history"]["min"]), (4, 3, 10.0))
+        # 1d: newest reading at or before 10/2 15:00 is that very reading; 7d and 30d have no reading that old
+        self.assertEqual(s["changes"]["1d"]["ref_label"], "2026-10-02 15:00")
+        self.assertEqual(s["changes"]["1d"]["pts"], 10.0)
+        self.assertIsNone(s["changes"]["7d"])
+        self.assertIsNone(s["changes"]["30d"])
+
+    def test_zscore_and_rank_with_twenty_days(self):
+        rows = [(f"10/{d}/26 15:00", 100, 100 + d, None) for d in range(1, 21)]      # premiums 1..20
+        s = api_router.build_arbitrage_series(ledger_frame(rows), 50)["stats"]
+        self.assertEqual((s["n"], s["mean"], s["median"]), (20, 10.5, 10.5))
+        self.assertEqual(s["std"], 5.92)
+        self.assertEqual(s["zscore"], 1.61)          # (20 - 10.5) / 5.916
+        self.assertEqual(s["pct_rank"], 95.0)        # 19 of 20 days are strictly lower
+        self.assertEqual(s["changes"]["7d"]["ref_label"], "2026-10-13 15:00")
+
+    def test_book_and_flow_leave_out_listings_without_a_delta(self):
+        runs = [eagle_run("2026-10-01T12:00:00+00:00", a=100, b=50, c=None, d=10),
+                eagle_run("2026-10-03T12:00:00+00:00", a=110, b=40, c=5, d=20),       # b went down, c had no count
+                eagle_run("2026-10-09T12:00:00+00:00", a=130, c=9, d=25, e=3)]        # b gone, e new
+        book, flow = api_router.build_eagle_book(runs)
+        by_id = {l["item_id"]: l for l in book["listings"]}
+        self.assertEqual({k: (v["sold_prev"], v["sold_7d"]) for k, v in by_id.items()},
+                         {"a": (20, 30), "c": (4, None), "d": (5, 15), "e": (None, None)})
+        self.assertEqual((book["count"], book["in_stock"], book["cheapest_pct"]), (4, 4, 10.0))
+        self.assertEqual(flow["units_prev"], 29)
+        # the 7-day reference is the 10-01 run (8 days back; the 10-03 run is only 6 days back)
+        self.assertEqual(flow["rate_7d"]["ref_run_at"], "2026-10-01 07:00")
+        self.assertEqual((flow["rate_7d"]["units"], flow["rate_7d"]["listings"]), (30 + 15, 2))      # c has no count in the reference run
+        self.assertIsNone(flow["rate_prior_7d"])
+        # the daily credit goes to the later run's local date; pairs with no delta add nothing
+        self.assertEqual(flow["daily"], [{"date": "2026-10-03", "units": 10 + 10}, {"date": "2026-10-09", "units": 20 + 4 + 5}])
+        self.assertEqual(api_router.build_eagle_book([runs[0]]), (api_router.build_eagle_book([runs[0]])[0], None))
+        self.assertEqual(api_router.build_eagle_book([]), (None, None))
+
+    def test_route_serves_the_series_without_a_database(self):
+        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        data = self.get_json("/api/arbitrage_history?limit=5")["data"]
+        self.assertEqual(data["labels"], ["2026-10-01 10:00"])
+        self.assertEqual(data["benchmark_symbol"], "SI=F")
+        self.assertIsNone(data["book"])
+        self.assertIsNone(data["flow"])
 
 
 class JsonSafety(unittest.TestCase):

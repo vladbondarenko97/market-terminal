@@ -1528,181 +1528,204 @@ async function loadDealerMap(auto = false) {
 
 let arbChartInstance = null;
 window.arbData = null; // Global store to prevent re-fetching on toggle
+let arbView = 'pct', arbRange = '3M'; // current chart view and range, kept for the buttons
+const ARB_RANGE_DAYS = { '1M': 30, '3M': 91, 'ALL': null };
+const ARB_ZONES = { RICH: '#f59e0b', CHEAP: '#22c55e', NORMAL: '#a1a1aa' };
 
-// 1. Fetcher
+// Pure helpers (no DOM)
+const arbSigned = (v, d = 2, suffix = '') => (isNum(v) ? `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(d)}${suffix}` : DASH);
+const arbWhen = label => (label ? `${ppDate(label)} ${String(label).slice(11, 16)}` : DASH);
+// Index of the first label within the range of the newest label (ALL = 0)
+function arbRangeStart(labels, range) {
+    const days = ARB_RANGE_DAYS[range];
+    if (!days || !labels.length) return 0;
+    const cut = new Date(labels[labels.length - 1].replace(' ', 'T')).getTime() - days * 864e5;
+    const i = labels.findIndex(l => new Date(l.replace(' ', 'T')).getTime() >= cut);
+    return i < 0 ? 0 : i;
+}
+// Mean, band edges and the premium at -3, -1, 0, +1, +3 sigma; null without stats
+function arbBand(stats) {
+    if (!stats || !isNum(stats.mean) || !isNum(stats.std)) return null;
+    const { mean, std } = stats;
+    return { mean, lo: mean - std, hi: mean + std, ticks: [-3, -1, 0, 1, 3].map(k => mean + k * std) };
+}
+function arbRegime(z) {
+    if (!isNum(z)) return null;
+    return z >= 1 ? 'RICH' : z <= -1 ? 'CHEAP' : 'NORMAL';
+}
+
+function arbRenderHeader(data) {
+    const st = data.stats, last = st && st.latest;
+    const n = data.labels.length - 1;
+    const prem = last ? last.cheapest_pct : toNum(data.cheapest_pct[n]);
+    const dollar = last ? last.cheapest_dollar : toNum(data.cheapest_dollar[n]);
+    const spot = last ? last.spot : toNum(data.spot[n]);
+    const label = last ? last.label : data.labels[n];
+    ppSet('arbPremium', arbSigned(toNum(prem), 2, '%'));
+    ppSet('arbSub', isNum(prem) ? `${fmt(dollar, 2, '$')} over ${fmt(spot, 2, '$')} · ${arbWhen(label)}` : '');
+    const reg = st ? arbRegime(st.zscore) : null;
+    const chip = document.getElementById('arbRegime');
+    chip.classList.toggle('hidden', !reg);
+    if (reg) {
+        const c = ARB_ZONES[reg];
+        chip.textContent = reg;
+        chip.style.cssText = `color:${c};border-color:${c}66;background:${c}1a`;
+    }
+    const z = st && st.zscore, rank = st && st.pct_rank, avg = last && last.avg_pct;
+    ppSet('arbZ', isNum(z) ? `z-score ${arbSigned(z, 2, 'σ')}` : '');
+    ppSet('arbRank', isNum(rank) ? `rank ${Math.round(rank)}% of ${st.window_days}d` : '');
+    ppSet('arbAvgNow', isNum(avg) ? `avg dealer ${arbSigned(avg, 2, '%')}` : '');
+    const mark = document.getElementById('arbMark');
+    mark.classList.toggle('hidden', !reg);
+    if (reg) {
+        mark.style.left = `${(Math.max(-3, Math.min(3, z)) + 3) / 6 * 100}%`;
+        mark.style.background = reg === 'NORMAL' ? '#fff' : ARB_ZONES[reg];
+    }
+    const band = arbBand(st);
+    document.querySelectorAll('#arbTicks span').forEach((el, i) => { el.textContent = band ? `${band.ticks[i].toFixed(1)}%` : ''; });
+    [['1d', 1], ['7d', 7], ['30d', 30]].forEach(([k, days]) => {
+        const tile = document.getElementById(`arbTile${k}`), c = st && st.changes && st.changes[k];
+        const val = tile.querySelector('.arb-chg');
+        val.textContent = c ? `${arbSigned(c.pts, 2)} pts` : DASH;
+        val.className = `arb-chg text-[12px] font-bold ${c && c.pts > 0 ? 'text-amber-400' : c && c.pts < 0 ? 'text-green-400' : 'text-white'}`;
+        tile.querySelector('.arb-sub').textContent = c ? `silver ${arbSigned(c.spot_pct, 1, '%')} · retail ${arbSigned(c.retail_pct, 1, '%')}` : '';
+        tile.title = c ? `Change in the premium, in percentage points, against the reading from ${days} days earlier (${c.ref_label}). Silver and retail are the percent moves of the futures price and the cheapest dealer price.` : '';
+    });
+    const f = data.flow, rate = f && f.rate_7d, prior = f && f.rate_prior_7d;
+    const parts = f ? [f.units_prev != null && `Units sold on the tracked listings: ${f.units_prev} since the previous run`,
+        rate && isNum(rate.per_day) && `${rate.per_day.toFixed(1)}/day over ${fmt(rate.days, 1)} days`].filter(Boolean) : [];
+    ppSet('arbFlowNote', parts.join(' · ') + (parts.length && prior && isNum(prior.per_day) ? ` (prior week ${prior.per_day.toFixed(1)}/day)` : ''));
+    const h = st && st.history;
+    ppSet('arbFooter', `${h ? `${h.n} runs since ${ppDate(h.first_label)} · ` : ''}each premium uses the SI=F price recorded by the same run · ask side only, dealer buyback prices are not tracked`);
+    document.getElementById('arbFooter').className = 'text-[8px] text-zinc-600 leading-tight';
+}
+
+// Dealer table built with DOM methods: eBay strings only ever reach textContent, href only for https
+function arbRenderBook(book) {
+    const box = document.getElementById('arbBook');
+    box.replaceChildren();
+    if (!book || !Array.isArray(book.listings) || !book.listings.length) {
+        const p = document.createElement('div');
+        p.className = 'text-[9px] text-zinc-500';
+        p.textContent = 'No per-dealer records stored yet.';
+        box.appendChild(p);
+        ppSet('arbBookTitle', 'Dealer book');
+        ppSet('arbBookRun', '');
+        return;
+    }
+    ppSet('arbBookTitle', `Dealer book · ${book.count ?? book.listings.length} listings · ${book.in_stock ?? DASH} in stock`);
+    ppSet('arbBookRun', `run ${arbWhen(book.run_at)}`);
+    const table = document.createElement('table');
+    const head = table.createTHead().insertRow();
+    ['Dealer', 'All-in', 'Prem', 'Stock', 'Sold', '7d'].forEach(h => { head.appendChild(document.createElement('th')).textContent = h; });
+    const body = table.createTBody();
+    book.listings.forEach((l, i) => {
+        const tr = body.insertRow();
+        const name = String(l.seller || l.title || DASH);
+        const first = tr.insertCell();
+        first.title = l.title || '';
+        if (typeof l.url === 'string' && l.url.startsWith('https://')) {
+            const a = document.createElement('a');
+            a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+            a.textContent = name;
+            first.appendChild(a);
+        } else first.textContent = name;
+        const sold = v => (isNum(v) ? (v > 0 ? `+${v}` : String(v)) : DASH);
+        const out = l.status && l.status !== 'IN_STOCK';
+        const cells = [fmt(l.total_cost, 2, '$'), arbSigned(toNum(l.premium_pct), 2, '%'),
+            out ? String(l.status).toLowerCase().replace(/_/g, ' ') : (l.available_qty ?? DASH), sold(toNum(l.sold_prev)), sold(toNum(l.sold_7d))];
+        cells.forEach((text, j) => {
+            const td = tr.insertCell();
+            td.textContent = String(text);
+            if (i === 0 && j < 2) td.className = 'best';
+            if (j === 2 && out) td.className = 'text-red-400';
+        });
+    });
+    box.appendChild(table);
+}
+
+function arbDrawChart(data, view) {
+    const canvas = document.getElementById('arbChart');
+    const empty = document.getElementById('arbNoFlow');
+    if (arbChartInstance) { arbChartInstance.destroy(); arbChartInstance = null; }
+    const days = data.flow && Array.isArray(data.flow.daily) ? data.flow.daily : [];
+    const noFlow = view === 'flow' && !days.length;
+    empty.classList.toggle('hidden', !noFlow);
+    canvas.classList.toggle('hidden', noFlow);
+    if (noFlow) return;
+    const tip = callbacks => ({ legend: { display: false },
+        tooltip: { backgroundColor: 'rgba(9, 9, 11, 0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, titleColor: '#fff', bodyColor: '#a1a1aa', displayColors: false,
+            filter: item => !['Mean', 'Low', 'High'].includes(item.dataset.label), callbacks } });
+    const xAxis = { grid: { display: false }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 5, maxRotation: 0, autoSkip: true,
+        callback(v) { return ppDate(this.getLabelForValue(v)); } } };
+    const yAxis = prefix => ({ grid: { color: '#18181b' }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 6, callback: v => `${prefix === '$' ? '$' : ''}${v}${prefix === '%' ? '%' : ''}` } });
+    const base = { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false } };
+    const ctx = canvas.getContext('2d');
+    if (view === 'flow') {
+        arbChartInstance = new Chart(ctx, {
+            type: 'bar',
+            data: { labels: days.map(d => d.date), datasets: [{ data: days.map(d => toNum(d.units)), backgroundColor: 'rgba(56,189,248,0.6)' }] },
+            options: { ...base, plugins: tip({ label: c => (c.parsed.y == null ? '' : `${c.parsed.y} units`) }), scales: { x: xAxis, y: yAxis('') } },
+        });
+        return;
+    }
+    const s = arbRangeStart(data.labels, arbRange);
+    const cut = a => a.slice(s).map(toNum);
+    const labels = data.labels.slice(s), spot = cut(data.spot), n = labels.length;
+    const line = (arr, color, width, dash) => ({ data: arr, borderColor: color, borderWidth: width, borderDash: dash || [], pointRadius: 0, pointHoverRadius: 3, spanGaps: false, tension: 0 });
+    const usd = c => (c.parsed.y == null ? '' : `${c.dataset.label} $${c.parsed.y.toFixed(2)}`);
+    if (view === 'price') {
+        const sets = [{ ...line(spot, '#ffffff', 1.5, [4, 3]), label: 'Silver' }, { ...line(cut(data.cheapest_price), '#38bdf8', 1.5), label: 'Cheapest' },
+            { ...line(cut(data.avg_price), '#818cf8', 1, [3, 3]), label: 'Avg dealer' }];
+        arbChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: sets },
+            options: { ...base, plugins: tip({ title: i => (i.length ? labels[i[0].dataIndex] : ''), label: usd }), scales: { x: xAxis, y: yAxis('$') } } });
+        return;
+    }
+    const cheap = cut(data.cheapest_pct), dollar = cut(data.cheapest_dollar), avg = cut(data.avg_pct);
+    const band = arbBand(data.stats), fill = v => Array(n).fill(v);
+    const lastIdx = cheap.reduce((a, v, i) => (v !== null ? i : a), -1);
+    const sets = [{ ...line(cheap, '#e4e4e7', 1.5), label: 'Cheapest', pointRadius: cheap.map((_, i) => (i === lastIdx ? 3 : 0)), pointBackgroundColor: '#e4e4e7' },
+        { ...line(avg, '#71717a', 1, [3, 3]), label: 'Avg dealer' }];
+    if (band) {
+        sets.push({ ...line(fill(band.mean), 'rgba(255,255,255,0.35)', 1, [4, 4]), label: 'Mean', pointHoverRadius: 0 },
+            { ...line(fill(band.lo), 'transparent', 0), label: 'Low', pointHoverRadius: 0 },
+            { ...line(fill(band.hi), 'transparent', 0), label: 'High', pointHoverRadius: 0, fill: '-1', backgroundColor: 'rgba(228,228,231,0.07)' });
+    }
+    arbChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: sets }, options: { ...base, plugins: tip({
+        title: i => (i.length ? labels[i[0].dataIndex] : ''),
+        label: c => (c.parsed.y == null ? '' : c.datasetIndex === 0
+            ? `Cheapest ${arbSigned(c.parsed.y, 2, '%')} (${fmt(dollar[c.dataIndex], 2, '$')})` : `Avg dealer ${arbSigned(c.parsed.y, 2, '%')}`),
+        afterBody: i => (i.length ? `Silver ${fmt(spot[i[0].dataIndex], 2, '$')}` : ''),
+    }), scales: { x: xAxis, y: yAxis('%') } } });
+}
+
 async function loadArbitrageLedger() {
     try {
-        const json = await fetchJson(`${API_BASE}/api/arbitrage_history?limit=50`);
-        
-        if (json.status === 'success') {
-            window.arbData = json.data;
-            renderArbChart('price'); // Boot up in 'Spot vs Physical' view
-            log('Physical Arbitrage Ledger loaded.', 'success');
-        } else {
-            log(`Arb Ledger Error: ${json.message}`, 'error');
-        }
+        const json = await fetchJson(`${API_BASE}/api/arbitrage_history?limit=500`);
+        if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
+        window.arbData = json.data;
+        arbRenderHeader(json.data);
+        arbRenderBook(json.data.book);
+        renderArbChart(arbView);
+        log('Physical Arbitrage Ledger loaded.', 'success');
     } catch (e) {
-        log(`Arb Ledger Connection Failed: ${e.message}`, 'error');
+        log(`Arb Ledger Error: ${e.message}`, 'error');
+        window.arbData = null;
+        if (arbChartInstance) { arbChartInstance.destroy(); arbChartInstance = null; }
+        ppSet('arbFooter', `Could not load the premium history: ${e.message}`);
+        document.getElementById('arbFooter').className = 'text-[8px] text-red-400 leading-tight';
     }
 }
 
-// 2. Chart Renderer & Toggle Logic
+// Buttons call this with 'pct' | 'price' | 'flow'
 function renderArbChart(view) {
-    if (!window.arbData) return;
-    const data = window.arbData;
-
-    // Manage button active states
-    document.querySelectorAll('.arb-toggle').forEach(btn => btn.classList.remove('active'));
-    if (view === 'price') document.getElementById('btnArbPrice').classList.add('active');
-    if (view === 'pct') document.getElementById('btnArbPct').classList.add('active');
-    if (view === 'dollar') document.getElementById('btnArbDollar').classList.add('active');
-
-    const ctx = document.getElementById('arbChart').getContext('2d');
-    
-    // Destroy the old canvas instance before drawing the new one
-    if (arbChartInstance) {
-        arbChartInstance.destroy();
-    }
-
-    let datasets = [];
-    let yAxisFormat = '';
-
-    // Swap datasets based on user selection
-    if (view === 'price') {
-        yAxisFormat = '$';
-        datasets = [
-            {
-                label: 'Cheapest Eagle',
-                data: data.cheapest_price,
-                borderColor: '#38bdf8', // Light Blue
-                backgroundColor: 'rgba(56, 189, 248, 0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            },
-            {
-                label: 'Avg Eagle',
-                data: data.avg_price,
-                borderColor: '#818cf8', // Indigo
-                borderWidth: 1.5,
-                borderDash: [2, 2],
-                tension: 0.3,
-                pointRadius: 0
-            },
-            {
-                label: 'COMEX Spot',
-                data: data.spot,
-                borderColor: '#ffffff', // White dotted
-                borderWidth: 2,
-                borderDash: [5, 5],
-                tension: 0.3,
-                pointRadius: 0
-            }
-        ];
-    } else if (view === 'pct') {
-        yAxisFormat = '%';
-        datasets = [
-            {
-                label: 'Cheapest Prem %',
-                data: data.cheapest_pct,
-                borderColor: '#22c55e', // Neon Green
-                backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            },
-            {
-                label: 'Avg Prem %',
-                data: data.avg_pct,
-                borderColor: '#f97316', // Orange
-                borderWidth: 1.5,
-                tension: 0.3,
-                pointRadius: 0
-            }
-        ];
-    } else if (view === 'dollar') {
-        yAxisFormat = '$';
-        datasets = [
-            {
-                label: 'Cheapest Prem $',
-                data: data.cheapest_dollar,
-                borderColor: '#eab308', // Neon Yellow
-                backgroundColor: 'rgba(234, 179, 8, 0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            }
-        ];
-    }
-
-    // Initialize Chart
-    arbChartInstance = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: data.labels,
-            datasets: datasets
-        },
-        options: {
-            devicePixelRatio: 3,
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: {
-                mode: 'index',
-                intersect: false,
-            },
-            plugins: {
-                legend: {
-                    labels: { color: '#a1a1aa', boxWidth: 10, font: {size: 9} }
-                },
-                tooltip: {
-                    backgroundColor: 'rgba(9, 9, 11, 0.95)',
-                    titleColor: '#fff',
-                    bodyColor: '#a1a1aa',
-                    borderColor: '#27272a',
-                    borderWidth: 1,
-                    padding: 10,
-                    callbacks: {
-                        label: function(context) {
-                            let label = context.dataset.label || '';
-                            if (label) label += ': ';
-                            if (context.parsed.y !== null) {
-                                label += yAxisFormat === '$' ? '$' + context.parsed.y.toFixed(2) : context.parsed.y.toFixed(2) + '%';
-                            }
-                            return label;
-                        },
-                        // High-Density Injection: Appends all core data to the bottom of the tooltip
-                        afterBody: function(context) {
-                            let idx = context[0].dataIndex;
-                            return `\n-- TAPE --\nSpot: $${data.spot[idx]?.toFixed(2) || 'N/A'}\nEagle: $${data.cheapest_price[idx]?.toFixed(2) || 'N/A'}\nSpread: ${data.cheapest_pct[idx]?.toFixed(2) || 'N/A'}%`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: { display: false },
-                    ticks: { color: '#a1a1aa', font: { size: 9 }, maxTicksLimit: 6 }
-                },
-                y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { 
-                        color: '#a1a1aa', 
-                        font: { size: 9 },
-                        callback: function(value) {
-                            return yAxisFormat === '$' ? '$' + value : value + '%';
-                        }
-                    }
-                }
-            }
-        }
-    });
+    if (view) arbView = view;
+    document.querySelectorAll('.arb-view').forEach(b => b.classList.remove('active'));
+    document.getElementById({ pct: 'btnArbPct', price: 'btnArbPrice', flow: 'btnArbFlow' }[arbView]).classList.add('active');
+    document.querySelectorAll('.arb-range').forEach(b => b.classList.toggle('active', b.id === `btnArbR${arbRange}`));
+    if (window.arbData) arbDrawChart(window.arbData, arbView);
 }
+function arbSetRange(range) { arbRange = range; renderArbChart(); }
 
 // ==========================================
 // --- DARK POOL PROFILE ENGINE ---

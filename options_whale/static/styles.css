@@ -104,6 +104,17 @@ iframe { filter: contrast(1.1) brightness(0.9); }
 .war-ticks span:last-child { transform: translateX(-100%); }
 .war-ticks.uppercase span:first-child, .war-ticks.uppercase span:last-child { transform: translateX(-50%); }
 .war-factor { background: #09090b; border: 1px solid #27272a; border-radius: 4px; padding: 4px 6px; }
+.arb-chip { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid; border-radius: 3px; padding: 0 4px; }
+.arb-book { max-height: 132px; overflow: auto; }
+.arb-book table { width: 100%; border-collapse: collapse; font-size: 9px; font-variant-numeric: tabular-nums; }
+.arb-book th { position: sticky; top: 0; background: #000; font-size: 7px; text-transform: uppercase; letter-spacing: 0.08em; color: #52525b; font-weight: 400; text-align: right; padding: 1px 4px; }
+.arb-book td { padding: 1px 4px; text-align: right; white-space: nowrap; border-top: 1px solid #18181b; color: #d4d4d8; }
+.arb-book th:first-child, .arb-book td:first-child { text-align: left; width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.arb-book td.best { color: #fff; font-weight: 700; }
+.arb-book a:hover { color: #fff; }
+.arb-chart { height: 120px; }
+.fullscreen-mode .arb-book { max-height: none; }
+.fullscreen-mode .arb-chart { height: 40vh; }
 .war-lever-name { color: #a1a1aa; border-bottom: 1px dashed #52525b; padding-bottom: 1px; cursor: help; text-align: left; }
 .war-lever-name:hover { color: #fafafa; }
 .war-solo { font-size: 8px; color: #71717a; }
