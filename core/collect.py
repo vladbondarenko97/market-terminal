@@ -4,7 +4,6 @@ Collectors return data only; nothing in here writes ledgers, renders reports or 
 """
 import os
 import re
-import shutil
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -42,8 +41,12 @@ def _next_weekday(yyyymmdd):
 
 def _volume_files_held(conn, have_trade):
     """CME names daily_volume_YYYYMMDD after the publication date, which is the business day after the trade date
-    inside the file. Return the listing (file) dates already held: names of workbooks the lake captured, plus the
-    next weekday after each stored trade date (covers history whose original file name is unknown)."""
+    inside the file. Return the listing (file) dates already held, so none of them is downloaded again:
+    - the next weekday after each stored trade date (covers history whose original file name is unknown; a holiday
+      can shift CME's real date, which the next two sources catch after one download);
+    - the names of workbooks the lake captured (payload request or origin path);
+    - the names of files an earlier run downloaded successfully (the fetch log), even when the workbook was a
+      duplicate of content already stored under another name."""
     held = {_next_weekday(t) for t in have_trade}
     for request_json, origin_path, source_date in conn.execute(
             "SELECT request_json, origin_path, source_date FROM v2_payloads "
@@ -54,6 +57,11 @@ def _volume_files_held(conn, have_trade):
         # a local file may carry CME's name or our trade-dated archive name; only the former is a listing date
         m = re.search(r"daily_volume_(\d{8})\.xlsx", origin_path or "")
         if m and m.group(1) != (source_date or "")[:10].replace("-", ""):
+            held.add(m.group(1))
+    for (request_json,) in conn.execute("SELECT request_json FROM v2_fetch_log WHERE source = 'cme_volume' "
+                                        "AND outcome = 'ok'"):
+        m = re.search(r"daily_volume_(\d{8})\.xlsx", request_json or "")
+        if m:
             held.add(m.group(1))
     return held
 
@@ -93,7 +101,8 @@ def _archive_name(data_dir, stem, date_str, suffix, data):
 def acquire_cme(conn, session, run_id, data_dir, *, offline, use_browser=True, max_volume_files=10,
                 login_wait_seconds=900, notify=None):
     """Validated existing files -> one bounded request per official endpoint -> manual files in CME_Data.
-    Returns a per-source outcome dict. History lives in the lake either way."""
+    Returns a per-source outcome dict. History lives in the lake either way. `use_browser=False` keeps Chromium
+    closed for the whole acquisition: no volume listing, and the inventory workbook by plain HTTP only."""
     out = {}
     # 1. pick up manually downloaded / not yet imported workbooks (no network)
     rep = {"files": {"volume": 0, "inventory": 0}, "skipped_unchanged": 0, "invalid": [], "conflicts": []}
@@ -145,16 +154,20 @@ def acquire_cme(conn, session, run_id, data_dir, *, offline, use_browser=True, m
     if offline or max_volume_files <= 0:
         out["volume"] = {"outcome": "skipped",
                          "detail": "offline run: no CME request" if offline else "volume download not requested"}
+    elif not use_browser:
+        # the volume listing exists only in the logged-in browser: with --no-cme-browser it is not opened at all
+        out["volume"] = {"outcome": "skipped", "detail": "browser disabled (--no-cme-browser)"}
     else:
         have_trade = {r[0][:10].replace("-", "") for r in conn.execute(
             "SELECT DISTINCT observed_at FROM v2_observations WHERE metric_id = 'cme.ES_F.volume'")}
-        latest_have = max(have_trade) if have_trade else None
         have = _volume_files_held(conn, have_trade)
         started = lake.utc_now_iso()
         t0 = time.monotonic()
         session.calls["cme"] = session.calls.get("cme", 0) + 1
+        # every listed file the lake does not hold, newest first, at most max_volume_files (gaps older than the
+        # newest held trade date are filled too; `have` is what keeps held files from being fetched again)
         results, listing = cme.browser_fetch_volume_listing(
-            state_file, have, max_files=max_volume_files, earliest=latest_have,
+            state_file, have, max_files=max_volume_files,
             profile_dir=str(data_dir / ".cme_browser_profile"), login_wait_seconds=login_wait_seconds,
             username=config.CME_LOGIN_USERNAME, password=config.CME_LOGIN_PASSWORD, notify=notify)
         got, info = [], {"outcome": listing.get("outcome"), "detail": listing.get("detail"),

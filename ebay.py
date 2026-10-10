@@ -1,12 +1,10 @@
 import os
-from config import required_env
 import csv
-import json
 import base64
 from core.api_client import api_client
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 
 # --- CONFIGURATION ---
@@ -18,30 +16,8 @@ CERT_ID = EBAY_CERT_ID
 
 # --- 1. DYNAMIC SPOT PRICE INGESTION (TEXT PARSER) ---
 
-def find_latest_files(lookback_days=5):
-    today = datetime.now()
-    found_dash = None
-    found_tac = None
-
-    for i in range(lookback_days + 1):
-        check_date = today - timedelta(days=i)
-        folder_str = check_date.strftime("%b-%d-%y")
-        folder_path = os.path.join(DATA_DIR, folder_str)
-
-        dash_path = os.path.join(folder_path, "volume_dashboard.txt")
-        tac_path = os.path.join(folder_path, "tactical_ruling.txt")
-
-        if not found_dash and os.path.exists(dash_path) and os.path.getsize(dash_path) > 0:
-            found_dash = dash_path
-        if not found_tac and os.path.exists(tac_path) and os.path.getsize(tac_path) > 0:
-            found_tac = tac_path
-        if found_dash and found_tac:
-            break
-
-    return found_dash, found_tac
-
 def get_live_spot_price():
-    """Benchmark = SI=F. Prefer the latest committed v2 snapshot (same run as the report); otherwise a live
+    """Benchmark = SI=F (BENCHMARK_SYMBOL). Prefer the latest committed v2 snapshot (same run as the report); otherwise a live
     Yahoo quote. Returns None when unavailable: premiums are then reported as unavailable, never guessed."""
     try:
         from core import lake
@@ -64,6 +40,10 @@ def get_live_spot_price():
     return None
 
 
+# Historical name: this holds the benchmark price, the silver FUTURES price (SI=F), not a COMEX spot quote. The XML
+# attribute `comex_spot` and the ledger column `COMEX_Spot` keep the name for compatibility; the XML root also
+# carries `benchmark_symbol` so readers can tell what it is.
+BENCHMARK_SYMBOL = "SI=F"
 COMEX_SPOT = None
 
 # --- 2. EBAY API ENGINE ---
@@ -244,6 +224,7 @@ if __name__ == "__main__":
     # Build XML Root for the terminal
     root = ET.Element("physical_arbitrage", 
                       comex_spot=f"${COMEX_SPOT:.2f}" if COMEX_SPOT else "unavailable", 
+                      benchmark_symbol=BENCHMARK_SYMBOL,
                       timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                       item_count=str(len(scraped_data)))
 

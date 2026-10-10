@@ -3,7 +3,7 @@ import io
 import re
 import time
 import warnings
-from datetime import datetime, date
+from datetime import date
 
 import pandas as pd
 
@@ -13,10 +13,6 @@ PARSER_VERSION_INVENTORY = "inventory_v2"
 PARSER_VERSION_VOLUME = "volume_v2"
 
 SILVER_STOCKS_URL = "https://www.cmegroup.com/delivery_reports/Silver_stocks.xls"
-VOLUME_LATEST_URL = "https://www.cmegroup.com/ftp/daily_volume/daily_volume.xlsx"
-VOLUME_ARCHIVE_URL = "https://www.cmegroup.com/ftp/daily_volume/daily_volume_{yyyymmdd}.xlsx"
-
-TROY_OZ_PER_CONTRACT = {"SI": 5000, "SIL": 1000}
 
 # Products used by the dashboard. Matched first by legacy description, then by code + F/O + side.
 TARGET_PRODUCTS = {
@@ -526,10 +522,20 @@ def _download(page, url, timeout_ms=30000):
         page.remove_listener("response", on_resp)
 
 
+def pick_volume_files(listed, have_dates, max_files, earliest=None):
+    """Listing (file) dates to download: every listed date not in `have_dates`, newest first, at most `max_files`
+    (and not before `earliest`, when given)."""
+    return sorted((d for d in listed if d not in have_dates and (earliest is None or d >= earliest)),
+                  reverse=True)[:max_files]
+
+
 def browser_fetch_volume_listing(state_file, have_dates, *, max_files=10, earliest=None, profile_dir=None,
                                  login_wait_seconds=900, username="", password="", notify=None):
-    """Read the FTP listing in the persistent logged-in browser and download the newest files whose trade dates
-    are not in the lake (bounded). If CME refuses (login error), pause once for the operator to log in, then
+    """Read the FTP listing in the persistent logged-in browser and download the newest files the lake does not
+    hold (bounded). `have_dates` is the set of listing (file) dates already held, as built by
+    `collect._volume_files_held`; every other listed date is a candidate, newest first, at most `max_files`, so
+    gaps older than the newest held date are filled too. `earliest` (a listing date, yyyymmdd) is an optional lower
+    bound; the pipeline passes none. If CME refuses (login error), pause once for the operator to log in, then
     retry. Returns (results: list of (yyyymmdd, AcquisitionResult), listing_info)."""
     import os
     from playwright.sync_api import sync_playwright
@@ -545,8 +551,7 @@ def browser_fetch_volume_listing(state_file, have_dates, *, max_files=10, earlie
             files = _listing_files(page)
             if not files:
                 return [], {"outcome": "unavailable", "detail": "FTP listing had no daily_volume files"}
-            wanted = sorted((d for d in files if d not in have_dates and (earliest is None or d >= earliest)),
-                            reverse=True)[:max_files]
+            wanted = pick_volume_files(files, have_dates, max_files, earliest)
             info = {"outcome": "ok", "listing_latest": max(files), "requested": wanted, "login_prompted": False}
             pending = list(wanted)
             while pending:

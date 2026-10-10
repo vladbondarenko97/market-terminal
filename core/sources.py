@@ -43,6 +43,12 @@ class SourceSession:
         with self._guard:
             table[provider] = table.get(provider, 0) + 1
 
+    def _semaphore(self, provider):
+        """The concurrency limit for a provider. One that is not in PROVIDER_LIMITS shares a single default
+        Semaphore(1), created on first use, so its requests are bounded like the listed providers' are."""
+        with self._guard:
+            return self._sem.setdefault(provider, threading.Semaphore(1))
+
     def fetch(self, provider, request, fn, *, kind, fmt, capture, source_date=None):
         """fn() -> result. capture(result) -> (bytes, parsed_or_None, coverage_or_None).
         Returns (result, payload_id)."""
@@ -63,7 +69,7 @@ class SourceSession:
             started = lake.utc_now_iso()
             t0 = time.monotonic()
             self._count(self.calls, provider)
-            with self._sem.get(provider, threading.Semaphore(1)):
+            with self._semaphore(provider):
                 try:
                     result = fn()
                 except Exception as e:
@@ -414,7 +420,7 @@ def ishares_slv(s):
         d = re.search(r'"formattedAsOfDate":"([^"]+)"', t[m.end():m.end() + 600])
         return float(m.group(1).replace(",", "")), (d.group(1) if d else None)
     oz, oz_date = field("Ounces in Trust")
-    prem, prem_date = field("Premium/Discount")
+    prem, _ = field("Premium/Discount")
     if oz is None:
         raise SourceUnavailable("ishares", "parse", "ounces in trust not found")
     from datetime import datetime as _dt

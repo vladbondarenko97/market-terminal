@@ -13,7 +13,8 @@ LABEL="com.vlad.optionswhale"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 LOG="$HOME/Library/Logs/optionswhale.log"
-PORT=$(sed -n 's/^OPTIONS_WHALE_PORT=\([0-9][0-9]*\).*/\1/p' "$ROOT/.env" 2>/dev/null | tail -1)
+# Same reading as setup.sh and config.py: a blank or missing OPTIONS_WHALE_PORT means 8080.
+PORT=$(sed -nE "s/^(export +)?OPTIONS_WHALE_PORT *= *[\"']?([0-9]+).*/\2/p" "$ROOT/.env" 2>/dev/null | tail -1)
 PORT="${PORT:-8080}"
 
 case "$1" in

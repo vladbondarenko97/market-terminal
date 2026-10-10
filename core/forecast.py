@@ -1,4 +1,5 @@
-"""Forecast Lab: nine institutional-style models for SPY / SLV at 1 day, 1 week, 1 month and 1 year.
+"""Forecast Lab cards 1-9: institutional-style models for SPY / SLV at 1 day, 1 week, 1 month and 1 year.
+(Cards 10 and 11, diesel & refining and EIA inventories, are built in core/refining.py; the terminal shows all 11.)
 
 Every model consumes data the run already captured (option chains, daily OHLC, FRED, CFTC, iShares, Fed calendar);
 nothing here makes network requests. Outputs are plain dicts stored in the committed snapshot (ctx["forecast"]).
@@ -446,6 +447,10 @@ def positioning(silver_rows, sp_rows, slv_trust, slv_history, si_close, spy_clos
             t["change_30d_oz"] = t["ounces_in_trust"] - m30[-1][1]
         t["history"] = hist[-120:]
     out["slv_trust"] = t
+    if out["silver"].get("status") == "missing" and out["sp500"].get("status") == "missing" and not t.get("ounces_in_trust"):
+        # nothing to show: say so at the top level too (the empty groups stay so the card can print their reasons)
+        out["status"] = "missing"
+        out["reason"] = (f"{out['silver']['reason']}; {out['sp500']['reason']}; SLV trust ounces unavailable")
     return out
 
 
@@ -715,7 +720,7 @@ def build(inputs):
         gx = inputs["gex"].get(sym) or {}
         levels = {"call_wall": gx.get("call_wall"), "put_wall": gx.get("put_wall"), "zero_gamma": gx.get("zero_gamma")}
         closes = _closes(fr.get(key))
-        prior = closes[closes.index.date < today]
+        prior = closes[closes.index.date < today] if len(closes) else closes   # no history: nothing before today
         imp = implied_distribution(inputs["chains"].get(sym) or {}, spot, today, levels,
                                    prior_spot=float(prior.iloc[-1]) if len(prior) else None)
         vol = vol_forecast(fr.get(key), imp, spot)
@@ -812,8 +817,9 @@ def record_forecasts(conn, ctx):
 
 
 def scorecard(conn, closes_fn, symbol):
-    """Grade logged forecasts whose target date has passed. closes_fn(sym) -> daily close Series (naive index)."""
-    conn.execute(SCORE_DDL)
+    """Grade logged forecasts whose target date has passed. closes_fn(sym) -> daily close Series (naive index).
+    Read-only: it runs no DDL, so `conn` may be a `lake.connect_readonly()` connection. `v2_forecasts` is created by
+    the pipeline's `lake.migrate()`; before the first run this raises sqlite3.OperationalError (no such table)."""
     rows = [dict(r) for r in conn.execute("SELECT * FROM v2_forecasts WHERE symbol = ? ORDER BY created_at", (symbol,))]
     rows = list({(r["created_at"][:10], r["model"], r["horizon"]): r for r in rows}.values())    # one forecast a day: its last run
     c = closes_fn(symbol)

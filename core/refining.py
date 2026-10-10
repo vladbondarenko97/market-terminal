@@ -30,8 +30,6 @@ INVENTORY_LINES = [("crude_stocks", "Crude (commercial)"), ("dist_stocks", "Dist
                    ("propane_stocks", "Propane / propylene"), ("resid_stocks", "Residual fuel oil")]
 # days of supply = stocks / 4-week average of this flow (products: demand; crude: refinery crude runs, as EIA defines it)
 DEMAND_FOR = {"crude_stocks": "crude_runs", "dist_stocks": "dist_supplied", "gas_stocks": "gas_supplied", "jet_stocks": "jet_supplied"}
-PADD_NAMES = {"util_p1": "East Coast (PADD 1)", "util_p2": "Midwest (PADD 2)", "util_p3": "Gulf Coast (PADD 3)",
-              "util_p4": "Rockies (PADD 4)", "util_p5": "West Coast (PADD 5)"}
 
 
 def _f(x):
@@ -109,8 +107,12 @@ def _same_week_stats(s, years=5):
             "vs_avg_5y_pct": (last / float(np.mean(vals)) - 1) * 100, "change_1w": last - float(s.iloc[-2]) if len(s) > 1 else None}
 
 
+def _has(s):
+    return s is not None and len(s) > 0
+
+
 def eia_fundamentals(series):
-    if series.get("util_us") is None and series.get("dist_stocks") is None:
+    if not _has(series.get("util_us")) and not _has(series.get("dist_stocks")):
         return {"status": "missing", "reason": "EIA weekly data unavailable"}
     out = {"status": "fresh", "source": "EIA Weekly Petroleum Status Report (public history files)"}
     for k in EIA_SERIES:
@@ -118,7 +120,7 @@ def eia_fundamentals(series):
         if s is not None and len(s) > 60:
             out[k] = _same_week_stats(s)
     ds, sup = series.get("dist_stocks"), series.get("dist_supplied")
-    if ds is not None and sup is not None and len(sup) > 4:
+    if _has(ds) and sup is not None and len(sup) > 4:
         dem4 = float(sup.tail(4).mean())
         out["distillate_days_of_supply"] = float(ds.iloc[-1]) / dem4 if dem4 else None
         out["distillate_demand_4w_avg"] = dem4

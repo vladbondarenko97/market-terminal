@@ -1065,7 +1065,7 @@ def _v(x, rnd=None, na="N/A"):
 
 
 def ledger_rows(ctx):
-    P, local = ctx["prices"], ctx["run"]["generated_local"]
+    P = ctx["prices"]
     ts_min = datetime.fromisoformat(ctx["run"]["generated_at"]).astimezone(
         __import__("zoneinfo").ZoneInfo("America/Chicago"))
     stamp = ts_min.strftime("%Y-%m-%d %H:%M")
@@ -1098,6 +1098,9 @@ def ledger_rows(ctx):
         "SPY_Daily_Pct": _v(pct.get("SPY"), 2), "RSP_Daily_Pct": _v(pct.get("RSP"), 2),
         "NVDA_Pct": _v(pct.get("NVDA"), 2), "AAPL_Pct": _v(pct.get("AAPL"), 2), "MSFT_Pct": _v(pct.get("MSFT"), 2)}]
     vm, sh, m, pp, eb = ctx["vmri"], ctx["shanghai"], ctx["macro"], ctx["paper_physical"], ctx["ebay"]
+    # GEX: SPY net dealer gamma, USD of delta change per $1 move (the same figure as institutional_ledger.Net_Gamma);
+    # empty when the run could not compute it. DIX has no data source and stays empty.
+    net_gex = gx.get("net_gex") if gx.get("status") == "fresh" else None
     rows["macro_master_ledger"] = [{
         "Datetime": stamp, "VMRI_Score": vm.get("score"), "Threat_Tier": vm.get("tier"),
         "DXY": g(P, "dxy", "value"), "DXY_Change": g(P, "dxy", "change"), "10Y_Yield": g(P, "tnx", "value"),
@@ -1105,7 +1108,7 @@ def ledger_rows(ctx):
         "VIX_Change": g(P, "vix", "change"), "WTI_Crude": g(P, "wti", "value"), "Brent_Crude": g(P, "brent", "value"),
         "Gold_Price": g(P, "gold", "value"), "Gold_Silver_Ratio": ctx["ratios"].get("gold_silver"),
         "SHFE_Silver_USD": sh.get("usd_per_oz"), "COMEX_Silver": g(P, "silver_futures", "value"),
-        "SHFE_Premium": sh.get("premium_tax_adj"), "GEX": None, "DIX": None,
+        "SHFE_Premium": sh.get("premium_tax_adj"), "GEX": net_gex, "DIX": None,
         "Reverse_Repo_BN": m["rrp"].get("latest"), "Fed_Balance_Sheet_BN": m["walcl"].get("latest"),
         "Retail_Silver_Cheapest": eb.get("cheapest"), "Retail_Silver_Avg": eb.get("average"),
         "Silver_OI": pp.get("paper_claims_oz") / 5000 if pp.get("paper_claims_oz") else None,

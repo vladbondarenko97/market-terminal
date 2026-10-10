@@ -1,7 +1,6 @@
 """Compatibility renderer: tactical_ruling.txt from the latest committed v2 snapshot.
 
 Collection now happens once per run in main_pipeline.py (core/collect.py); this module no longer fetches data.
-The legacy implementation is in git history (main branch) for rollback.
 """
 import sys
 
@@ -17,13 +16,6 @@ def _latest_ctx():
     if ctx is None:
         raise RuntimeError("No committed v2 snapshot yet. Run: python main_pipeline.py run")
     return ctx
-
-
-def calculate_vmri(dxy, tnx, oas, vix):
-    """Legacy signature kept; formula owned by core.metrics (vmri_v1)."""
-    from core.metrics import vmri
-    r = vmri(dxy, tnx, oas, vix)
-    return r["score"], r["tier"]
 
 
 def print_tactical_ruling(inventory_df=None):

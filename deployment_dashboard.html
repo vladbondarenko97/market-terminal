@@ -180,23 +180,23 @@
             
             <div class="data-block">
                 <div class="data-label">Bucket A (Base Layer)</div>
-                <div class="data-value" id="bucket-a">$0.00</div>
+                <div class="data-value" id="bucket-a">—</div>
             </div>
             
             <div class="metric-group">
                 <div class="data-block">
                     <div class="data-label">Bucket B (Velocity)</div>
-                    <div class="data-value sub" id="bucket-b">$0.00</div>
+                    <div class="data-value sub" id="bucket-b">—</div>
                 </div>
                 <div class="data-block">
                     <div class="data-label">Active Capital at Risk</div>
-                    <div class="data-value sub" id="capital-risk">$0.00</div>
+                    <div class="data-value sub" id="capital-risk">—</div>
                 </div>
             </div>
 
             <div class="data-block" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border-subtle);">
                 <div class="data-label">VMRI Apex Score</div>
-                <div class="data-value sub" id="vmri-score" style="font-family: monospace;">---</div>
+                <div class="data-value sub" id="vmri-score" style="font-family: monospace;">—</div>
             </div>
         </div>
 
@@ -224,18 +224,28 @@
 
     </div>
 
+    <div class="panel" id="missing-panel" style="margin-top: 24px; display: none;">
+        <div class="panel-header">Missing inputs (shown as —)</div>
+        <div id="missing-list"></div>
+    </div>
+
         <!-- Payload loaded as JS variable for local file:// compatibility -->
         <script src="deployment_payload.js"></script>
         
         <script>
         // Formatting helper
+        // A value the engine could not read or compute arrives as null; it shows as a dash, never as a number.
+        const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
         const formatCurrency = (num) => {
+            if (!isNum(num)) return '—';
             return new Intl.NumberFormat('en-US', {
                 style: 'currency',
                 currency: 'USD',
                 minimumFractionDigits: 2
             }).format(num);
         };
+        const show = (v) => (v === null || v === undefined || v === '') ? '—' : String(v);
+        const esc = (v) => show(v).replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 
         async function loadDashboard() {
             try {
@@ -253,23 +263,26 @@
                 document.getElementById('bucket-a').textContent = formatCurrency(data.liquidity.bucket_A_total);
                 document.getElementById('bucket-b').textContent = formatCurrency(data.liquidity.bucket_B_total);
                 document.getElementById('capital-risk').textContent = formatCurrency(data.liquidity.capital_at_risk);
-                document.getElementById('vmri-score').textContent = data.vmri;
+                document.getElementById('vmri-score').textContent = isNum(data.vmri) ? data.vmri : '—';
+                const missing = data.missing || {};
 
                 // Update Module 2: Scanner
                 const scannerList = document.getElementById('scanner-list');
                 scannerList.innerHTML = ''; // clear
-                if (data.scanner_output.length === 0) {
+                const setups = Array.isArray(data.scanner_output) ? data.scanner_output : [];
+                if (setups.length === 0) {
                     scannerList.innerHTML = `<div class="data-row"><span class="row-desc">No high-edge setups flagged today.</span></div>`;
                 } else {
-                    data.scanner_output.forEach((setup, index) => {
+                    setups.forEach((setup, index) => {
+                        const size = isNum(setup.suggested_allocation_pct) ? `${setup.suggested_allocation_pct}%` : '—';
                         scannerList.innerHTML += `
                             <div class="data-row">
                                 <div>
-                                    <div class="row-title">${index + 1}. ${setup.asset} <span class="metric-pill">${setup.type}</span></div>
-                                    <div class="row-desc">${setup.description}</div>
+                                    <div class="row-title">${index + 1}. ${esc(setup.asset)} <span class="metric-pill">${esc(setup.type)}</span></div>
+                                    <div class="row-desc">${esc(setup.description)}</div>
                                 </div>
                                 <div class="row-metric">
-                                    Size: ${setup.suggested_allocation_pct}%<br>
+                                    Size: ${size}<br>
                                     <span style="color: var(--text-secondary);">${formatCurrency(setup.suggested_capital)}</span>
                                 </div>
                             </div>
@@ -280,22 +293,34 @@
                 // Update Module 3: EV
                 const evList = document.getElementById('ev-list');
                 evList.innerHTML = ''; // clear
-                if (data.active_trades_ev.length === 0) {
+                const trades = Array.isArray(data.active_trades_ev) ? data.active_trades_ev : null;
+                if (trades === null) {
+                    // Not an empty list: the engine does not know the active deployments.
+                    evList.innerHTML = `<div class="data-row"><span class="row-desc">Active deployments unknown: ${esc(missing.active_trades || missing.state)}</span></div>`;
+                } else if (trades.length === 0) {
                     evList.innerHTML = `<div class="data-row"><span class="row-desc">No active deployments.</span></div>`;
                 } else {
-                    data.active_trades_ev.forEach(trade => {
-                        const statusClass = trade.status.includes('Positive') ? 'status-positive' : 'status-negative';
+                    trades.forEach(trade => {
+                        const status = typeof trade.status === 'string' ? trade.status : null;
+                        const statusClass = status === null ? '' : (status.includes('Positive') ? 'status-positive' : (status.includes('Negative') ? 'status-negative' : ''));
                         evList.innerHTML += `
                             <div class="data-row">
-                                <div class="row-title">${trade.trade}</div>
+                                <div class="row-title">${esc(trade.trade)}</div>
                                 <div class="row-metric">
-                                    <span class="${statusClass}">${trade.status}</span>
-                                    <span class="metric-pill ${statusClass}">${trade.current_ev}</span>
+                                    <span class="${statusClass}">${esc(status)}</span>
+                                    <span class="metric-pill ${statusClass}">${esc(trade.current_ev)}</span>
                                 </div>
                             </div>
                         `;
                     });
                 }
+
+                // Every missing input with its reason, so a dash is never a mystery.
+                const missingPanel = document.getElementById('missing-panel');
+                const reasons = Object.entries(missing);
+                missingPanel.style.display = reasons.length ? 'block' : 'none';
+                document.getElementById('missing-list').innerHTML = reasons.map(([field, reason]) =>
+                    `<div class="data-row"><span class="row-title">${esc(field)}</span><span class="row-desc">${esc(reason)}</span></div>`).join('');
 
             } catch (error) {
                 console.error("Failed to load payload:", error);

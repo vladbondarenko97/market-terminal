@@ -1,46 +1,49 @@
-import sys
-import pandas as pd
-from flask import Flask, jsonify, render_template_string, Response, request, render_template
-from flask_cors import CORS # Add this
-import yfinance as yf
-import pandas as pd
-from datetime import datetime, timedelta
-import xml.etree.ElementTree as ET
-from xml.dom import minidom
-import requests
-import warnings
-import subprocess
+import functools
+import json
+import math
 import os
 import re
-from urllib.parse import urlparse
-import random
-import math
+import sqlite3
+import subprocess
+import sys
+import threading
 import time
+import warnings
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
+from xml.dom import minidom
+from xml.sax.saxutils import escape as xml_escape
+
 import databento as db
 import numpy as np
+import pandas as pd
+import requests
+import yfinance as yf
+from flask import Flask, jsonify, render_template_string, Response, request, render_template
+from werkzeug.exceptions import HTTPException
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from config import required_env, DATA_DIR as _DATA_DIR, PROJECT_ROOT as _PROJECT_ROOT
-from scipy.stats import norm
-from playwright.sync_api import sync_playwright
+import config
+from config import DATA_DIR as _DATA_DIR, DB_PATH as _V2_DB_PATH, PROJECT_ROOT as _PROJECT_ROOT
+from core import forecast as _v2fc, lake as _v2lake, metrics, positions as _v2pos, runlock
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from quant_engine import QuantEngine
 
 
-PYTHON_BIN = "/usr/local/Caskroom/miniconda/base/bin/python3"
+PYTHON_BIN = sys.executable   # subprocess routes use the server's own interpreter (the project .venv)
 RUN_COMMAND = str(_PROJECT_ROOT / "run_dashboard.command")
-
-OPTIONS_SCRIPT = str(_PROJECT_ROOT / "options_scanner.py")
-EBAY_SCRIPT_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ebay.py'))
-
-INVENTORY_CSV = str(_DATA_DIR / "comex_inventory_history.csv")
-LEDGER_CSV = str(_DATA_DIR / "macro_master_ledger.csv")
+EBAY_SCRIPT_PATH = str(_PROJECT_ROOT / "ebay.py")
 
 DATA_DIR = str(_DATA_DIR)
+INVENTORY_CSV = os.path.join(DATA_DIR, "comex_inventory_history.csv")
+LEDGER_CSV = os.path.join(DATA_DIR, "macro_master_ledger.csv")
 LEDGER_FILE = os.path.join(DATA_DIR, "physical_arbitrage_ledger.csv")
+INSTITUTIONAL_LEDGER_CSV = os.path.join(DATA_DIR, "equities_darkpool_gex_ledger.csv")
+MANUAL_RUN_LOG = os.path.join(DATA_DIR, ".v2_manual_run.log")        # output of runs started by POST /run
 
 analyzer = SentimentIntensityAnalyzer()
 quant = QuantEngine(LEDGER_CSV)
@@ -72,7 +75,7 @@ class DataCache:
         except Exception as e:
             print(f"Cache load error for {file_path}: {e}")
             return pd.DataFrame()
-            
+
     def get(self, key):
         current_time = time.time()
         if key in self.cache:
@@ -100,15 +103,16 @@ def add_header(response):
     return response
 
 
-# Other origins may read GET data, but never change state: a DELETE/POST preflight from another site fails.
-CORS(app, methods=["GET", "HEAD", "OPTIONS"])
+# No CORS: the terminal is served by this app, so its pages only ever call it from the same origin, and other
+# sites must not be able to read the data.
 
 
 @app.before_request
 def reject_cross_site_writes():
     """The server has no login, so a page on any other site must not be able to make a browser send it a
-    state-changing request (start a run, star/stop a position). Browsers attach Origin (or at least Referer)
-    to such requests; refuse when it names a different host than the one being served."""
+    state-changing request (start a run, scan eBay, star/stop a position). Browsers attach Origin (or at least
+    Referer) to such requests; refuse when it names a different host than the one being served. Every route
+    that writes or starts a process is POST or DELETE, so this covers them all."""
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
     source = request.headers.get("Origin") or request.headers.get("Referer")
@@ -116,453 +120,327 @@ def reject_cross_site_writes():
         return jsonify({"status": "error", "message": "cross-site request refused"}), 403
     return None
 
-# --- CONFIGURATION ---
-from config import NTFY_URL          # phone alerts; empty = off
 
 # ==========================================
-# 1. MATH & LOGIC FILTERS
+# ERRORS AND REQUEST PARAMETERS
 # ==========================================
-def is_out_of_the_money(opt_type, strike, underlying_price):
-    """Deep ITM options are usually hedges. We want directional OTM bets."""
-    if opt_type == 'call':
-        return strike > underlying_price
-    elif opt_type == 'put':
-        return strike < underlying_price
-    return False
+# Failures answer with a real 4xx/5xx status and a short message. Exception text, tracebacks and subprocess output
+# go to the server log (stderr), never to the client.
+def json_error(message, status):
+    return jsonify({"status": "error", "message": message}), status
 
-def calculate_vol_oi_ratio(volume, open_interest):
-    """Finds 'New Blood'. If Volume > OI, new positions are opening live."""
-    if pd.isna(volume) or volume <= 0:
-        return 0.0
-    if pd.isna(open_interest) or open_interest == 0:
-        return 999.0 # Brand new strike being swept
-    return round(volume / open_interest, 2)
 
-def calculate_premium_spent(volume, last_price):
-    """Calculates the estimated dollar value of the sweep."""
-    if pd.isna(volume) or pd.isna(last_price):
-        return 0.0
-    return volume * last_price * 100 # Options represent 100 shares
+def xml_error(message, status):
+    return Response(f"<error>{xml_escape(message)}</error>", mimetype='application/xml', status=status)
 
-# ==========================================
-# 2. DATA HARVESTING ENGINE
-# ==========================================
-def get_current_price(ticker_symbol):
-    """Fetches the live underlying stock price."""
-    ticker = yf.Ticker(ticker_symbol)
-    todays_data = ticker.history(period='1d')
-    if todays_data.empty:
-        raise ValueError(f"Could not fetch live price for {ticker_symbol}.")
-    return todays_data['Close'].iloc[0]
 
-def get_chains(ticker_symbol, max_days_out=None):
-    """Fetches options chains. If max_days_out is None, fetches EVERYTHING."""
-    ticker = yf.Ticker(ticker_symbol)
-    expirations = ticker.options
-    if not expirations:
-        return pd.DataFrame()
+class ApiError(Exception):
+    """Raised anywhere in a request to answer with a short error: JSON by default, `<error>` XML for XML routes."""
+    def __init__(self, message, status=400, xml=False):
+        super().__init__(message)
+        self.message, self.status, self.xml = message, status, xml
 
-    today = datetime.now()
-    valid_chains = []
 
-    for exp in expirations:
-        exp_date = datetime.strptime(exp, "%Y-%m-%d")
-        days_to_exp = (exp_date - today).days
-        
-        # Filter by days out if a limit is set
-        if max_days_out is None or (0 <= days_to_exp <= max_days_out):
+@app.errorhandler(ApiError)
+def _handle_api_error(exc):
+    return xml_error(exc.message, exc.status) if exc.xml else json_error(exc.message, exc.status)
+
+
+@app.errorhandler(HTTPException)
+def _handle_http_error(exc):
+    """Unknown route, wrong method and similar: JSON with the right status for the API, Flask's page elsewhere."""
+    if not (request.path.startswith("/api/") or request.path == "/run"):
+        return exc
+    response = exc.get_response()
+    response.set_data(json.dumps({"status": "error", "message": exc.name}))
+    response.content_type = "application/json"
+    return response
+
+
+@app.errorhandler(Exception)
+def _handle_unexpected_error(exc):
+    app.logger.error("Unhandled error on %s %s: %s", request.method, request.path, exc, exc_info=exc)
+    return json_error("internal error (see the server log)", 500)
+
+
+def guarded(what, status=500, xml=False):
+    """Route decorator: an unexpected exception is logged in full and answered with a short message.
+    `status` is 502 for routes whose work is a provider call (Yahoo, Databento), else 500."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def inner(*args, **kwargs):
             try:
-                chain = ticker.option_chain(exp)
-                chain.calls['expiration'] = exp
-                chain.calls['type'] = 'call'
-                chain.puts['expiration'] = exp
-                chain.puts['type'] = 'put'
-                valid_chains.append(chain.calls)
-                valid_chains.append(chain.puts)
-            except Exception:
-                continue
+                return fn(*args, **kwargs)
+            except (ApiError, HTTPException):
+                raise
+            except Exception as exc:
+                app.logger.error("%s failed on %s: %s", what, request.path, exc, exc_info=exc)
+                message = f"{what} failed (see the server log)"
+                return xml_error(message, status) if xml else json_error(message, status)
+        return inner
+    return decorate
 
-    if not valid_chains:
-        return pd.DataFrame()
-    return pd.concat(valid_chains, ignore_index=True)
 
-# ==========================================
-# 3. NOTIFICATION DISPATCHER
-# ==========================================
-def send_whale_alert(ticker, contract, time_context):
-    """Pushes a high-priority alert to the iPhone."""
-    emoji = "🔥 CALL" if contract['type'] == 'call' else "🩸 PUT"
-    title = f"{ticker} {time_context} WHALE |"
-    body = (
-        f"${emoji}: \n",
-        f"Strike: ${contract['strike']} | Exp: {contract['expiration']}\n"
-        f"Volume: {contract['volume']:,} vs OI: {contract['open_interest']:,}\n"
-        f"Vol/OI Ratio: {contract['vol_oi_ratio']}x\n"
-        f"Est. Premium: ${contract['premium_spent']:,.2f}"
-    )
-    headers = {
-        "Title": title,
-        "Priority": "high",
-        "Tags": "whale,rotating_light"
-    }
-    if not NTFY_URL:
-        return
+TICKER_RE = re.compile(r'^[A-Z0-9][A-Z0-9.^=\-]{0,14}$')
+
+
+def ticker_arg(default='SPY', xml=False):
+    ticker = (request.args.get('ticker') or default).strip().upper()
+    if not TICKER_RE.match(ticker):
+        raise ApiError("ticker is not a valid symbol", 400, xml)
+    return ticker
+
+
+def int_arg(name, default, minimum=1, xml=False, blank=None):
+    """Integer query parameter. A missing value gives `default`; an empty one gives `blank` (default: `default`)."""
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    if raw.strip() == '':
+        return default if blank is None else blank
     try:
-        requests.post(NTFY_URL, data=body.encode('utf-8'), headers=headers)
-        print(f"Alert sent for {contract['symbol']}")
-    except Exception as e:
-        print(f"Failed to send alert: {e}")
+        value = int(raw)
+    except ValueError:
+        raise ApiError(f"{name} must be an integer", 400, xml)
+    if minimum is not None and value < minimum:
+        raise ApiError(f"{name} must be at least {minimum}", 400, xml)
+    return value
+
+
+def float_arg(name, default, minimum=None, xml=False):
+    """Finite number query parameter. A missing or empty value gives `default`."""
+    raw = request.args.get(name)
+    if raw is None or raw.strip() == '':
+        return default
+    value = finite_float(raw, name, xml)
+    if minimum is not None and value < minimum:
+        raise ApiError(f"{name} must be at least {minimum}", 400, xml)
+    return value
+
+
+def finite_float(raw, name, xml=False):
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ApiError(f"{name} must be a number", 400, xml)
+    if not math.isfinite(value):
+        raise ApiError(f"{name} must be a finite number", 400, xml)
+    return value
+
+
+def _num(value):
+    """A finite float, or None for None, NaN, infinity and anything that is not a number."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _json_safe(obj):
+    """Replace NaN and infinity with None (they are not valid JSON) and numpy scalars with Python numbers."""
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.generic):
+        obj = obj.item()
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
+
+
+def _live_spot(tk):
+    """Latest close from Yahoo (the live price during the session), or None when it cannot be fetched."""
+    try:
+        closes = tk.history(period='5d')['Close'].dropna()
+    except Exception as exc:
+        app.logger.warning("spot price request failed: %s", exc)
+        return None
+    return _num(closes.iloc[-1]) if len(closes) else None
+
 
 # ==========================================
-# 4. STRATEGY EXECUTORS
+# DAILY RUN FOLDERS
 # ==========================================
-def execute_morning_hunt(ticker):
-    """8:31 AM LOGIC: Short DTE, High Urgency, >$100k Premium"""
-    print(f"Executing Morning Hunt for {ticker}...")
-    current_price = get_current_price(ticker)
-    df = get_chains(ticker, max_days_out=14)
-    
-    if df.empty: return []
-    whales_caught = []
+def _run_folders():
+    """Daily run folders of the data directory, newest first by the date in the name.
 
-    for index, row in df.iterrows():
-        # Grab all the standard and new data points
-        opt_type = row['type']
-        strike = row['strike']
-        vol = row['volume']
-        oi = row['openInterest']
-        last_price = row['lastPrice']
-        bid = row['bid']
-        ask = row['ask']
-        iv = row.get('impliedVolatility', 0.0) # Safe extraction
+    Only folders named like `Sep-29-26` (`config.RUN_FOLDER_FORMAT`) count; the browser profile, the rejected
+    downloads and every other subfolder are ignored. Returns None when the data directory does not exist."""
+    try:
+        names = os.listdir(DATA_DIR)
+    except OSError:
+        return None
+    found = []
+    for name in names:
+        path = os.path.join(DATA_DIR, name)
+        if not os.path.isdir(path):
+            continue
+        try:
+            day = datetime.strptime(name, config.RUN_FOLDER_FORMAT)
+        except ValueError:
+            continue
+        found.append((day, path))
+    found.sort(reverse=True)
+    return [path for _, path in found]
 
-        if not is_out_of_the_money(opt_type, strike, current_price): continue
-        
-        ratio = calculate_vol_oi_ratio(vol, oi)
-        if ratio < 1.5: continue
-        
-        premium = calculate_premium_spent(vol, last_price)
-        if premium < 100000: continue
-
-        # Build the expanded dictionary
-        whale_data = {
-            "symbol": row['contractSymbol'], 
-            "type": opt_type, 
-            "expiration": row['expiration'],
-            "strike": strike, 
-            "volume": int(vol), 
-            "open_interest": int(oi),
-            "vol_oi_ratio": ratio, 
-            "premium_spent": premium,
-            "last_price": last_price,
-            "bid": bid,
-            "ask": ask,
-            "iv": iv
-        }
-        whales_caught.append(whale_data)
-        send_whale_alert(ticker, whale_data, "🌅 MORNING")
-
-    return sorted(whales_caught, key=lambda x: x['premium_spent'], reverse=True)
-
-
-def execute_evening_hunt(ticker):
-    """2:00 PM LOGIC: All DTEs, Massive Blocks/Positioning, >$500k Premium"""
-    print(f"Executing Evening Hunt for {ticker}...")
-    current_price = get_current_price(ticker)
-    df = get_chains(ticker, max_days_out=None) 
-    
-    if df.empty: return []
-    whales_caught = []
-
-    for index, row in df.iterrows():
-        # Grab all the standard and new data points
-        opt_type = row['type']
-        strike = row['strike']
-        vol = row['volume']
-        oi = row['openInterest']
-        last_price = row['lastPrice']
-        bid = row['bid']
-        ask = row['ask']
-        iv = row.get('impliedVolatility', 0.0) # Safe extraction
-
-        if not is_out_of_the_money(opt_type, strike, current_price): continue
-        
-        ratio = calculate_vol_oi_ratio(vol, oi)
-        if ratio < 1.0: continue 
-        
-        premium = calculate_premium_spent(vol, last_price)
-        if premium < 500000: continue 
-
-        # Build the expanded dictionary
-        whale_data = {
-            "symbol": row['contractSymbol'], 
-            "type": opt_type, 
-            "expiration": row['expiration'],
-            "strike": strike, 
-            "volume": int(vol), 
-            "open_interest": int(oi),
-            "vol_oi_ratio": ratio, 
-            "premium_spent": premium,
-            "last_price": last_price,
-            "bid": bid,
-            "ask": ask,
-            "iv": iv
-        }
-        whales_caught.append(whale_data)
-        send_whale_alert(ticker, whale_data, "🌆 EVENING")
-
-    return sorted(whales_caught, key=lambda x: x['premium_spent'], reverse=True)
-
-def execute_custom_hunt(ticker, min_vol_oi, min_premium, max_dte):
-    """CUSTOM LOGIC: User-defined thresholds passed via URL"""
-    print(f"Executing Custom Hunt for {ticker} | Vol/OI: {min_vol_oi} | Premium: {min_premium} | DTE: {max_dte}")
-    current_price = get_current_price(ticker)
-    df = get_chains(ticker, max_days_out=max_dte)
-    
-    if df.empty: return []
-    whales_caught = []
-
-    for index, row in df.iterrows():
-        # Grab all the standard and new data points
-        opt_type = row['type']
-        strike = row['strike']
-        vol = row['volume']
-        oi = row['openInterest']
-        last_price = row['lastPrice']
-        bid = row['bid']
-        ask = row['ask']
-        iv = row.get('impliedVolatility', 0.0) # Safe extraction
-
-        if not is_out_of_the_money(opt_type, strike, current_price): continue
-        
-        ratio = calculate_vol_oi_ratio(vol, oi)
-        if ratio < min_vol_oi: continue 
-        
-        premium = calculate_premium_spent(vol, last_price)
-        if premium < min_premium: continue 
-
-        # Build the expanded dictionary
-        whale_data = {
-            "symbol": row['contractSymbol'], 
-            "type": opt_type, 
-            "expiration": row['expiration'],
-            "strike": strike, 
-            "volume": int(vol), 
-            "open_interest": int(oi),
-            "vol_oi_ratio": ratio, 
-            "premium_spent": premium,
-            "last_price": last_price,
-            "bid": bid,
-            "ask": ask,
-            "iv": iv
-        }
-        whales_caught.append(whale_data)
-        send_whale_alert(ticker, whale_data, "🛠 CUSTOM")
-
-    return sorted(whales_caught, key=lambda x: x['premium_spent'], reverse=True)
 
 # ==========================================
-# 5. FLASK API ROUTER
+# GAMMA EXPOSURE
 # ==========================================
-def build_xml_response(ticker, strategy, whales):
-    """Helper to convert the Python list of dicts into strict XML."""
-    root = ET.Element("whale_hunt", ticker=ticker, strategy=strategy, whale_count=str(len(whales)))
-    for w in whales:
-        contract = ET.SubElement(root, "contract", symbol=w['symbol'], type=w['type'].upper(), expiration=w['expiration'])
-        contract.set("strike", str(w['strike']))
-        
-        # New Pricing & Spread Data
-        contract.set("last_price", f"${w['last_price']:.2f}")
-        contract.set("bid", f"${w['bid']:.2f}")
-        contract.set("ask", f"${w['ask']:.2f}")
-        
-        # Calculate the spread safely (avoiding negative or weird zero errors)
-        spread = max(0.0, w['ask'] - w['bid'])
-        contract.set("spread", f"${spread:.2f}")
-        
-        # Volume & Institutional Metrics
-        contract.set("volume", str(w['volume']))
-        contract.set("open_interest", str(w['open_interest']))
-        contract.set("vol_oi_ratio", f"{w['vol_oi_ratio']}x")
-        
-        # IV and Total Capital
-        contract.set("implied_volatility", f"{w['iv'] * 100:.2f}%")
-        contract.set("premium_spent", f"${w['premium_spent']:,.2f}")
+def build_gex_payload(spot, chains, expirations, today):
+    """The /api/gex response data, computed by the pipeline's own `metrics.gex_profile()` so the live panel and the
+    snapshot agree: net GEX by strike within 10% of spot, the walls, and the zero-gamma level (the spot at which
+    aggregate net GEX changes sign), which is null with a reason when there is no sign change."""
+    profile = metrics.gex_profile(spot, chains, expirations, today)
+    if profile.get("status") != "fresh":
+        raise ApiError(profile.get("reason") or "GEX profile unavailable.", 422)
+    window = sorted((float(strike), value) for strike, value in (profile.get("by_strike_window") or {}).items())
+    if not window:
+        raise ApiError("No strikes with open interest within 10% of spot.", 422)
+    return {
+        "spot": spot,
+        "zeroGamma": profile.get("zero_gamma"),
+        "zeroGammaReason": profile.get("zero_gamma_reason"),
+        "callWall": profile.get("call_wall"),
+        "putWall": profile.get("put_wall"),
+        "strikes": [strike for strike, _ in window],
+        "gamma": [value for _, value in window],
+    }
 
-    xml_str = minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
-    return Response(xml_str, mimetype='application/xml')
-
-#--- BLACK-SCHOLES GAMMA CALCULATOR ---
-def calculate_gamma(S, K, T, r, sigma):
-    """
-    S = Spot Price
-    K = Strike Price
-    T = Time to Expiration (in years)
-    r = Risk-free rate
-    sigma = Implied Volatility
-    """
-    # Prevent division by zero for expired options or zero vol
-    if T <= 0 or sigma <= 0:
-        return 0.0
-
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    
-    # PDF of standard normal distribution
-    nd1 = norm.pdf(d1) 
-    
-    gamma = nd1 / (S * sigma * np.sqrt(T))
-    return gamma
 
 @app.route('/api/gex')
+@guarded("GEX profile", 502)
 def get_gex_profile():
-    ticker_symbol = request.args.get('ticker', 'SPY').upper()
-    
-    try:
-        ticker = yf.Ticker(ticker_symbol)
-        spot_price = ticker.info.get('regularMarketPrice') or ticker.history(period='1d')['Close'].iloc[-1]
-        
-        # Get all available expiration dates
-        expirations = ticker.options
-        if not expirations:
-            return jsonify({"status": "error", "message": "No options data available."})
-            
-        # For a standard GEX profile, quants usually look at the front month or 0DTE.
-        # We will grab the 3 closest expirations to build a thick profile.
-        target_exps = expirations[:3] 
-        
-        gex_by_strike = {}
-        risk_free_rate = 0.05 # Assuming ~5% risk-free rate
-        
-        for exp in target_exps:
-            opt_chain = ticker.option_chain(exp)
-            calls = opt_chain.calls
-            puts = opt_chain.puts
-            
-            # Calculate Time to Expiration (T) in years
-            # Approximation: (Expiration Date - Today) / 365
-            import datetime
-            exp_date = datetime.datetime.strptime(exp, '%Y-%m-%d')
-            today = datetime.datetime.today()
-            days_to_exp = (exp_date - today).days
-            T = max(days_to_exp / 365.0, 0.001) # Minimum 1 day to prevent math errors
-            
-            # Process Calls (Positive Gamma)
-            for _, row in calls.iterrows():
-                strike = row['strike']
-                oi = row['openInterest']
-                iv = row['impliedVolatility']
-                
-                if oi > 0 and iv > 0.01:
-                    gamma = calculate_gamma(spot_price, strike, T, risk_free_rate, iv)
-                    # Dealer GEX Assumption: Dealers sell calls to retail, so they are short calls (negative gamma).
-                    # Standard convention flips this for the chart: Calls = Positive GEX, Puts = Negative GEX
-                    contract_gex = gamma * oi * 100 * spot_price
-                    
-                    gex_by_strike[strike] = gex_by_strike.get(strike, 0) + contract_gex
+    ticker_symbol = ticker_arg()
+    tk = yf.Ticker(ticker_symbol)
+    spot = _live_spot(tk)
+    if spot is None:
+        raise ApiError("Could not fetch the spot price.", 502)
+    expirations = list(tk.options or [])
+    if not expirations:
+        raise ApiError("No options data available.", 404)
 
-            # Process Puts (Negative Gamma)
-            for _, row in puts.iterrows():
-                strike = row['strike']
-                oi = row['openInterest']
-                iv = row['impliedVolatility']
-                
-                if oi > 0 and iv > 0.01:
-                    gamma = calculate_gamma(spot_price, strike, T, risk_free_rate, iv)
-                    contract_gex = gamma * oi * 100 * spot_price
-                    
-                    gex_by_strike[strike] = gex_by_strike.get(strike, 0) - contract_gex
+    chains = {}
+    for exp in expirations[:metrics.GEX_PARAMS["expirations"]]:
+        try:
+            chain = tk.option_chain(exp)
+        except Exception as exc:
+            app.logger.warning("option chain %s %s failed: %s", ticker_symbol, exp, exc)
+            continue
+        chains[exp] = {"calls": chain.calls, "puts": chain.puts}
+    if not chains:
+        raise ApiError("Option chains could not be fetched.", 502)
 
-        # Filter the strikes to only show a realistic window (e.g., +/- 10% from spot)
-        lower_bound = spot_price * 0.90
-        upper_bound = spot_price * 1.10
-        
-        filtered_strikes = {k: v for k, v in gex_by_strike.items() if lower_bound <= k <= upper_bound}
-        
-        # Sort strikes from lowest to highest
-        sorted_strikes = sorted(filtered_strikes.keys())
-        gamma_values = [filtered_strikes[k] for k in sorted_strikes]
-        
-        # Find the Walls
-        call_wall_strike = max(filtered_strikes, key=filtered_strikes.get) if filtered_strikes else 0
-        put_wall_strike = min(filtered_strikes, key=filtered_strikes.get) if filtered_strikes else 0
-        
-        # Approximate Zero Gamma (Flip point)
-        # Find where the cumulative sum of gamma changes sign, or just the spot where it crosses 0
-        zero_gamma = spot_price # Rough approximation for UI, real calc is complex root finding
-
-        payload = {
-            "spot": spot_price,
-            "zeroGamma": zero_gamma,
-            "callWall": call_wall_strike,
-            "putWall": put_wall_strike,
-            "strikes": sorted_strikes,
-            "gamma": gamma_values
-        }
-
-        return jsonify({"status": "success", "data": payload})
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+    payload = build_gex_payload(spot, chains, list(chains), datetime.now().date())
+    return jsonify({"status": "success", "data": payload})
 
 @app.route('/api/arbitrage_history', methods=['GET'])
+@guarded("Arbitrage history")
 def get_arbitrage_history():
-    try:
-        if not os.path.exists(LEDGER_FILE):
-            return jsonify({"status": "error", "message": "Ledger file not found."}), 404
+    limit = int_arg('limit', 50)
+    if not os.path.exists(LEDGER_FILE):
+        return json_error("Ledger file not found.", 404)
 
-        # 1. Ingestion: Load the CSV
-        df = pd.read_csv(LEDGER_FILE)
-        
-        if df.empty:
-            return jsonify({"status": "error", "message": "Ledger is empty."}), 404
+    # 1. Ingestion: Load the CSV
+    df = pd.read_csv(LEDGER_FILE)
 
-        # 2. Sanitization: Limit the data points to prevent terminal lag
-        # Defaults to the last 50 data points, but UI can request more via ?limit=100
-        limit = int(request.args.get('limit', 50))
-        df = df.tail(limit).copy()
+    if df.empty:
+        return json_error("Ledger is empty.", 404)
 
-        # Format Datetime for cleaner Chart.js X-Axis (e.g., '03-24 14:30')
-        df['Datetime'] = pd.to_datetime(df['Datetime']).dt.strftime('%m-%d %H:%M')
+    # 2. Sanitization: Limit the data points to prevent terminal lag
+    # Defaults to the last 50 data points, but UI can request more via ?limit=100
+    df = df.tail(limit).copy()
 
-        # Safely handle NaNs (replaces pandas NaN with Python None, which becomes JSON 'null')
-        # This ensures Chart.js simply leaves a gap instead of crashing if a value is missing
-        df = df.astype(object).where(pd.notnull(df), None)
+    # Format Datetime for cleaner Chart.js X-Axis (e.g., '03-24 14:30')
+    df['Datetime'] = pd.to_datetime(df['Datetime']).dt.strftime('%m-%d %H:%M')
 
-        # 3. Payload Architecture: Parallel arrays for Chart.js
-        payload = {
-            "labels": df['Datetime'].tolist(),
-            "spot": df['COMEX_Spot'].tolist(),
-            "cheapest_price": df['Cheapest_Eagle'].tolist(),
-            "avg_price": df['Average_Eagle'].tolist(),
-            "cheapest_pct": df['Cheapest_Premium_Percent'].tolist(),
-            "avg_pct": df['Average_Premium_Percent'].tolist(),
-            "cheapest_dollar": df['Cheapest_Premium_Dollars'].tolist()
-        }
+    # Safely handle NaNs (replaces pandas NaN with Python None, which becomes JSON 'null')
+    # This ensures Chart.js simply leaves a gap instead of crashing if a value is missing
+    df = df.astype(object).where(pd.notnull(df), None)
 
-        return jsonify({
-            "status": "success", 
-            "data": payload
-        })
+    # 3. Payload Architecture: Parallel arrays for Chart.js
+    payload = {
+        "labels": df['Datetime'].tolist(),
+        "spot": df['COMEX_Spot'].tolist(),
+        "cheapest_price": df['Cheapest_Eagle'].tolist(),
+        "avg_price": df['Average_Eagle'].tolist(),
+        "cheapest_pct": df['Cheapest_Premium_Percent'].tolist(),
+        "avg_pct": df['Average_Premium_Percent'].tolist(),
+        "cheapest_dollar": df['Cheapest_Premium_Dollars'].tolist()
+    }
 
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    return jsonify({
+        "status": "success",
+        "data": payload
+    })
 
-# Initialize the Databento Client
-DB_API_KEY = required_env("DATABENTO_API_KEY", alt_name="DB_API_KEY")
-db_client = db.Historical(DB_API_KEY)
+# The Databento client is created on first use: only /api/darkpool needs it, so the terminal starts without a key.
+db_client = None
+
+
+def databento_client():
+    global db_client
+    if db_client is None:
+        if not config.DATABENTO_API_KEY:
+            raise ApiError("DATABENTO_API_KEY is not set in .env, so the dark pool panels are unavailable", 503)
+        db_client = db.Historical(config.DATABENTO_API_KEY)
+    return db_client
+
+DARKPOOL_TRADE_LIMIT = 50000   # the request reads at most this many trades
+
+
+def build_darkpool_payload(ticker, trades):
+    """The /api/darkpool response data from a Databento trades frame, using the pipeline's `metrics.block_flow()`.
+
+    Databento side `B` is a buy aggressor and `A` a sell aggressor (`N` unknown). Bias comes from aggressor volume
+    when at least half of the block volume has a known side (`method` "aggressor"); otherwise the pipeline's
+    VWAP heuristic classifies the unknown-side prints (`method` "vwap_heuristic"). Returns None when the window
+    has trades but no block of at least `metrics.BLOCK_MIN_SIZE` shares."""
+    flow = metrics.block_flow(trades, limit=DARKPOOL_TRADE_LIMIT)
+    if not flow.get("blocks"):
+        return None
+    buy, sell = flow["buy_aggressor_volume"], flow["sell_aggressor_volume"]
+    if flow["bias_method"] == "vwap_heuristic":
+        heuristic = flow["vwap_heuristic_unknown_side"]
+        buy, sell = buy + heuristic["at_or_above_vwap"], sell + heuristic["below_vwap"]
+    side_label = {"buy": "BUY", "sell": "SELL"}
+    return {
+        "ticker": ticker,
+        "total_block_volume": int(flow["block_volume"]),
+        "total_notional_usd": float(flow["block_notional"]),
+        "largest_single_block": int(flow["largest_block"]),
+        "vwap_price": float(flow["block_vwap"]),
+        "sentiment": {
+            "bias": flow["bias"],
+            "bull_volume": int(buy),
+            "bear_volume": int(sell),
+            "method": flow["bias_method"],
+        },
+        "note": flow.get("reason"),
+        "recent_prints": [{
+            "time": pd.Timestamp(p["time"]).strftime("%H:%M:%S"),
+            "price": float(p["price"]),
+            "size": int(p["size"]),
+            "side": side_label.get(p["aggressor"], "UNKNOWN"),
+        } for p in flow["recent_prints"]],
+    }
+
 
 @app.route('/api/darkpool')
+@guarded("Dark pool request", 502)
 def get_dark_pool_profile():
-    ticker = request.args.get('ticker', 'SPY').upper()
-    
+    ticker = ticker_arg()
+
     # --- THE T+1 HISTORICAL BARRIER FIX ---
-    now = datetime.utcnow()
-    
-    # Databento's Historical API batches the tape overnight. 
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # Databento's Historical API batches the tape overnight.
     # We must anchor our 'end' to Midnight UTC of YESTERDAY to guarantee the file exists.
     yesterday = now - timedelta(days=1)
     available_end = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
-    
+
     # Find the most recently completed trading session
     # weekday(): 0=Mon, 1=Tue, ..., 5=Sat, 6=Sun
     if available_end.weekday() == 6: # Sunday Midnight UTC -> Shift to Saturday Midnight
@@ -571,76 +449,31 @@ def get_dark_pool_profile():
         end_time = available_end - timedelta(days=2)
     else:
         end_time = available_end
-        
+
     # Look back exactly 24 hours from our safe 'end_time' to capture the full session
     start_time = end_time - timedelta(days=1)
-    
-    try:
-        # 1. THE QUERY: Fetch tick-level trades from the Consolidated Tape
-        data = db_client.timeseries.get_range(
-            dataset='DBEQ.BASIC',
-            schema='trades',       
-            symbols=[ticker],
-            start=start_time.isoformat(),
-            end=end_time.isoformat(),
-            limit=50000            
-        )
-        
-        # Convert the raw binary stream into a Pandas DataFrame
-        df = data.to_df()
-        
-        if df.empty:
-            return jsonify({"status": "error", "message": "No trades found in the target window."})
 
-        # 2. THE FILTER: Isolate the Whales
-        blocks = df[df['size'] >= 10000].copy()
-        
-        if blocks.empty:
-            return jsonify({"status": "success", "message": "No institutional blocks detected.", "data": None})
+    # 1. THE QUERY: Fetch tick-level trades from the Consolidated Tape
+    data = databento_client().timeseries.get_range(
+        dataset='DBEQ.BASIC',
+        schema='trades',
+        symbols=[ticker],
+        start=start_time.isoformat(),
+        end=end_time.isoformat(),
+        limit=DARKPOOL_TRADE_LIMIT
+    )
 
-        # 3. THE MATH: Calculate the Profile Metrics
-        total_block_volume = int(blocks['size'].sum())
-        total_notional = float((blocks['price'] * blocks['size']).sum())
-        largest_block = int(blocks['size'].max())
-        avg_block_price = float((blocks['price'] * blocks['size']).sum() / total_block_volume)
+    # Convert the raw binary stream into a Pandas DataFrame
+    df = data.to_df()
 
-        # 4. THE SENTIMENT ENGINE (Bullish vs Bearish)
-        bullish_vol = int(blocks[blocks['side'] == 'A']['size'].sum())
-        bearish_vol = int(blocks[blocks['side'] == 'B']['size'].sum())
-        
-        sentiment = "NEUTRAL"
-        if bullish_vol > bearish_vol * 1.2: sentiment = "BULLISH"
-        elif bearish_vol > bullish_vol * 1.2: sentiment = "BEARISH"
+    if df.empty:
+        raise ApiError("No trades found in the target window.", 404)
 
-        # 5. THE PAYLOAD
-        payload = {
-            "ticker": ticker,
-            "total_block_volume": total_block_volume,
-            "total_notional_usd": total_notional,
-            "largest_single_block": largest_block,
-            "vwap_price": avg_block_price,
-            "sentiment": {
-                "bias": sentiment,
-                "bull_volume": bullish_vol,
-                "bear_volume": bearish_vol
-            },
-            "recent_prints": []
-        }
-
-        # Grab the 5 most recent massive prints
-        recent_trades = blocks.tail(5).sort_index(ascending=False)
-        for index, row in recent_trades.iterrows():
-            payload["recent_prints"].append({
-                "time": index.strftime("%H:%M:%S"),
-                "price": float(row['price']),
-                "size": int(row['size']),
-                "side": "BUY" if row['side'] == 'A' else "SELL" if row['side'] == 'B' else "UNK"
-            })
-
-        return jsonify({"status": "success", "data": payload})
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+    # 2. THE FILTER, THE MATH AND THE SENTIMENT: the pipeline's block-flow definition
+    payload = build_darkpool_payload(ticker, df)
+    if payload is None:
+        return jsonify({"status": "success", "message": "No institutional blocks detected.", "data": None})
+    return jsonify({"status": "success", "data": payload})
 
 # --- ENDPOINT: VMRI DATA PROXY ---
 @app.route('/api/vmri_history')
@@ -648,7 +481,7 @@ def get_vmri_history():
     """Returns the time-series history of VMRI scores, math derivatives, and macro context."""
     try:
         if not os.path.exists(LEDGER_CSV):
-            return jsonify({"error": "Ledger not found"}), 404
+            return jsonify({"status": "error", "message": "Ledger not found", "error": "Ledger not found"}), 404
             
         df = pd.read_csv(LEDGER_CSV)
         
@@ -736,7 +569,9 @@ def get_vmri_history():
         }
         return jsonify(data)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("VMRI history failed: %s", e, exc_info=e)
+        return jsonify({"status": "error", "message": "VMRI history failed (see the server log)",
+                        "error": "VMRI history failed (see the server log)"}), 500
 
 # --- ENDPOINT: VMRI CHART VIEWER ---
 @app.route('/vmri_chart')
@@ -747,8 +582,8 @@ def vmri_chart_page():
     <html>
     <head>
         <title>VMRI Systemic Risk Monitor</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.1.0/dist/chartjs-plugin-annotation.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.1.0/dist/chartjs-plugin-annotation.min.js" integrity="sha384-dB7WWqy9+vERwKo2atAKw+KLNhfY0RX5ZjV1l4HHMBZz5wfSvX/GsytIpOyBY8dG" crossorigin="anonymous"></script>
         <style>
             body { font-family: 'Courier New', monospace; background: transparent; color: #00ff00; padding: 10px; margin: 0; box-sizing: border-box; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
             .container { flex: 1; display: flex; flex-direction: column; background: #000; padding: 10px; border: 1px solid #1a1a1a; border-radius: 4px; position: relative; }
@@ -811,8 +646,8 @@ def vmri_chart_page():
                     renderChart();
                     updateInsightBanner();
                 } catch (e) { 
-                    console.error("Fetch failed:", e); 
-                    document.getElementById('insightBanner').innerHTML = `<span class="insight-threat">⚠️ CONNECTION FAILED</span>`;
+                    console.error("VMRI chart failed:", e); 
+                    document.getElementById('insightBanner').innerHTML = `<span class="insight-threat">⚠️ COULD NOT LOAD THE VMRI HISTORY</span>`;
                 }
             }
 
@@ -823,7 +658,10 @@ def vmri_chart_page():
                 const driver = masterData.primary_driver[lastIdx];
 
                 let statusHtml = '';
-                if (currentScore >= 250) {
+                if (currentScore === null || currentScore === undefined || !isFinite(currentScore)) {
+                    // A run whose inputs were incomplete (for example no HY OAS from FRED) records no score.
+                    statusHtml = `<span class="insight-threat">⚠️ NO VMRI SCORE FOR THE LATEST RUN</span> | an input was missing (see the macro ledger row ${masterData.labels[lastIdx] || ''})`;
+                } else if (currentScore >= 250) {
                     let trend = momentum > 0 ? "ACCELERATING UPWARD" : "DECAYING";
                     statusHtml = `<span class="insight-threat">⚠️ SYSTEMIC THREAT ACTIVE (${currentScore.toFixed(0)})</span> | Primary Driver: <span class="insight-driver">${driver}</span> | Trend: ${trend}`;
                 } else {
@@ -965,172 +803,172 @@ def vmri_chart_page():
     return render_template_string(html_template)
 
 @app.route('/api/war_room', methods=['GET', 'POST'])
+@guarded("War room")
 def api_war_room():
     """
     The SecDB Lite Impact Engine.
     Accepts shift vectors for DXY, 10Y Yield, OAS, and VIX.
     Recalculates the VMRI and returns the hypothetical environment.
+    The starting values come from the macro ledger; when it lacks one the answer is a 503 naming it
+    (no stand-in constants).
     """
-    try:
-        # Handle both GET (URL params) and POST (JSON body)
-        if request.method == 'POST':
-            data = request.get_json() or {}
-        else:
-            data = request.args
+    # Handle both GET (URL params) and POST (JSON body)
+    if request.method == 'POST':
+        data = request.get_json(silent=True) if request.get_data() else {}
+        if not isinstance(data, dict):
+            raise ApiError("request body must be a JSON object", 400)
+    else:
+        data = request.args
 
-        # 1. Parse Shift Vectors
-        dxy_shift = float(data.get('dxy_shift', 0.0))
-        tnx_shift = float(data.get('tnx_shift', 0.0))
-        oas_shift = float(data.get('oas_shift', 0.0))
-        vix_shift = float(data.get('vix_shift', 0.0))
-        vix_shift_pct = float(data.get('vix_shift_pct', 0.0)) 
+    # 1. Parse Shift Vectors
+    dxy_shift = finite_float(data.get('dxy_shift', 0.0), 'dxy_shift')
+    tnx_shift = finite_float(data.get('tnx_shift', 0.0), 'tnx_shift')
+    oas_shift = finite_float(data.get('oas_shift', 0.0), 'oas_shift')
+    vix_shift = finite_float(data.get('vix_shift', 0.0), 'vix_shift')
+    vix_shift_pct = finite_float(data.get('vix_shift_pct', 0.0), 'vix_shift_pct')
 
-        # 2. Ingest the Latest Valid Live Environment
-        df = pd.read_csv(LEDGER_CSV)
-        # CRITICAL FIX: Drop completely empty rows that might be at the end of the CSV
-        df = df.dropna(how='all') 
-        latest = df.iloc[-1]
+    # 2. Ingest the Latest Valid Live Environment
+    if not os.path.exists(LEDGER_CSV):
+        raise ApiError("macro ledger not found: run the pipeline", 503)
+    df = pd.read_csv(LEDGER_CSV)
+    # CRITICAL FIX: Drop completely empty rows that might be at the end of the CSV
+    df = df.dropna(how='all')
+    if df.empty:
+        raise ApiError("macro ledger is empty: run the pipeline", 503)
+    latest = df.iloc[-1]
 
-        # Helper to safely extract floats, with a secondary check to crawl up the CSV if needed
-        def safe_float(col_name, fallback):
-            val = latest.get(col_name)
-            try:
-                f = float(val)
-                if pd.notna(f):
-                    return f
-            except:
-                pass
-                
-            # If the absolute last row had a NaN for this specific column, 
-            # crawl backwards up the CSV to find the last known good value.
-            try:
-                last_valid = df[col_name].dropna().iloc[-1]
-                return float(last_valid)
-            except:
-                return fallback
+    # Reads a ledger column as a float. If the absolute last row has no value for it, crawl backwards up the
+    # CSV to the last known good value. A column with no value at all is an error naming it.
+    def ledger_value(col_name):
+        f = _num(latest.get(col_name))
+        if f is not None:
+            return f
+        if col_name in df:
+            last_valid = pd.to_numeric(df[col_name], errors='coerce').dropna()
+            if len(last_valid):
+                return float(last_valid.iloc[-1])
+        raise ApiError(f"the macro ledger has no {col_name} value", 503)
 
-        # Pull the real data (or crawl back to find it)
-        base_dxy = safe_float('DXY', 100.0)
-        base_tnx = safe_float('10Y_Yield', 4.0)
-        base_oas = safe_float('High_Yield_OAS', 4.0)
-        base_vix = safe_float('VIX', 20.0)
-        base_vmri = safe_float('VMRI_Score', 200.0)
+    # Pull the real data (or crawl back to find it)
+    base_dxy = ledger_value('DXY')
+    base_tnx = ledger_value('10Y_Yield')
+    base_oas = ledger_value('High_Yield_OAS')
+    base_vix = ledger_value('VIX')
+    base_vmri = ledger_value('VMRI_Score')
 
-        # 3. Apply the Shift Vectors to create the Hypothetical Environment
-        hypo_dxy = base_dxy + dxy_shift
-        hypo_tnx = base_tnx + tnx_shift
-        hypo_oas = base_oas + oas_shift
-        
-        # Calculate VIX shift 
-        if vix_shift_pct != 0.0:
-            hypo_vix = base_vix * (1 + (vix_shift_pct / 100.0))
-        else:
-            hypo_vix = base_vix + vix_shift
+    # 3. Apply the Shift Vectors to create the Hypothetical Environment
+    hypo_dxy = base_dxy + dxy_shift
+    hypo_tnx = base_tnx + tnx_shift
+    hypo_oas = base_oas + oas_shift
+    
+    # Calculate VIX shift 
+    if vix_shift_pct != 0.0:
+        hypo_vix = base_vix * (1 + (vix_shift_pct / 100.0))
+    else:
+        hypo_vix = base_vix + vix_shift
 
-        # 4. The Math Engine: Recalculate VMRI
-        def parts(dxy, tnx, oas, vix):
-            base, credit, vol = (dxy * tnx) / 1.61, oas / 4.00, vix / 20.00
-            return base, credit, vol, base * credit * vol
+    # 4. The Math Engine: Recalculate VMRI
+    def parts(dxy, tnx, oas, vix):
+        base, credit, vol = (dxy * tnx) / 1.61, oas / 4.00, vix / 20.00
+        return base, credit, vol, base * credit * vol
 
-        def tier_of(v):
-            if v < 150:
-                return "LOW RISK (Complacent / Squeeze Danger)"
-            if v < 250:
-                return "MODERATE RISK (Standard Operating Environment)"
-            if v < 350:
-                return "ELEVATED RISK (Hedge Triggers Active)"
-            return "SYSTEMIC THREAT (Crash Dynamics Active)"
+    def tier_of(v):
+        if v < 150:
+            return "LOW RISK (Complacent / Squeeze Danger)"
+        if v < 250:
+            return "MODERATE RISK (Standard Operating Environment)"
+        if v < 350:
+            return "ELEVATED RISK (Hedge Triggers Active)"
+        return "SYSTEMIC THREAT (Crash Dynamics Active)"
 
-        base_stress, credit_multiplier, vol_premium, hypo_vmri = parts(hypo_dxy, hypo_tnx, hypo_oas, hypo_vix)
-        live_stress, live_credit, live_vol, live_formula_vmri = parts(base_dxy, base_tnx, base_oas, base_vix)
+    base_stress, credit_multiplier, vol_premium, hypo_vmri = parts(hypo_dxy, hypo_tnx, hypo_oas, hypo_vix)
+    live_stress, live_credit, live_vol, live_formula_vmri = parts(base_dxy, base_tnx, base_oas, base_vix)
 
-        # 5. Determine the New Threat Tier
-        tier = tier_of(hypo_vmri)
+    # 5. Determine the New Threat Tier
+    tier = tier_of(hypo_vmri)
 
-        # 6. Calculate the Impact Delta
-        vmri_delta = hypo_vmri - base_vmri
-        vmri_delta_pct = (vmri_delta / base_vmri) * 100 if base_vmri != 0 else 0
+    # 6. Calculate the Impact Delta
+    vmri_delta = hypo_vmri - base_vmri
+    vmri_delta_pct = (vmri_delta / base_vmri) * 100 if base_vmri != 0 else None
 
-        # What each lever does on its own (the others left at live values). The four effects do not add up to the
-        # total because the variables are multiplied.
-        solo = {
-            "dxy": parts(hypo_dxy, base_tnx, base_oas, base_vix)[3] - live_formula_vmri,
-            "tnx": parts(base_dxy, hypo_tnx, base_oas, base_vix)[3] - live_formula_vmri,
-            "oas": parts(base_dxy, base_tnx, hypo_oas, base_vix)[3] - live_formula_vmri,
-            "vix": parts(base_dxy, base_tnx, base_oas, hypo_vix)[3] - live_formula_vmri,
+    # What each lever does on its own (the others left at live values). The four effects do not add up to the
+    # total because the variables are multiplied.
+    solo = {
+        "dxy": parts(hypo_dxy, base_tnx, base_oas, base_vix)[3] - live_formula_vmri,
+        "tnx": parts(base_dxy, hypo_tnx, base_oas, base_vix)[3] - live_formula_vmri,
+        "oas": parts(base_dxy, base_tnx, hypo_oas, base_vix)[3] - live_formula_vmri,
+        "vix": parts(base_dxy, base_tnx, base_oas, hypo_vix)[3] - live_formula_vmri,
+    }
+
+    # Where the live and scenario scores sit among the scores this installation has recorded
+    history = None
+    scores = pd.to_numeric(df.get('VMRI_Score'), errors='coerce').dropna() if 'VMRI_Score' in df else pd.Series(dtype=float)
+    if len(scores) >= 20:
+        when = pd.to_datetime(df.loc[scores.index, 'Datetime'], errors='coerce', format='mixed').dropna()
+        lo, hi = math.floor(scores.min() / 10) * 10, math.ceil(max(scores.max(), 360) / 10) * 10
+        counts, _ = np.histogram(scores, bins=30, range=(lo, hi))
+        history = {
+            "n": int(len(scores)), "start": when.min().date().isoformat() if len(when) else None,
+            "end": when.max().date().isoformat() if len(when) else None,
+            "min": round(float(scores.min()), 1), "median": round(float(scores.median()), 1), "max": round(float(scores.max()), 1),
+            "pct_below_current": round(float((scores < base_vmri).mean() * 100), 1),
+            "pct_below_hypothetical": round(float((scores < hypo_vmri).mean() * 100), 1),
+            "lo": lo, "hi": hi, "counts": [int(c) for c in counts],
         }
 
-        # Where the live and scenario scores sit among the scores this installation has recorded
-        history = None
-        scores = pd.to_numeric(df.get('VMRI_Score'), errors='coerce').dropna() if 'VMRI_Score' in df else pd.Series(dtype=float)
-        if len(scores) >= 20:
-            when = pd.to_datetime(df.loc[scores.index, 'Datetime'], errors='coerce', format='mixed').dropna()
-            lo, hi = math.floor(scores.min() / 10) * 10, math.ceil(max(scores.max(), 360) / 10) * 10
-            counts, edges = np.histogram(scores, bins=30, range=(lo, hi))
-            history = {
-                "n": int(len(scores)), "start": when.min().date().isoformat() if len(when) else None,
-                "end": when.max().date().isoformat() if len(when) else None,
-                "min": round(float(scores.min()), 1), "median": round(float(scores.median()), 1), "max": round(float(scores.max()), 1),
-                "pct_below_current": round(float((scores < base_vmri).mean() * 100), 1),
-                "pct_below_hypothetical": round(float((scores < hypo_vmri).mean() * 100), 1),
-                "lo": lo, "hi": hi, "counts": [int(c) for c in counts],
-            }
+    # 7. Construct the Output Payload
+    payload = {
+        "status": "success",
+        "formula": "VMRI = (DXY x 10Y yield / 1.61) x (HY OAS / 4) x (VIX / 20)",
+        "thresholds": {"moderate": 150, "elevated": 250, "systemic": 350},
+        "current": {
+            "vmri": round(base_vmri, 2),
+            "tier": tier_of(base_vmri),
+            "dxy": round(base_dxy, 2),
+            "tnx": round(base_tnx, 2),
+            "oas": round(base_oas, 2),
+            "vix": round(base_vix, 2),
+            "factors": {"macro_base": round(live_stress, 2), "credit": round(live_credit, 3), "vol": round(live_vol, 3)}
+        },
+        "hypothetical": {
+            "vmri": round(hypo_vmri, 2),
+            "tier": tier,
+            "dxy": round(hypo_dxy, 2),
+            "tnx": round(hypo_tnx, 2),
+            "oas": round(hypo_oas, 2),
+            "vix": round(hypo_vix, 2),
+            "factors": {"macro_base": round(base_stress, 2), "credit": round(credit_multiplier, 3), "vol": round(vol_premium, 3)}
+        },
+        "impact": {
+            "vmri_delta": round(vmri_delta, 2),
+            "vmri_delta_pct": round(vmri_delta_pct, 2) if vmri_delta_pct is not None else None,
+            "solo_delta": {k: round(v, 2) for k, v in solo.items()}
+        },
+        "history": history
+    }
 
-        # 7. Construct the Output Payload
-        payload = {
-            "status": "success",
-            "formula": "VMRI = (DXY x 10Y yield / 1.61) x (HY OAS / 4) x (VIX / 20)",
-            "thresholds": {"moderate": 150, "elevated": 250, "systemic": 350},
-            "current": {
-                "vmri": round(base_vmri, 2),
-                "tier": tier_of(base_vmri),
-                "dxy": round(base_dxy, 2),
-                "tnx": round(base_tnx, 2),
-                "oas": round(base_oas, 2),
-                "vix": round(base_vix, 2),
-                "factors": {"macro_base": round(live_stress, 2), "credit": round(live_credit, 3), "vol": round(live_vol, 3)}
-            },
-            "hypothetical": {
-                "vmri": round(hypo_vmri, 2),
-                "tier": tier,
-                "dxy": round(hypo_dxy, 2),
-                "tnx": round(hypo_tnx, 2),
-                "oas": round(hypo_oas, 2),
-                "vix": round(hypo_vix, 2),
-                "factors": {"macro_base": round(base_stress, 2), "credit": round(credit_multiplier, 3), "vol": round(vol_premium, 3)}
-            },
-            "impact": {
-                "vmri_delta": round(vmri_delta, 2),
-                "vmri_delta_pct": round(vmri_delta_pct, 2),
-                "solo_delta": {k: round(v, 2) for k, v in solo.items()}
-            },
-            "history": history
-        }
+    return jsonify(payload)
 
-        return jsonify(payload)
 
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route('/api/silver_eagle_prices', methods=['GET'])
+@app.route('/api/silver_eagle_prices', methods=['POST'])
 def api_silver_eagle_prices():
+    """Runs ebay.py: eBay listings for the tracked Silver Eagles. It appends a row to the arbitrage ledger, so it is
+    POST only and covered by the cross-site guard."""
     try:
-        # Run the external ebay.py script
-        output = subprocess.check_output(
-            [PYTHON_BIN, EBAY_SCRIPT_PATH], 
-            text=True, 
-            timeout=120 # Playwright takes time, so give it a 2-minute timeout
-        )
-        
-        # The script prints pure XML to stdout, so we just return it
-        return Response(output, mimetype='application/xml')
-
+        # Run the external ebay.py script. Playwright is not used any more, but the eBay calls take a while.
+        proc = subprocess.run([PYTHON_BIN, EBAY_SCRIPT_PATH], capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
-        return Response("<error>Scrape timed out. eBay might be blocking connections.</error>", mimetype='application/xml', status=504)
-    except subprocess.CalledProcessError as e:
-        return Response(f"<error>Script crashed: {e.output}</error>", mimetype='application/xml', status=500)
+        return xml_error("Scan timed out. eBay might be blocking connections.", 504)
     except Exception as e:
-        return Response(f"<error>Server error: {str(e)}</error>", mimetype='application/xml', status=500)
+        app.logger.error("Silver Eagle scan could not start: %s", e, exc_info=e)
+        return xml_error("Silver Eagle scan could not start (see the server log).", 500)
+    if proc.returncode != 0:
+        app.logger.error("ebay.py exited with code %s: %s", proc.returncode,
+                         _v2lake.redact((proc.stdout or "") + (proc.stderr or ""))[-2000:])
+        return xml_error("Silver Eagle scan failed (see the server log).", 500)
+
+    # The script prints pure XML to stdout, so we just return it
+    return Response(proc.stdout, mimetype='application/xml')
 
 # --- ENDPOINT 1: THE DATA PROXY ---
 @app.route('/api/inventory_data')
@@ -1138,7 +976,7 @@ def get_inventory_data():
     """Reads the CSV and returns JSON for the JS Chart."""
     try:
         if not os.path.exists(INVENTORY_CSV):
-            return jsonify({"error": "CSV not found"}), 404
+            return jsonify({"status": "error", "message": "CSV not found", "error": "CSV not found"}), 404
             
         # Read CSV and ensure dates are sorted
         df = pd.read_csv(INVENTORY_CSV)
@@ -1154,7 +992,9 @@ def get_inventory_data():
         }
         return jsonify(data)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Inventory data failed: %s", e, exc_info=e)
+        return jsonify({"status": "error", "message": "Inventory data failed (see the server log)",
+                        "error": "Inventory data failed (see the server log)"}), 500
 
 
 
@@ -1167,7 +1007,7 @@ def inventory_chart_page():
     <html>
     <head>
         <title>COMEX Inventory Live Chart</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
         <style>
             /* OPTIMIZED FOR TERMINAL IFRAME */
             body { font-family: sans-serif; background: transparent; color: #eee; margin: 0; padding: 10px; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }
@@ -1189,7 +1029,12 @@ def inventory_chart_page():
         <script>
             async function loadChart() {
                 const response = await fetch('/api/inventory_data');
-                const data = await response.json();
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !Array.isArray(data.labels) || !data.labels.length) {
+                    document.getElementById('currentStats').textContent =
+                        data.error || data.message || `No COMEX inventory history yet (HTTP ${response.status}).`;
+                    return;
+                }
 
                 // Update Stats Header
                 const lastIdx = data.labels.length - 1;
@@ -1262,137 +1107,119 @@ def inventory_chart_page():
     """
     return render_template_string(html_template)
 
-@app.route('/api/morning', methods=['GET'])
-def api_morning():
-    ticker = request.args.get('ticker', 'SPY').upper()
-    try:
-        # Run the scanner script as a subprocess
-        # We use a timeout so it doesn't hang the UI forever
-        output = subprocess.check_output(
-            [PYTHON_BIN, OPTIONS_SCRIPT, ticker, "morning"], 
-            text=True, 
-            timeout=30
-        )
-        return jsonify({"status": "success", "ticker": ticker, "data": output})
-    except subprocess.CalledProcessError as e:
-        # If the script crashes, we return the error as JSON
-        return jsonify({
-            "status": "error", 
-            "message": "Scanner script failed. It might be due to weekend data gaps.",
-            "details": str(e.output if hasattr(e, 'output') else e)
-        }), 200 # We return 200 so the UI doesn't trigger a browser-level 500 error
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 200
-
-@app.route('/api/evening', methods=['GET'])
-def api_evening():
-    ticker = request.args.get('ticker', 'SPY').upper()
-    try:
-        # standardizing to use the subprocess scanner logic
-        output = subprocess.check_output(
-            [PYTHON_BIN, OPTIONS_SCRIPT, ticker, "evening"], 
-            text=True, 
-            timeout=30
-        )
-        return jsonify({"status": "success", "ticker": ticker, "data": output})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 200
-
 # --- HELPER: NATIVE XML WHALE HUNT ---
-def execute_xml_whale_hunt(ticker, min_vol_oi=1.0, max_dte=30, strategy="CUSTOM_HUNT"):
-    """Fetches option chains and returns a structured XML object."""
+SCAN_PRESETS = {
+    # strategy: (max_dte, min_vol_oi, min_premium). max_dte 0 means no limit.
+    "MORNING_HUNT": (14, 1.5, 100000.0),
+    "EVENING_HUNT": (0, 1.0, 500000.0),
+}
+
+
+def execute_xml_whale_hunt(ticker, min_vol_oi=1.0, max_dte=30, strategy="CUSTOM_HUNT", min_premium=100000.0):
+    """Fetches option chains and returns a structured XML object. Raises ApiError (XML) when the ticker has no
+    options; any other failure propagates to the route's `guarded()` wrapper."""
     root = ET.Element("whale_hunt", ticker=ticker.upper(), strategy=strategy)
-    
-    try:
-        tk = yf.Ticker(ticker)
-        exps = tk.options
-        if not exps:
-            root.set("error", "No options found")
-            return root
 
-        today = datetime.now()
-        whale_list = []
+    tk = yf.Ticker(ticker)
+    exps = tk.options
+    if not exps:
+        raise ApiError(f"No options found for {ticker.upper()}.", 404, xml=True)
 
-        # Iterate through expirations
-        for exp in exps:
-            exp_date = datetime.strptime(exp, '%Y-%m-%d')
-            days_to_exp = (exp_date - today).days
-            
-            # Apply Max DTE filter
-            if max_dte and days_to_exp > int(max_dte):
-                continue
+    today = datetime.now()
+    whale_list = []
 
-            opt = tk.option_chain(exp)
-            # Combine calls and puts into one list for processing
-            for df, label in [(opt.calls, "CALL"), (opt.puts, "PUT")]:
-                if df.empty: continue
-                
-                # Calculate metrics
-                df['premium_spent'] = df['volume'] * df['lastPrice'] * 100
-                df['vol_oi_ratio'] = df['volume'] / df['openInterest'].replace(0, 1)
-                df['spread'] = df['ask'] - df['bid']
+    # Iterate through expirations
+    for exp in exps:
+        exp_date = datetime.strptime(exp, '%Y-%m-%d')
+        days_to_exp = (exp_date - today).days
 
-                # Filter: Vol/OI ratio (default >= 1.0)
-                # We also add a basic premium floor ($100k) to keep the XML clean
-                mask = (df['vol_oi_ratio'] >= float(min_vol_oi)) & (df['premium_spent'] >= 100000)
-                whales = df[mask].copy()
+        # Apply Max DTE filter (0 = no limit)
+        if max_dte and days_to_exp > int(max_dte):
+            continue
 
-                for _, row in whales.iterrows():
-                    whale_list.append({
-                        "symbol": row['contractSymbol'],
-                        "type": label,
-                        "expiration": exp,
-                        "strike": str(row['strike']),
-                        "last_price": f"${row['lastPrice']:.2f}",
-                        "bid": f"${row['bid']:.2f}",
-                        "ask": f"${row['ask']:.2f}",
-                        "spread": f"${row['spread']:.2f}",
-                        "volume": str(int(row['volume'])),
-                        "open_interest": str(int(row['openInterest'])),
-                        "vol_oi_ratio": f"{row['vol_oi_ratio']:.2f}x",
-                        "implied_volatility": f"{row['impliedVolatility']*100:.2f}%",
-                        "premium_spent": f"${row['premium_spent']:,.2f}",
-                        "raw_premium": row['premium_spent'] # For sorting
-                    })
+        opt = tk.option_chain(exp)
+        # Combine calls and puts into one list for processing
+        for df, label in [(opt.calls, "CALL"), (opt.puts, "PUT")]:
+            if df.empty: continue
 
-        # Sort all found whales by premium spent (Highest first)
-        whale_list.sort(key=lambda x: x['raw_premium'], reverse=True)
-        root.set("whale_count", str(len(whale_list)))
+            # Calculate metrics
+            df['premium_spent'] = df['volume'] * df['lastPrice'] * 100
+            df['vol_oi_ratio'] = df['volume'] / df['openInterest'].replace(0, 1)
+            df['spread'] = df['ask'] - df['bid']
 
-        # Build the XML tree
-        for w in whale_list:
-            contract = ET.SubElement(root, "contract")
-            for attr in ['symbol', 'type', 'expiration', 'strike', 'last_price', 
-                         'bid', 'ask', 'spread', 'volume', 'open_interest', 
-                         'vol_oi_ratio', 'implied_volatility', 'premium_spent']:
-                contract.set(attr, w[attr])
+            # Filter: Vol/OI ratio and the premium floor
+            mask = (df['vol_oi_ratio'] >= float(min_vol_oi)) & (df['premium_spent'] >= float(min_premium))
+            whales = df[mask].copy()
 
-    except Exception as e:
-        root.set("error", str(e))
+            for _, row in whales.iterrows():
+                whale_list.append({
+                    "symbol": row['contractSymbol'],
+                    "type": label,
+                    "expiration": exp,
+                    "strike": str(row['strike']),
+                    "last_price": f"${row['lastPrice']:.2f}",
+                    "bid": f"${row['bid']:.2f}",
+                    "ask": f"${row['ask']:.2f}",
+                    "spread": f"${row['spread']:.2f}",
+                    "volume": str(int(row['volume'])),
+                    "open_interest": str(int(row['openInterest'])),
+                    "vol_oi_ratio": f"{row['vol_oi_ratio']:.2f}x",
+                    "implied_volatility": f"{row['impliedVolatility']*100:.2f}%",
+                    "premium_spent": f"${row['premium_spent']:,.2f}",
+                    "raw_premium": row['premium_spent'] # For sorting
+                })
+
+    # Sort all found whales by premium spent (Highest first)
+    whale_list.sort(key=lambda x: x['raw_premium'], reverse=True)
+    root.set("whale_count", str(len(whale_list)))
+
+    # Build the XML tree
+    for w in whale_list:
+        contract = ET.SubElement(root, "contract")
+        for attr in ['symbol', 'type', 'expiration', 'strike', 'last_price',
+                     'bid', 'ask', 'spread', 'volume', 'open_interest',
+                     'vol_oi_ratio', 'implied_volatility', 'premium_spent']:
+            contract.set(attr, w[attr])
 
     return root
 
+
+def _whale_hunt_response(root):
+    pretty_xml = minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
+    return Response(pretty_xml, mimetype='application/xml')
+
+
+def _run_preset_scan(strategy):
+    """The morning and evening scans: the same filtered scan and XML as /api/custom with fixed thresholds."""
+    ticker = ticker_arg(xml=True)
+    max_dte, min_vol_oi, min_premium = SCAN_PRESETS[strategy]
+    return _whale_hunt_response(execute_xml_whale_hunt(ticker, min_vol_oi, max_dte, strategy, min_premium))
+
+
+@app.route('/api/morning', methods=['GET'])
+@guarded("Morning scan", 502, xml=True)
+def api_morning():
+    """Short-dated unusual activity: expiring within 14 days, Vol/OI 1.5 or more, premium $100,000 or more."""
+    return _run_preset_scan("MORNING_HUNT")
+
+
+@app.route('/api/evening', methods=['GET'])
+@guarded("Evening scan", 502, xml=True)
+def api_evening():
+    """Large positioning in any expiration: Vol/OI 1.0 or more, premium $500,000 or more."""
+    return _run_preset_scan("EVENING_HUNT")
+
+
 # --- THE ROUTE ---
 @app.route('/api/custom', methods=['GET'])
+@guarded("Custom scan", 502, xml=True)
 def api_custom():
-    ticker = request.args.get('ticker', 'SPY').upper()
-    try:
-        # 1. Parse Parameters
-        min_vol_oi = float(request.args.get('min_vol_oi', 1.0))
-        max_dte = request.args.get('max_dte', 365) # Default to 1 year if not set
-
-        # 2. Execute the hunt
-        xml_root = execute_xml_whale_hunt(ticker, min_vol_oi, max_dte)
-        
-        # 3. Convert to string and return as XML mimetype
-        from xml.dom import minidom
-        raw_xml = ET.tostring(xml_root, encoding='utf-8')
-        pretty_xml = minidom.parseString(raw_xml).toprettyxml(indent="  ")
-        
-        return Response(pretty_xml, mimetype='application/xml')
-
-    except Exception as e:
-        return Response(f"<error>{str(e)}</error>", mimetype='application/xml', status=500)
+    ticker = ticker_arg(xml=True)
+    # An empty field uses the default; an empty max_dte means no limit.
+    min_vol_oi = float_arg('min_vol_oi', 1.0, minimum=0, xml=True)
+    max_dte = int_arg('max_dte', 365, minimum=0, xml=True, blank=0)
+    min_premium = float_arg('min_premium', 100000.0, minimum=0, xml=True)
+    return _whale_hunt_response(execute_xml_whale_hunt(ticker, min_vol_oi, max_dte, "CUSTOM_HUNT", min_premium))
 
 @app.route('/', methods=['GET'])
 def serve_terminal():
@@ -1404,116 +1231,323 @@ def api_help():
     """Outputs the complete API documentation in XML format."""
     help_xml = """<?xml version="1.0" ?>
 <api_documentation>
-  <endpoint path="/api/morning">
-    <description>8:31 AM LOGIC: Hunts for urgent, short-term directional momentum.</description>
-    <defaults max_dte="14 days" min_vol_oi="1.5x" min_premium="$100,000" />
-    <parameters>
-      <param name="ticker" required="true" type="string" example="SPY" />
-    </parameters>
-  </endpoint>
-  
-  <endpoint path="/api/evening">
-    <description>2:00 PM LOGIC: Hunts for massive structural positioning and earnings bets.</description>
-    <defaults max_dte="ALL" min_vol_oi="1.0x" min_premium="$500,000" />
-    <parameters>
-      <param name="ticker" required="true" type="string" example="NVDA" />
-    </parameters>
-  </endpoint>
-  
-  <endpoint path="/api/custom">
-    <description>CUSTOM LOGIC: Dynamic scanner allowing user-defined overrides.</description>
-    <parameters>
-      <param name="ticker" required="true" type="string" example="TSLA" />
-      <param name="min_vol_oi" required="false" type="float" default="1.0" example="3.5" description="Minimum Volume to Open Interest ratio" />
-      <param name="min_premium" required="false" type="float" default="100000" example="1000000" description="Minimum estimated dollars spent" />
-      <param name="max_dte" required="false" type="int" default="None" example="5" description="Maximum days to expiration (Leave blank for ALL)" />
-    </parameters>
-  </endpoint>
+  <reference>Full reference with response shapes, error behavior and known issues: docs/api.md in the repository.</reference>
+  <notes>
+    <note>There is no authentication. Keep the server on a private network.</note>
+    <note>source="stored" reads pipeline output (SQLite, CSV ledgers, daily files). source="live" makes network calls while the request is open.</note>
+    <note>Failures use a real HTTP status. JSON routes answer {"status": "error", "message": ...}; XML routes answer an error element. Messages are short; details are in the server log.</note>
+    <note>A value a live route cannot compute is null, with the reason in the "missing" object of the data (time_arbitrage, option_calc). It is never replaced by a stand-in number.</note>
+    <note>Routes that write something or start a process are POST or DELETE. A POST or DELETE that carries an Origin or Referer for a different host is refused with 403. There is no CORS: other sites cannot read the responses.</note>
+  </notes>
 
-  <endpoint path="/run">
-    <description>SYSTEM: Triggers the local run_dashboard.command script on the Mac and returns the execution timestamp.</description>
-    <parameters />
-  </endpoint>
+  <group name="Terminal and system">
+    <endpoint method="GET" path="/" format="html">
+      <description>The web terminal (templates/terminal.html).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/help" format="xml">
+      <description>This page.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="POST" path="/run" format="json" writes="pipeline run">
+      <description>Starts a full pipeline run (run_dashboard.command with the manual trigger, under zsh) in the background and answers at once. 202 {"status": "started", "pid"}. 409 {"status": "busy", "run_id", "stage"} when a run already holds the run lock. 404 if the script is missing. Output goes to .v2_manual_run.log in the data folder; follow progress with /api/run_status.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/run_status" format="json" source="stored">
+      <description>State of the pipeline run from .v2_run_status.json: run_id, stage, state, pid, mode, started_at, updated_at, finished_at, elapsed_s, error (null when there is no file), plus lock_held. state is running, completed, completed_with_warnings or failed, or interrupted when the file says running but no run holds the lock.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/dump" alias="/dump" format="xml" source="stored">
+      <description>The tactical_ruling.txt and volume_dashboard.txt of the newest daily run folder (folders named like Sep-29-26, newest by the date in the name) merged into one XML document.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/static/{filename}" format="file">
+      <description>Terminal JavaScript and CSS (options_whale/static).</description>
+      <parameters />
+    </endpoint>
+  </group>
 
-  <endpoint path="/dump">
-    <description>DATA: Automatically locates the most recent CME_Data folder and dumps the tactical ruling and volume dashboard text files.</description>
-    <parameters />
-  </endpoint>
+  <group name="Macro and VMRI">
+    <endpoint method="GET" path="/vmri" format="xml" source="stored">
+      <description>The VMRI block from the newest tactical_ruling.txt, with the formulas and the four risk ranges.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/vmri_history" format="json" source="stored">
+      <description>The last 500 rows of the macro ledger: VMRI score, 10-period SMA, 5-period momentum, primary driver and context series (DXY, 10Y yield, VIX, gold, gold/silver ratio, HY OAS). Failures are {"status": "error", "message", "error"} with 404 or 500.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/vmri_chart" format="html" source="stored">
+      <description>VMRI chart page (loads /api/vmri_history).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET,POST" path="/api/war_room" format="json" source="stored">
+      <description>VMRI scenario: applies shifts to the latest ledger values and returns the current and hypothetical VMRI, tier, per-lever impact and where the scores sit in the ledger history. Parameters come from the query string (GET) or a JSON body (POST). 503 naming the ledger column when the macro ledger has no value for DXY, 10Y_Yield, High_Yield_OAS, VIX or VMRI_Score; 400 for a non-numeric parameter.</description>
+      <parameters>
+        <param name="dxy_shift" type="float" default="0" description="Added to DXY" />
+        <param name="tnx_shift" type="float" default="0" description="Added to the 10Y yield" />
+        <param name="oas_shift" type="float" default="0" description="Added to HY OAS" />
+        <param name="vix_shift_pct" type="float" default="0" description="VIX change in percent; takes priority when not 0" />
+        <param name="vix_shift" type="float" default="0" description="VIX change in points; used when vix_shift_pct is 0" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/macro_calendar" format="json" source="stored">
+      <description>Upcoming macro events (date, time, impact, title, forecast, previous) from the newest tactical_ruling.txt.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/macro_news" format="xml" source="live">
+      <description>Top 10 headlines from the Yahoo Finance RSS feed, each with a VADER sentiment score.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/macro_ledger_full" format="json" source="stored">
+      <description>Macro ledger series (VMRI, rates, volatility, commodities, silver and liquidity columns) as parallel arrays.</description>
+      <parameters>
+        <param name="limit" type="int" default="200" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
+      </parameters>
+    </endpoint>
+  </group>
 
-  <endpoint path="/vmri">
-    <description>MACRO: Extracts the latest Vlad Macro Risk Index (VMRI) score, including live calculations, formulas, and the mechanics breakdown from the latest tactical ruling.</description>
-    <parameters />
-  </endpoint>
+  <group name="Options and flow">
+    <endpoint method="GET" path="/api/gex" format="json" source="live">
+      <description>Black-Scholes gamma exposure by strike from the three nearest expirations, within 10 percent of spot, computed with the same function as the pipeline (core/metrics.py gex_profile). zeroGamma is the spot level where aggregate net GEX changes sign; it is null with zeroGammaReason when there is no sign change within 10 percent of spot.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/darkpool" format="json" source="live">
+      <description>Block trades (size 10,000 or more) in the last completed trading session from Databento: volume, notional, VWAP, bias and the 5 latest prints. Databento side B is a buy aggressor and A a sell aggressor, as in the pipeline (core/metrics.py block_flow). sentiment.method is aggressor, or vwap_heuristic when fewer than half of the block volume has a known side. Print sides are BUY, SELL or UNKNOWN. Needs a Databento key.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/institutional_history" format="json" source="stored">
+      <description>Dark pool and GEX history for one ticker from the equities_darkpool_gex_ledger.csv ledger.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SLV" />
+        <param name="limit" type="int" default="100" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/morning" format="xml" source="live">
+      <description>Filtered scan of one ticker, same XML as /api/custom with strategy MORNING_HUNT: expirations within 14 days, Vol/OI of at least 1.5, premium of at least $100,000. No phone alert is sent.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/evening" format="xml" source="live">
+      <description>Filtered scan of one ticker, same XML as /api/custom with strategy EVENING_HUNT: any expiration, Vol/OI of at least 1.0, premium of at least $500,000. No phone alert is sent.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/custom" format="xml" source="live">
+      <description>Unusual-activity scan of the option chains. Keeps contracts with volume x last price x 100 of at least min_premium and Vol/OI at or above min_vol_oi, expiring within max_dte days. Calls and puts, in or out of the money. An empty parameter uses its default. No options for the ticker is a 404 error element; a provider failure is a 502.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+        <param name="min_vol_oi" type="float" default="1.0" description="Minimum volume / open interest" />
+        <param name="max_dte" type="int" default="365" description="Maximum days to expiration; 0 or empty means no limit" />
+        <param name="min_premium" type="float" default="100000" description="Minimum premium in dollars (volume x last price x 100)" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/option_chain" format="json" source="live">
+      <description>Calls and puts (strike, last, bid, ask, iv, oi, volume) for one expiration, plus the first 24 expirations and the spot price.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+        <param name="expiration" type="date" default="first expiration after today" description="YYYY-MM-DD; ignored if not listed" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/option_calc" format="json" source="live">
+      <description>Black-Scholes price, Greeks and probability for one contract, using the live chain implied volatility of that contract. 422 when the chain has no implied volatility for it; 503 when the risk-free rate (^IRX) is unavailable; 400 for a missing strike or a bad expiration or type. hv_pct and iv_signal use the realized volatility of the requested ticker and are null, with a reason in data.missing, when Yahoo has too little history. market_price is null, with a reason in data.missing, when no price was given and the chain has no last price; breakeven then uses the Black-Scholes price.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+        <param name="strike" type="float" default="0" description="Required, above 0" />
+        <param name="expiration" type="date" default="empty" description="YYYY-MM-DD; required" />
+        <param name="type" type="string" default="call" description="call or put" />
+        <param name="market_price" type="float" default="0" description="0 uses the last traded price from the chain" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/time_arbitrage" format="json" source="live">
+      <description>Options analytics for a ticker: z-score oscillator (z_components lists the factors it used), gamma state, vanna and charm, IV bleed, strike probabilities, IV term structure and IV/HV spread. IV bleed, vanna and charm use the 15 call strikes nearest the spot price; probabilities use the 5 nearest strikes. Reads the macro and dark pool ledgers and calls Yahoo Finance. Anything it cannot compute is null, with the reason in data.missing.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" />
+      </parameters>
+    </endpoint>
+  </group>
 
-  <endpoint path="/api/inventory_data">
-    <description>DATA PROXY: Reads the master COMEX inventory history CSV and returns a JSON payload of Registered, Eligible, and Total volumes for time-series analysis.</description>
-    <parameters />
-  </endpoint>
+  <group name="Silver and arbitrage">
+    <endpoint method="POST" path="/api/silver_eagle_prices" format="xml" source="live" writes="appends a row to physical_arbitrage_ledger">
+      <description>Runs ebay.py: prices of tracked 1 oz Silver Eagle listings from the eBay Browse API, with premium over the benchmark, the silver futures price SI=F (the root attribute benchmark_symbol names it; comex_spot is the historical attribute name and holds that price). Each successful call appends a row to the arbitrage ledger (CSV and SQLite). Needs eBay credentials. POST only.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/arbitrage_history" format="json" source="stored">
+      <description>Silver Eagle premium history from physical_arbitrage_ledger.csv, as parallel arrays.</description>
+      <parameters>
+        <param name="limit" type="int" default="50" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/inventory_data" format="json" source="stored">
+      <description>COMEX registered, eligible and total silver inventory by date from comex_inventory_history.csv.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/inventory_chart" format="html" source="stored">
+      <description>COMEX inventory chart page (loads /api/inventory_data).</description>
+      <parameters />
+    </endpoint>
+  </group>
 
-  <endpoint path="/inventory_chart">
-    <description>VISUAL: Serves a full-screen, high-contrast interactive dashboard using Chart.js to visualize physical COMEX silver inventory trends and vault drains.</description>
-    <parameters />
-  </endpoint>
+  <group name="Engine positions">
+    <endpoint method="GET" path="/api/positions" format="json" source="stored and live">
+      <description>Tracked engine positions from the database (opened read-only), with live underlying and option prices and projected values. 503 until a pipeline run has created the database.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="POST" path="/api/positions/{signal_id}/star" format="json" writes="toggles starred">
+      <description>Toggles the star on one position. 404 if the id is unknown.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="DELETE" path="/api/positions/{signal_id}" format="json" writes="stops tracking">
+      <description>Stops tracking a position (marks it deleted; the record is kept). 404 if the id is unknown or already stopped.</description>
+      <parameters />
+    </endpoint>
+  </group>
 
-  <endpoint path="/api/vmri_history">
-    <description>HISTORICAL: Dumps the last 500 records from the macro ledger as JSON for external analysis.</description>
-    <parameters />
-  </endpoint>
+  <group name="Forecast Lab">
+    <endpoint method="GET" path="/api/forecast" format="json" source="stored and live">
+      <description>The Forecast Lab cards of the latest committed snapshot plus the scorecard (graded with live daily closes). The database is opened read-only. 503 until a pipeline run has created the database; 404 when it holds no snapshot with forecast data.</description>
+      <parameters>
+        <param name="ticker" type="string" default="SPY" description="SPY or SLV; anything else returns 400" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/eia_history" format="json" source="stored">
+      <description>Weekly EIA stock and days-of-supply history behind Forecast Lab card 11, built from files the pipeline captured.</description>
+      <parameters />
+    </endpoint>
+  </group>
 
-  <endpoint path="/vmri_chart">
-    <description>VISUAL: A "Mannarino-Style" historical trend chart for the VMRI. Shows risk escalation over time with color-coded threat zones.</description>
-    <parameters />
-  </endpoint>
+  <group name="Rule cards and console">
+    <endpoint method="GET" path="/api/scanner" format="json" source="stored and live">
+      <description>Day Scanner (card 12): the dip-in-an-uptrend rule for every ticker on the saved watchlist, with live quotes, trigger prices and evidence, plus the live-watch paper positions. POST with {"symbol": "XYZ"} checks the ticker against Yahoo and adds it (400 with a reason if it is refused).</description>
+      <parameters>
+        <param name="refresh" type="string" default="" description="1 drops the cached price history, earnings dates and quotes first" />
+      </parameters>
+    </endpoint>
+    <endpoint method="DELETE" path="/api/scanner/{symbol}" format="json" writes="removes a ticker from the watchlist">
+      <description>Removes one ticker from the Day Scanner watchlist and returns the scanner again. SPY cannot be removed.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/edges" format="json" source="live">
+      <description>Edge Lab (card 13): published edges tested on each tracked ticker's own history. POST with {"symbol": "XYZ"} analyses the ticker and tracks it.</description>
+      <parameters>
+        <param name="symbol" type="string" default="" description="Analyse this ticker without saving it; the result is in `query`. An unknown ticker is a 400" />
+        <param name="refresh" type="string" default="" description="1 drops the cached history first" />
+      </parameters>
+    </endpoint>
+    <endpoint method="DELETE" path="/api/edges/{symbol}" format="json" writes="stops tracking a ticker">
+      <description>Removes one ticker from the Edge Lab tracked list and returns the tracked analyses.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/assistant/status" format="json" source="live">
+      <description>Console engine v3: the model server address, whether it is reachable, its models, and the read-only data sources the model may use.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/assistant/data" format="text" source="stored and live">
+      <description>Exactly what the console's model sees for one data source, shaped and size-limited.</description>
+      <parameters>
+        <param name="source" type="string" default="" description="A source name from /api/assistant/status, or brief, or calc" />
+        <param name="q" type="string" default="" description="Query string for the source (e.g. ticker=SPY), or the expression for calc" />
+        <param name="path" type="string" default="" description="Dotted path to one part of the result" />
+        <param name="last" type="int" default="10" description="How many items of long lists to keep" />
+      </parameters>
+    </endpoint>
+    <endpoint method="POST" path="/api/assistant/ask" format="server-sent events">
+      <description>Asks the console engine a question ({"question", "model", "conversation"}). Streams events: delta, replace, thinking, tool, error, done. The model can only read the listed GET sources.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="POST" path="/api/assistant/reset" format="json" writes="forgets one conversation (in memory)">
+      <description>Forgets the conversation with the given id.</description>
+      <parameters />
+    </endpoint>
+  </group>
 </api_documentation>"""
     
     return Response(help_xml, mimetype='application/xml')
 
+# --- RUN CONTROL ---
+RUN_STATUS_KEYS = ("run_id", "stage", "state", "pid", "mode", "started_at", "updated_at", "finished_at",
+                   "elapsed_s", "error")
+_run_start_lock = threading.Lock()
+_manual_run = None   # the Popen of the last run this server started
+
+
+def _read_run_status():
+    """The fields of .v2_run_status.json (null for each one when the file is missing or unreadable)."""
+    raw = runlock.read_status()
+    return {key: raw.get(key) for key in RUN_STATUS_KEYS}
+
+
+def _run_lock_held():
+    try:
+        return bool(runlock.lock_is_held())
+    except OSError:
+        return False
+
+
+@app.route('/api/run_status', methods=['GET'])
+def api_run_status():
+    """State of the pipeline run: the status file plus whether a run holds the lock right now. A file that says
+    "running" while nothing holds the lock is reported as "interrupted" (the run was killed)."""
+    status = _read_run_status()
+    held = _run_lock_held()
+    if status["state"] == "running" and not held:
+        status["state"] = "interrupted"
+    status["lock_held"] = held
+    return jsonify({"status": "success", "data": status})
+
+
 @app.route('/run', methods=['POST'])
 def run_dashboard():
-    """Executes the local dashboard command script and returns the exact timestamp."""
-    script_path = RUN_COMMAND
-    
-    # Verify the file actually exists before trying to run it
-    if not os.path.exists(script_path):
-        return Response("<error>Script not found at specified path.</error>", mimetype='application/xml', status=404)
+    """Starts run_dashboard.command with the manual trigger in the background and answers at once (202).
+    The run's output goes to .v2_manual_run.log in the data folder; its progress is on GET /api/run_status."""
+    global _manual_run
+    if not os.path.exists(RUN_COMMAND):
+        return json_error("run_dashboard.command not found.", 404)
 
-    try:
-        # Run the script. capture_output=True hides the terminal spam from the Flask console.
-        # check=True forces Python to throw an error if the bash script fails or crashes.
-        subprocess.run(["bash", script_path, "manual"], check=True, capture_output=True, text=True)
-        
-        # Grab the exact time down to the second
-        exact_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Build the XML success response
-        root = ET.Element("execution_result", status="SUCCESS", timestamp=exact_time)
-        msg = ET.SubElement(root, "message")
-        msg.text = "Dashboard run initiated and completed successfully."
-        
-        xml_str = minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
-        return Response(xml_str, mimetype='application/xml')
-
-    except subprocess.CalledProcessError as e:
-        # If the bash script crashes, this catches it and outputs the actual bash error
-        return Response(f"<error>Script crashed during execution: {e.stderr}</error>", mimetype='application/xml', status=500)
-    except Exception as e:
-        return Response(f"<error>System Error: {str(e)}</error>", mimetype='application/xml', status=500)
+    with _run_start_lock:
+        if _run_lock_held():
+            status = _read_run_status()
+            return jsonify({"status": "busy", "message": "a run is already in progress",
+                            "run_id": status["run_id"], "stage": status["stage"]}), 409
+        if _manual_run is not None and _manual_run.poll() is None:
+            # started a moment ago and has not taken the lock yet
+            return jsonify({"status": "busy", "message": "a run is already starting", "run_id": None,
+                            "stage": "starting"}), 409
+        try:
+            if not os.path.isdir(DATA_DIR):
+                if os.environ.get("PORTFOLIO_DATA_DIR"):
+                    return json_error("data directory not found.", 503)
+                os.makedirs(DATA_DIR, exist_ok=True)       # the default sibling CME_Data, as the pipeline does
+            with open(MANUAL_RUN_LOG, "ab") as log:
+                log.write(f"\n--- manual run requested {datetime.now().isoformat(timespec='seconds')} ---\n".encode())
+                log.flush()
+                proc = subprocess.Popen(["/bin/zsh", RUN_COMMAND, "manual"], cwd=str(_PROJECT_ROOT),
+                                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                        start_new_session=True)
+        except Exception as e:
+            app.logger.error("Could not start the pipeline run: %s", e, exc_info=e)
+            return json_error("could not start the run (see the server log)", 500)
+        _manual_run = proc
+        threading.Thread(target=proc.wait, daemon=True).start()     # reap the child when it ends
+    return jsonify({"status": "started", "pid": proc.pid}), 202
 
 @app.route('/api/dump', methods=['GET'])
 @app.route('/dump', methods=['GET'])
 def dump_data():
-    """Finds the most recent CME_Data folder and intelligently merges XML files."""
-    base_dir = str(_DATA_DIR) + "/"
-    
-    if not os.path.exists(base_dir):
-        return Response("<error>CME_Data directory not found.</error>", mimetype='application/xml', status=404)
+    """Finds the most recent daily run folder and intelligently merges XML files."""
+    folders = _run_folders()
+    if folders is None:
+        return xml_error("Data directory not found.", 404)
 
-    # 1. Locate the latest folder
-    subdirs = [os.path.join(base_dir, d) for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
-    if not subdirs:
-        return Response("<error>No folders found.</error>", mimetype='application/xml', status=404)
-    subdirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-    latest_folder = subdirs[0]
+    # 1. Locate the latest daily folder (by the date in its name)
+    if not folders:
+        return xml_error("No daily run folders found.", 404)
+    latest_folder = folders[0]
 
     # 2. Setup paths
     tactical_path = os.path.join(latest_folder, "tactical_ruling.txt")
@@ -1530,7 +1564,8 @@ def dump_data():
                 clean = re.sub(r'<\?xml[^>]*\?>', '', content).strip()
                 try:
                     return ET.fromstring(clean)
-                except: return None
+                except ET.ParseError:
+                    return None
         return None
 
     # 4. INTELLECTUALLY MERGE
@@ -1562,17 +1597,11 @@ def dump_data():
 @app.route('/vmri', methods=['GET'])
 def get_vmri():
     """Extracts the latest VMRI score and outputs it with full documentation and formulas."""
-    base_dir = str(_DATA_DIR) + "/"
-    
-    if not os.path.exists(base_dir):
-        return Response("<error>CME_Data directory not found.</error>", mimetype='application/xml', status=404)
-
-    # Find the newest folder
-    subdirs = [os.path.join(base_dir, d) for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
+    subdirs = _run_folders()      # daily run folders, newest first by the date in the name
+    if subdirs is None:
+        return xml_error("Data directory not found.", 404)
     if not subdirs:
-        return Response("<error>No daily folders found.</error>", mimetype='application/xml', status=404)
-
-    subdirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        return xml_error("No daily run folders found.", 404)
 
     latest_folder = None
     tactical_content = ""
@@ -1587,7 +1616,7 @@ def get_vmri():
             break
 
     if not tactical_content:
-        return Response("<error>tactical_ruling.txt not found in recent folders.</error>", mimetype='application/xml', status=404)
+        return xml_error("tactical_ruling.txt not found in recent folders.", 404)
 
     clean_content = re.sub(r'<\?xml[^>]*\?>', '', tactical_content).strip()
     
@@ -1596,7 +1625,7 @@ def get_vmri():
         vmri_node = tactical_tree.find(".//VLAD_MACRO_RISK_INDEX")
         
         if vmri_node is None:
-            return Response("<error>VMRI data not found inside the latest tactical ruling.</error>", mimetype='application/xml', status=404)
+            return xml_error("VMRI data not found inside the latest tactical ruling.", 404)
 
         root = ET.Element("vmri_report", timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'), source_folder=os.path.basename(latest_folder))
         
@@ -1620,9 +1649,9 @@ def get_vmri():
         # Base Stress
         bs = ET.SubElement(mechanics_doc, "metric", name="Base Stress")
         bs_desc = ET.SubElement(bs, "description")
-        bs_desc.text = "The foundational risk score derived from interest rate volatility, 10-Year Treasury yields, and systemic liquidity."
+        bs_desc.text = "The dollar and rates component: the US Dollar Index (DXY) times the 10-Year Treasury yield, scaled by 1.61."
         bs_form = ET.SubElement(bs, "formula")
-        bs_form.text = "(DXY * 1.5) + (10Y Yield * 15) + (150 - ZN Futures) + (Reverse Repo * 10)"
+        bs_form.text = "(DXY * 10Y Yield) / 1.61"
         
         # Credit Multiplier
         cm = ET.SubElement(mechanics_doc, "metric", name="Credit Multiplier")
@@ -1644,10 +1673,10 @@ def get_vmri():
         
         # Ranges
         ranges = ET.SubElement(doc_node, "ranges")
-        ET.SubElement(ranges, "level", range="0 - 150", status="RISK ON", action="Maximize long exposure. Volatility is suppressed.")
-        ET.SubElement(ranges, "level", range="150 - 250", status="BASELINE", action="Normal market conditions. Standard position sizing.")
+        ET.SubElement(ranges, "level", range="0 - 150", status="LOW RISK", action="Maximize long exposure. Volatility is suppressed.")
+        ET.SubElement(ranges, "level", range="150 - 250", status="MODERATE RISK", action="Normal market conditions. Standard position sizing.")
         ET.SubElement(ranges, "level", range="250 - 350", status="ELEVATED RISK", action="Hedge triggers active. Reduce beta, increase cash.")
-        ET.SubElement(ranges, "level", range="350+", status="SEVERE STRESS", action="Liquidity event probable. Maximum defensive posture.")
+        ET.SubElement(ranges, "level", range="350+", status="SYSTEMIC THREAT", action="Liquidity event probable. Maximum defensive posture.")
 
         # Generate pretty XML
         xml_str = minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
@@ -1656,7 +1685,8 @@ def get_vmri():
         return Response(xml_str, mimetype='application/xml')
 
     except Exception as e:
-        return Response(f"<error>Failed to parse VMRI data: {str(e)}</error>", mimetype='application/xml', status=500)
+        app.logger.error("VMRI report failed: %s", e, exc_info=e)
+        return xml_error("Failed to parse the VMRI data (see the server log).", 500)
 
 @app.route('/api/macro_news', methods=['GET'])
 def api_macro_news():
@@ -1675,7 +1705,7 @@ def api_macro_news():
         response = requests.get(rss_url, headers=headers, timeout=5)
         
         if response.status_code != 200:
-            return Response(f"<error>Failed to fetch feed. HTTP Status: {response.status_code}</error>", mimetype='application/xml', status=502)
+            return xml_error(f"Failed to fetch the news feed (HTTP {response.status_code}).", 502)
             
         # Parse the XML feed
         feed_tree = ET.fromstring(response.content)
@@ -1704,19 +1734,18 @@ def api_macro_news():
         return Response(xml_str, mimetype='application/xml')
 
     except Exception as e:
-        return Response(f"<error>System Error: {str(e)}</error>", mimetype='application/xml', status=500)
+        app.logger.error("Macro news failed: %s", e, exc_info=e)
+        return xml_error("Macro news failed (see the server log).", 502)
 
 # ==========================================
 # --- INSTITUTIONAL FLOW HISTORY API ---
 # ==========================================
 
-INSTITUTIONAL_LEDGER_CSV = os.path.join(DATA_DIR, "equities_darkpool_gex_ledger.csv")
-
 @app.route('/api/institutional_history')
 def get_institutional_history():
     """Returns time-series data from the institutional scanner ledger (SPY + SLV dark pool + GEX)."""
-    ticker = request.args.get('ticker', 'SLV').upper()
-    limit = int(request.args.get('limit', 100))
+    ticker = (request.args.get('ticker') or 'SLV').upper()
+    limit = int_arg('limit', 100)
     
     try:
         if not os.path.exists(INSTITUTIONAL_LEDGER_CSV):
@@ -1758,7 +1787,8 @@ def get_institutional_history():
         return jsonify({"status": "success", "data": payload})
     
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        app.logger.error("Institutional history failed: %s", e, exc_info=e)
+        return json_error("Institutional history failed (see the server log).", 500)
 
 # ==========================================
 # --- MACRO CALENDAR API ---
@@ -1768,15 +1798,11 @@ def get_institutional_history():
 def get_macro_calendar():
     """Extracts upcoming macro catalyst events from the latest tactical_ruling.txt XML."""
     try:
-        base_dir = str(_DATA_DIR) + "/"
-        
-        if not os.path.exists(base_dir):
-            return jsonify({"status": "error", "message": "CME_Data directory not found."}), 404
-        
-        # Find the latest folder with a tactical_ruling.txt
-        subdirs = [os.path.join(base_dir, d) for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
-        subdirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-        
+        # Find the latest daily folder (newest by the date in its name) with a tactical_ruling.txt
+        subdirs = _run_folders()
+        if subdirs is None:
+            return json_error("Data directory not found.", 404)
+
         tactical_content = None
         for folder in subdirs:
             tac_path = os.path.join(folder, "tactical_ruling.txt")
@@ -1809,7 +1835,8 @@ def get_macro_calendar():
         return jsonify({"status": "success", "events": events})
     
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        app.logger.error("Macro calendar failed: %s", e, exc_info=e)
+        return json_error("Macro calendar failed (see the server log).", 500)
 
 # ==========================================
 # --- FULL MACRO LEDGER API ---
@@ -1818,7 +1845,7 @@ def get_macro_calendar():
 @app.route('/api/macro_ledger_full')
 def get_macro_ledger_full():
     """Returns all 25 columns from the macro master ledger for full overlay charting."""
-    limit = int(request.args.get('limit', 200))
+    limit = int_arg('limit', 200)
     
     try:
         if not os.path.exists(LEDGER_CSV):
@@ -1883,182 +1910,196 @@ def get_macro_ledger_full():
         return jsonify({"status": "success", "data": payload})
     
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        app.logger.error("Macro ledger failed: %s", e, exc_info=e)
+        return json_error("Macro ledger failed (see the server log).", 500)
+
+def _ledger_gamma_inputs(ticker_symbol):
+    """(spot, zero_gamma, reason) from the pipeline's latest stored GEX row for the ticker. A value that is not
+    stored is None, and `reason` says why the zero-gamma level is missing."""
+    df = data_cache.get_csv(INSTITUTIONAL_LEDGER_CSV)
+    if df.empty or 'Ticker' not in df:
+        return None, None, "no stored GEX ledger yet: run the pipeline"
+    rows = df[df['Ticker'].astype(str).str.upper() == ticker_symbol].tail(1)
+    if rows.empty:
+        return None, None, f"no stored GEX row for {ticker_symbol} (the pipeline records SPY and SLV)"
+    row = rows.iloc[0]
+    spot, zero_gamma = _num(row.get('Spot_Price')), _num(row.get('GEX_Zero_Gamma'))
+    if spot is None or spot <= 0:
+        return None, None, f"the latest stored GEX row for {ticker_symbol} has no spot price"
+    if zero_gamma is None:
+        return spot, None, f"the latest stored GEX row for {ticker_symbol} has no zero-gamma level"
+    return spot, zero_gamma, None
+
+
+def _atm_iv(calls, spot):
+    """Implied volatility of the call nearest the spot price, or None."""
+    if calls is None or calls.empty:
+        return None
+    iv = _num(calls.loc[(calls['strike'] - spot).abs().idxmin(), 'impliedVolatility'])
+    return iv if iv is not None and iv > 0 else None
+
 
 @app.route('/api/time_arbitrage')
+@guarded("Time arbitrage", 502)
 def get_time_arbitrage():
-    ticker_symbol = request.args.get('ticker', 'SPY').upper()
-    
-    try:
-        # 1. Get Live Data for Oscillator
-        vix_data = yf.Ticker("^VIX").history(period='1d')
-        current_vix = vix_data['Close'].iloc[-1] if not vix_data.empty else 20.0
-        
-        # Pull latest GEX/DIX from Macro Ledger
-        df_macro = data_cache.get_csv(LEDGER_CSV)
-        latest_macro = df_macro.iloc[-1]
-        current_gex = latest_macro.get('GEX', 0)
-        current_dix = latest_macro.get('DIX', 0)
-        
-        z_score = quant.calculate_z_score_oscillator({
-            'vix': current_vix,
-            'gex': current_gex,
-            'dix': current_dix
+    ticker_symbol = ticker_arg()
+    tk = yf.Ticker(ticker_symbol)
+    # Anything that cannot be computed is None here, with the reason in `missing` (no stand-in numbers).
+    missing = {}
+
+    # 1. Oscillator: live VIX plus the latest GEX/DIX of the macro ledger. A component without a value is left
+    # out of the composite and reported.
+    current_vix = _live_spot(yf.Ticker("^VIX"))
+    df_macro = data_cache.get_csv(LEDGER_CSV)
+    latest_macro = df_macro.iloc[-1] if not df_macro.empty else None
+    oscillator = quant.calculate_z_score_oscillator({
+        'vix': current_vix,
+        'gex': latest_macro.get('GEX') if latest_macro is not None else None,
+        'dix': latest_macro.get('DIX') if latest_macro is not None else None,
+    })
+    z_score = oscillator['score']
+    if z_score is None:
+        why = "; ".join(f"{name}: {reason}" for name, reason in oscillator['components_missing'].items())
+        missing['z_score'] = f"no oscillator component could be computed ({why})"
+
+    # 2. Gamma state: the pipeline's stored spot and zero-gamma level for the ticker (a consistent pair)
+    ledger_spot, zero_gamma, gamma_reason = _ledger_gamma_inputs(ticker_symbol)
+    gamma_state = None
+    if ledger_spot is not None and zero_gamma is not None:
+        gamma_state = quant.get_gamma_state(ledger_spot, zero_gamma)
+    else:
+        missing['gamma_state'] = gamma_reason
+
+    # Spot for the option maths: the live price, else the stored one
+    spot_price = _live_spot(tk)
+    if spot_price is None:
+        spot_price = ledger_spot
+    if spot_price is None:
+        raise ApiError("Could not fetch the spot price.", 502)
+
+    # 2b. Fetch Chain for Analytics & Filter 0DTE
+    expirations = tk.options
+    if not expirations:
+        raise ApiError("No options available for this ticker.", 404)
+
+    # Filter out 0DTE
+    exp = expirations[0]
+    for potential_exp in expirations:
+        days = (datetime.strptime(potential_exp, '%Y-%m-%d') - datetime.now()).days
+        if days > 0:
+            exp = potential_exp
+            break
+
+    chain = tk.option_chain(exp)
+
+    # ATM IV and Realized Volatility for the IV/HV Spread
+    atm_iv = _atm_iv(chain.calls, spot_price)
+    if atm_iv is None:
+        missing['atm_implied_volatility'] = "no usable implied volatility on the call nearest the spot price"
+    realized_vol = quant.calculate_realized_volatility(ticker_symbol)
+    if realized_vol is None:
+        missing['realized_volatility_20d'] = f"not enough price history for {ticker_symbol}"
+    iv_hv_spread = {
+        'realized_volatility_20d': realized_vol,
+        'atm_implied_volatility': atm_iv
+    }
+
+    # Term Structure Caching
+    term_structure = data_cache.get(f"{ticker_symbol}_term_structure")
+    if not term_structure:
+        term_structure = []
+        targets = [7, 30, 90, 180]
+        for target in targets:
+            try:
+                closest_exp = min(expirations, key=lambda x: abs((datetime.strptime(x, '%Y-%m-%d') - datetime.now()).days - target))
+                chain_t = tk.option_chain(closest_exp)
+                t_iv = _atm_iv(chain_t.calls, spot_price)
+                days_t = max(1, (datetime.strptime(closest_exp, '%Y-%m-%d') - datetime.now()).days)
+                if t_iv is not None:
+                    term_structure.append({'days': days_t, 'iv': t_iv})
+            except Exception as exc:
+                app.logger.warning("term structure point %s %s failed: %s", ticker_symbol, target, exc)
+        if term_structure:
+            data_cache.set(f"{ticker_symbol}_term_structure", term_structure)
+    if not term_structure:
+        missing['term_structure'] = "no expiration returned a usable at-the-money implied volatility"
+
+    # 3. IV Bleed & Historical Baseline: the 15 call strikes nearest the spot price, in strike order, against the
+    # 20-day trailing realized volatility
+    hist_iv_baseline = realized_vol
+    calls = chain.calls
+    near_strikes = calls.assign(_dist=(calls['strike'] - spot_price).abs()).nsmallest(15, '_dist').sort_values('strike')
+
+    days_to_exp = (datetime.strptime(exp, '%Y-%m-%d') - datetime.now()).days
+    if days_to_exp <= 0: days_to_exp = 1
+
+    r_rate = quant.get_risk_free_rate()
+    iv_bleed = []
+    strikes_with_iv = []
+    aggregate_vanna = 0.0
+    aggregate_charm = 0.0
+    vanna_profile = []
+
+    for _, row in near_strikes.iterrows():
+        live_iv = _num(row['impliedVolatility'])
+        if live_iv is not None and live_iv <= 0:
+            live_iv = None
+        strike = float(row['strike'])
+
+        iv_bleed.append({
+            'strike': strike,
+            'live_iv': live_iv,
+            'hist_iv': hist_iv_baseline,
+            'bleed': (live_iv - hist_iv_baseline) / hist_iv_baseline
+                     if live_iv is not None and hist_iv_baseline else None
         })
-        
-        # 2. Gamma State (from Institutional Ledger)
-        INST_LEDGER = str(_DATA_DIR / "equities_darkpool_gex_ledger.csv")
-        zero_gamma = 0
-        spot_price = 0
-        
-        if os.path.exists(INST_LEDGER):
-            df_inst = data_cache.get_csv(INST_LEDGER)
-            ticker_inst = df_inst[df_inst['Ticker'] == ticker_symbol].tail(1)
-            if not ticker_inst.empty:
-                inst_row = ticker_inst.iloc[0]
-                spot_price = float(inst_row['Spot_Price'])
-                zero_gamma = float(inst_row['GEX_Zero_Gamma'])
-        
-        if spot_price == 0:
-            ticker = yf.Ticker(ticker_symbol)
-            spot_price = ticker.info.get('regularMarketPrice') or ticker.history(period='1d')['Close'].iloc[-1]
-            zero_gamma = spot_price * 0.995 
-        
-        gamma_state = quant.get_gamma_state(spot_price, zero_gamma)
-        
-        # 2b. Fetch Chain for Analytics & Filter 0DTE
-        ticker = yf.Ticker(ticker_symbol)
-        expirations = ticker.options
-        if not expirations:
-            return jsonify({"status": "error", "message": "No options available for this ticker."})
-        
-        # Filter out 0DTE
-        exp = expirations[0]
-        for potential_exp in expirations:
-            days = (datetime.strptime(potential_exp, '%Y-%m-%d') - datetime.now()).days
-            if days > 0:
-                exp = potential_exp
-                break
-                
-        chain = ticker.option_chain(exp)
-        
-        # Calculate ATM IV and Realized Volatility for IV/HV Spread
-        try:
-            atm_idx = (chain.calls['strike'] - spot_price).abs().idxmin()
-            atm_iv = chain.calls.loc[atm_idx, 'impliedVolatility']
-        except:
-            atm_iv = 0.20
-            
-        realized_vol = quant.calculate_realized_volatility(ticker_symbol)
-        iv_hv_spread = {
-            'realized_volatility_20d': float(realized_vol),
-            'atm_implied_volatility': float(atm_iv)
+
+        if live_iv is None:
+            continue
+        strikes_with_iv.append({'strike': strike, 'iv': live_iv})
+
+        # Second-order Greeks, weighted by open interest (a contract with unknown open interest is left out)
+        oi = _num(row['openInterest'])
+        if r_rate is not None and oi is not None:
+            vanna = quant.calculate_vanna(spot_price, strike, days_to_exp, r_rate, live_iv, is_call=True)
+            charm = quant.calculate_charm(spot_price, strike, days_to_exp, r_rate, live_iv, is_call=True)
+            aggregate_vanna += vanna * oi
+            aggregate_charm += charm * oi
+            vanna_profile.append({'strike': strike, 'vanna': float(vanna * oi), 'charm': float(charm * oi)})
+    if hist_iv_baseline is None:
+        missing['iv_bleed'] = "bleed needs the 20-day realized volatility"
+
+    # 4. Probabilities (Skew-Adjusted & Time-Accurate): the 5 strikes with an implied volatility nearest the spot
+    nearest = sorted(strikes_with_iv, key=lambda item: abs(item['strike'] - spot_price))[:5]
+    nearest.sort(key=lambda item: item['strike'])
+    prob_matrix = quant.calculate_strike_probabilities(spot_price, nearest, days_list=[3, 5, 7], r=r_rate)
+    if r_rate is None:
+        missing['probabilities'] = missing['dealer_trapdoor'] = "risk-free rate unavailable (Yahoo ^IRX)"
+    elif not prob_matrix:
+        missing['probabilities'] = "no strike near the spot price has an implied volatility"
+    if r_rate is not None and not vanna_profile:
+        missing['dealer_trapdoor'] = "no strike near the spot price has both implied volatility and open interest"
+
+    dealer_trapdoor = {
+        "vanna_exposure": float(aggregate_vanna) if vanna_profile else None,
+        "charm_exposure": float(aggregate_charm) if vanna_profile else None,
+        "vanna_profile": vanna_profile
+    }
+
+    return jsonify(_json_safe({
+        "status": "success",
+        "data": {
+            "z_score": z_score,
+            "z_components": {"used": oscillator['components_used'], "missing": oscillator['components_missing']},
+            "gamma_state": gamma_state,
+            "dealer_trapdoor": dealer_trapdoor,
+            "iv_bleed": iv_bleed,
+            "probabilities": prob_matrix,
+            "term_structure": term_structure,
+            "iv_hv_spread": iv_hv_spread,
+            "missing": missing
         }
-        
-        # Term Structure Caching
-        term_structure = data_cache.get(f"{ticker_symbol}_term_structure")
-        if not term_structure:
-            term_structure = []
-            targets = [7, 30, 90, 180]
-            for target in targets:
-                try:
-                    closest_exp = min(expirations, key=lambda x: abs((datetime.strptime(x, '%Y-%m-%d') - datetime.now()).days - target))
-                    chain_t = ticker.option_chain(closest_exp)
-                    idx = (chain_t.calls['strike'] - spot_price).abs().idxmin()
-                    t_iv = chain_t.calls.loc[idx, 'impliedVolatility']
-                    days_t = max(1, (datetime.strptime(closest_exp, '%Y-%m-%d') - datetime.now()).days)
-                    term_structure.append({'days': days_t, 'iv': float(t_iv)})
-                except:
-                    pass
-            if term_structure:
-                data_cache.set(f"{ticker_symbol}_term_structure", term_structure)
-        
-        # 3. IV Bleed & Historical Baseline
-        hist_iv_baseline = realized_vol # Use the exact 20-day trailing realized volatility
-
-        iv_bleed = []
-        strikes_with_iv = []
-        
-        days_to_exp = (datetime.strptime(exp, '%Y-%m-%d') - datetime.now()).days
-        if days_to_exp <= 0: days_to_exp = 1
-        
-        r_rate = quant.get_risk_free_rate()
-        aggregate_vanna = 0.0
-        aggregate_charm = 0.0
-        vanna_profile = []
-        
-        for i in range(min(15, len(chain.calls))):
-            row = chain.calls.iloc[i]
-            live_iv = row['impliedVolatility']
-            strike = float(row['strike'])
-            
-            # Use real baseline instead of random mock
-            hist_iv = float(hist_iv_baseline)
-            
-            iv_bleed.append({
-                'strike': strike,
-                'live_iv': float(live_iv),
-                'hist_iv': float(hist_iv),
-                'bleed': float((live_iv - hist_iv) / hist_iv if hist_iv > 0 else 0)
-            })
-            
-            strikes_with_iv.append({'strike': strike, 'iv': live_iv})
-            
-            # Second-order Greeks
-            if live_iv > 0:
-                vanna = quant.calculate_vanna(spot_price, strike, days_to_exp, r_rate, live_iv, is_call=True)
-                charm = quant.calculate_charm(spot_price, strike, days_to_exp, r_rate, live_iv, is_call=True)
-                # Weight by open interest, default to 1 if missing
-                oi = row['openInterest'] if pd.notna(row['openInterest']) and row['openInterest'] > 0 else 1
-                aggregate_vanna += vanna * oi
-                aggregate_charm += charm * oi
-                vanna_profile.append({'strike': strike, 'vanna': float(vanna * oi), 'charm': float(charm * oi)})
-            
-        # 4. Probabilities (Skew-Adjusted & Time-Accurate)
-        prob_matrix = quant.calculate_strike_probabilities(spot_price, strikes_with_iv[:5], days_list=[3, 5, 7])
-            
-        dealer_trapdoor = {
-            "vanna_exposure": float(aggregate_vanna),
-            "charm_exposure": float(aggregate_charm),
-            "vanna_profile": vanna_profile
-        }
-
-        return jsonify({
-            "status": "success",
-            "data": {
-                "z_score": z_score,
-                "gamma_state": gamma_state,
-                "dealer_trapdoor": dealer_trapdoor,
-                "iv_bleed": iv_bleed,
-                "probabilities": prob_matrix,
-                "term_structure": term_structure,
-                "iv_hv_spread": iv_hv_spread
-            }
-        })
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
-@app.route('/api/macro_direction')
-def get_macro_direction():
-    """Consolidated endpoint for Tab 1 (Macro Direction) data snapshots."""
-    try:
-        # Pull latest from ledger
-        df = data_cache.get_csv(LEDGER_CSV).tail(1)
-        if df.empty:
-            return jsonify({"status": "error", "message": "No ledger data."})
-            
-        latest = df.iloc[0].to_dict()
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "vmri": latest.get('VMRI_Score'),
-                "sentiment_bias": "NEUTRAL"
-            }
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+    }))
 
 
 # ==========================================
@@ -2066,129 +2107,133 @@ def get_macro_direction():
 # ==========================================
 
 @app.route('/api/option_chain', methods=['GET'])
+@guarded("Option chain", 502)
 def get_option_chain():
     """Returns all expirations and strikes for a ticker."""
-    ticker_symbol = request.args.get('ticker', 'SPY').upper()
-    expiration = request.args.get('expiration', None)
-    try:
-        tk = yf.Ticker(ticker_symbol)
-        spot_info = tk.history(period='1d')
-        if spot_info.empty:
-            return jsonify({"status": "error", "message": "Could not fetch spot price."})
-        spot = float(spot_info['Close'].iloc[-1])
+    ticker_symbol = ticker_arg()
+    expiration = request.args.get('expiration') or None
+    tk = yf.Ticker(ticker_symbol)
+    spot = _live_spot(tk)
+    if spot is None:
+        raise ApiError("Could not fetch the spot price.", 502)
 
-        expirations = list(tk.options)
-        if not expirations:
-            return jsonify({"status": "error", "message": "No options found for this ticker."})
+    expirations = list(tk.options)
+    if not expirations:
+        raise ApiError("No options found for this ticker.", 404)
 
-        if expiration and expiration in expirations:
-            selected_exp = expiration
-        else:
-            # Default: first non-0DTE
-            selected_exp = expirations[0]
-            for e in expirations:
-                if (datetime.strptime(e, '%Y-%m-%d') - datetime.now()).days > 0:
-                    selected_exp = e
-                    break
+    if expiration and expiration in expirations:
+        selected_exp = expiration
+    else:
+        # Default: first non-0DTE
+        selected_exp = expirations[0]
+        for e in expirations:
+            if (datetime.strptime(e, '%Y-%m-%d') - datetime.now()).days > 0:
+                selected_exp = e
+                break
 
-        chain = tk.option_chain(selected_exp)
-        days_to_exp = max(1, (datetime.strptime(selected_exp, '%Y-%m-%d') - datetime.now()).days)
+    chain = tk.option_chain(selected_exp)
+    days_to_exp = max(1, (datetime.strptime(selected_exp, '%Y-%m-%d') - datetime.now()).days)
 
-        def format_contracts(df, option_type):
-            rows = []
-            for _, row in df.iterrows():
-                iv = row.get('impliedVolatility', 0)
-                last = row.get('lastPrice', 0)
-                bid = row.get('bid', 0)
-                ask = row.get('ask', 0)
-                oi = row.get('openInterest', 0)
-                volume = row.get('volume', 0)
-                rows.append({
-                    'strike': float(row['strike']),
-                    'type': option_type,
-                    'last': float(last) if pd.notna(last) else 0,
-                    'bid': float(bid) if pd.notna(bid) else 0,
-                    'ask': float(ask) if pd.notna(ask) else 0,
-                    'iv': float(iv) if pd.notna(iv) else 0,
-                    'oi': int(oi) if pd.notna(oi) else 0,
-                    'volume': int(volume) if pd.notna(volume) else 0,
-                })
-            return rows
+    def format_contracts(df, option_type):
+        rows = []
+        for _, row in df.iterrows():
+            iv = row.get('impliedVolatility', 0)
+            last = row.get('lastPrice', 0)
+            bid = row.get('bid', 0)
+            ask = row.get('ask', 0)
+            oi = row.get('openInterest', 0)
+            volume = row.get('volume', 0)
+            rows.append({
+                'strike': float(row['strike']),
+                'type': option_type,
+                'last': float(last) if pd.notna(last) else 0,
+                'bid': float(bid) if pd.notna(bid) else 0,
+                'ask': float(ask) if pd.notna(ask) else 0,
+                'iv': float(iv) if pd.notna(iv) else 0,
+                'oi': int(oi) if pd.notna(oi) else 0,
+                'volume': int(volume) if pd.notna(volume) else 0,
+            })
+        return rows
 
-        calls = format_contracts(chain.calls, 'call')
-        puts = format_contracts(chain.puts, 'put')
+    calls = format_contracts(chain.calls, 'call')
+    puts = format_contracts(chain.puts, 'put')
 
-        return jsonify({
-            "status": "success",
-            "data": {
-                "ticker": ticker_symbol,
-                "spot": spot,
-                "expirations": expirations[:24],  # limit to next ~2 years
-                "selected_expiration": selected_exp,
-                "days_to_exp": days_to_exp,
-                "calls": calls,
-                "puts": puts,
-            }
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+    return jsonify({
+        "status": "success",
+        "data": {
+            "ticker": ticker_symbol,
+            "spot": spot,
+            "expirations": expirations[:24],  # limit to next ~2 years
+            "selected_expiration": selected_exp,
+            "days_to_exp": days_to_exp,
+            "calls": calls,
+            "puts": puts,
+        }
+    })
 
 
 @app.route('/api/option_calc', methods=['GET'])
+@guarded("Option calculation", 502)
 def calculate_option():
-    """Runs full Black-Scholes analytics on a specific contract."""
+    """Runs full Black-Scholes analytics on a specific contract. It needs the contract's implied volatility from
+    the live chain (422 when there is none) and the risk-free rate (503 when Yahoo has none): nothing is assumed."""
+    ticker_symbol = ticker_arg()
+    strike = float_arg('strike', 0.0)
+    if strike <= 0:
+        raise ApiError("strike must be a positive number", 400)
+    expiration = request.args.get('expiration', '')
     try:
-        ticker_symbol = request.args.get('ticker', 'SPY').upper()
-        strike = float(request.args.get('strike', 0))
-        expiration = request.args.get('expiration', '')
-        option_type = request.args.get('type', 'call').lower()
-        market_price = float(request.args.get('market_price', 0))
+        expiration_date = datetime.strptime(expiration, '%Y-%m-%d')
+    except ValueError:
+        raise ApiError("expiration must be a date like 2026-12-18", 400)
+    option_type = request.args.get('type', 'call').lower()
+    if option_type not in ('call', 'put'):
+        raise ApiError("type must be call or put", 400)
+    market_price = float_arg('market_price', 0.0, minimum=0)
 
-        tk = yf.Ticker(ticker_symbol)
-        spot_info = tk.history(period='1d')
-        if spot_info.empty:
-            return jsonify({"status": "error", "message": "Could not fetch spot price."})
-        spot = float(spot_info['Close'].iloc[-1])
+    tk = yf.Ticker(ticker_symbol)
+    spot = _live_spot(tk)
+    if spot is None:
+        raise ApiError("Could not fetch the spot price.", 502)
 
-        days = max(1, (datetime.strptime(expiration, '%Y-%m-%d') - datetime.now()).days)
-        r = quant.get_risk_free_rate()
+    days = max(1, (expiration_date - datetime.now()).days)
+    r = quant.get_risk_free_rate()
+    if r is None:
+        raise ApiError("risk-free rate unavailable (Yahoo ^IRX)", 503)
 
-        # Pull IV from the live chain for accuracy
-        iv = 0.20
-        try:
-            chain = tk.option_chain(expiration)
-            df = chain.calls if option_type == 'call' else chain.puts
-            match = df[df['strike'] == strike]
-            if not match.empty:
-                iv_raw = match.iloc[0]['impliedVolatility']
-                if pd.notna(iv_raw) and iv_raw > 0:
-                    iv = float(iv_raw)
-                mp = match.iloc[0]['lastPrice']
-                if market_price == 0 and pd.notna(mp):
-                    market_price = float(mp)
-        except Exception:
-            pass
+    # Pull IV from the live chain for accuracy
+    try:
+        chain = tk.option_chain(expiration)
+    except Exception as exc:
+        app.logger.warning("option chain %s %s failed: %s", ticker_symbol, expiration, exc)
+        raise ApiError("option chain unavailable for this expiration", 502)
+    df = chain.calls if option_type == 'call' else chain.puts
+    match = df[df['strike'] == strike]
+    if match.empty:
+        raise ApiError("contract not found in the option chain, so it has no implied volatility", 422)
+    iv = _num(match.iloc[0]['impliedVolatility'])
+    if iv is None or iv <= 0:
+        raise ApiError("the option chain has no implied volatility for this contract", 422)
+    last_price = _num(match.iloc[0]['lastPrice'])
+    if market_price == 0 and last_price is not None:
+        market_price = last_price
 
-        analytics = quant.calculate_option_analytics(
-            spot=spot, strike=strike, days=days,
-            r=r, vol=iv, option_type=option_type,
-            market_price=market_price
-        )
-        analytics['spot'] = round(spot, 2)
-        analytics['strike'] = strike
-        analytics['expiration'] = expiration
-        analytics['days_to_exp'] = days
-        analytics['option_type'] = option_type.upper()
+    analytics = quant.calculate_option_analytics(
+        spot=spot, strike=strike, days=days,
+        r=r, vol=iv, option_type=option_type,
+        market_price=market_price, ticker=ticker_symbol
+    )
+    analytics['spot'] = round(spot, 2)
+    analytics['strike'] = strike
+    analytics['expiration'] = expiration
+    analytics['days_to_exp'] = days
+    analytics['option_type'] = option_type.upper()
 
-        return jsonify({"status": "success", "data": analytics})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+    return jsonify({"status": "success", "data": _json_safe(analytics)})
 
 # ==========================================
 # --- TRACKED ENGINE POSITIONS (v2_trade_signals) ---
 # ==========================================
-from config import DB_PATH as _V2_DB_PATH
-from core import lake as _v2lake, positions as _v2pos
 
 
 def _cached_underlying(sym):
@@ -2235,43 +2280,92 @@ def _cached_daily_closes(sym):
     return s
 
 
+def _uninitialised(exc):
+    """True when a sqlite error means the database or one of its tables has not been created yet (no run has
+    happened). Other errors (a locked or damaged file) are not that."""
+    text = str(exc).lower()
+    return "no such table" in text or "no such view" in text or "unable to open database" in text
+
+
+def _not_initialised():
+    return json_error("database not initialised: run the pipeline once", 503)
+
+
+def _open_readonly():
+    """A read-only connection to the pipeline database, or None when the file does not exist yet."""
+    try:
+        return _v2lake.connect_readonly(_V2_DB_PATH)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return None
+        raise
+
+
 @app.route('/api/positions', methods=['GET'])
+@guarded("Positions")
 def api_positions():
-    conn = _v2lake.connect(_V2_DB_PATH)
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
     try:
         rows = _v2pos.list_live(conn, _cached_underlying, _cached_chain, _cached_daily_closes)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
     finally:
         conn.close()
     return jsonify({"status": "success", "data": rows, "as_of": datetime.now().isoformat(timespec="seconds")})
 
 
+def _writable_connection():
+    """Read-write connection for star/stop. It never creates the database: no file means no run has happened."""
+    if not os.path.exists(_V2_DB_PATH):
+        return None
+    return _v2lake.connect(_V2_DB_PATH)
+
+
 @app.route('/api/positions/<int:signal_id>/star', methods=['POST'])
+@guarded("Star")
 def api_position_star(signal_id):
-    conn = _v2lake.connect(_V2_DB_PATH)
+    conn = _writable_connection()
+    if conn is None:
+        return _not_initialised()
     try:
         starred = _v2pos.toggle_star(conn, signal_id)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
     finally:
         conn.close()
     if starred is None:
-        return jsonify({"status": "error", "message": "not found"}), 404
+        return json_error("not found", 404)
     return jsonify({"status": "success", "starred": starred})
 
 
 @app.route('/api/positions/<int:signal_id>', methods=['DELETE'])
+@guarded("Stop tracking")
 def api_position_delete(signal_id):
-    conn = _v2lake.connect(_V2_DB_PATH)
+    conn = _writable_connection()
+    if conn is None:
+        return _not_initialised()
     try:
         ok = _v2pos.stop_tracking(conn, signal_id)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
     finally:
         conn.close()
-    return (jsonify({"status": "success"}) if ok else (jsonify({"status": "error", "message": "not found"}), 404))
+    return jsonify({"status": "success"}) if ok else json_error("not found", 404)
 
 
 
 # ==========================================
 # --- FORECAST LAB (reads the latest committed v2 snapshot) ---
 # ==========================================
-from core import edges as _v2edges, forecast as _v2fc, watch as _v2watch
+from core import edges as _v2edges, watch as _v2watch
 
 
 def _scanner_payload(refresh=False):
@@ -2280,12 +2374,13 @@ def _scanner_payload(refresh=False):
         _v2watch.refresh()
         for key in [k for k in data_cache.cache if k.startswith(("pos_quote:", "pos_chain:"))]:
             data_cache.cache.pop(key, None)
-    conn = _v2lake.connect(_V2_DB_PATH)
-    try:
-        _v2lake.migrate(conn)
-        positions = _v2watch.list_positions(conn, _cached_chain)
-    finally:
-        conn.close()
+    conn, positions = _writable_connection(), []       # no database yet: no paper positions, the scan still works
+    if conn is not None:
+        try:
+            _v2lake.migrate(conn)
+            positions = _v2watch.list_positions(conn, _cached_chain)
+        finally:
+            conn.close()
     rows, failed = [], []
     for sym in symbols:
         try:
@@ -2302,6 +2397,7 @@ def _scanner_payload(refresh=False):
 
 
 @app.route('/api/scanner', methods=['GET', 'POST'])
+@guarded("Day scanner", 502)
 def api_scanner():
     if request.method == 'POST':
         err = _v2watch.add_symbol((request.get_json(silent=True) or {}).get("symbol"))
@@ -2311,6 +2407,7 @@ def api_scanner():
 
 
 @app.route('/api/edges', methods=['GET', 'POST'])
+@guarded("Edge lab", 502)
 def api_edges():
     """Edge lab: every tracked ticker, plus ?symbol=X analysed without saving. POST {symbol} tracks one."""
     query = request.args.get("symbol")
@@ -2326,42 +2423,44 @@ def api_edges():
 
 
 @app.route('/api/edges/<symbol>', methods=['DELETE'])
+@guarded("Edge lab", 502)
 def api_edges_remove(symbol):
     _v2edges.remove_tracked(symbol)
     return jsonify(_v2edges.payload())
 
 
 @app.route('/api/scanner/<symbol>', methods=['DELETE'])
+@guarded("Day scanner", 502)
 def api_scanner_remove(symbol):
     _v2watch.remove_symbol(symbol)
     return jsonify(_scanner_payload())
 
 
-def _latest_forecast():
-    conn = _v2lake.connect(_V2_DB_PATH)
-    try:
-        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
-        if not row:
-            return None, None, conn
-        key = f"fc_snapshot:{row['run_id']}"
-        hit = data_cache.get(key)
-        if hit is None:
-            ctx = _v2lake.load_snapshot(conn, row["run_id"])
-            hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining")}
-            data_cache.set(key, hit)
-        return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining")), conn
-    except Exception:
-        conn.close()
-        raise
+def _latest_forecast(conn):
+    """(run, forecast dict) of the latest committed snapshot, or (None, None) when there is none yet."""
+    row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+    if not row:
+        return None, None
+    key = f"fc_snapshot:{row['run_id']}"
+    hit = data_cache.get(key)
+    if hit is None:
+        ctx = _v2lake.load_snapshot(conn, row["run_id"])
+        hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining")}
+        data_cache.set(key, hit)
+    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"))
 
 
 @app.route('/api/forecast', methods=['GET'])
+@guarded("Forecast")
 def api_forecast():
-    ticker = request.args.get('ticker', 'SPY').upper()
+    ticker = (request.args.get('ticker') or 'SPY').upper()
     if ticker not in ("SPY", "SLV"):
-        return jsonify({"status": "error", "message": "ticker must be SPY or SLV"}), 400
-    run, fc, conn = _latest_forecast()
+        return json_error("ticker must be SPY or SLV", 400)
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
     try:
+        run, fc = _latest_forecast(conn)
         if not fc or fc.get("status") == "error":
             return jsonify({"status": "error", "message": (fc or {}).get("reason") or "no Forecast Lab data yet: run the pipeline",
                             "run": run}), 404
@@ -2369,6 +2468,10 @@ def api_forecast():
         ticket = conn.execute("SELECT * FROM v2_trade_signals WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 1").fetchone()
         quotes = {k: _cached_underlying(s) for k, s in (("SPY", "SPY"), ("SLV", "SLV"), ("SI_F", "SI=F"))}
         signals = _v2fc.signal_watch(_v2fc.live_overlay(fc, {k: v for k, v in quotes.items() if v}), dict(ticket) if ticket else None)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
     finally:
         conn.close()
     return jsonify({"status": "success", "ticker": ticker, "run": run, "horizons": fc.get("horizons"),
@@ -2387,7 +2490,9 @@ def api_eia_history():
     """Full weekly history behind Forecast Lab card 11, built from the EIA files the pipeline already captured."""
     from core import refining as _v2rf, sources as _v2src
     keys = sorted({k for k, _ in _v2rf.INVENTORY_LINES} | set(_v2rf.DEMAND_FOR.values()))
-    conn = _v2lake.connect(_V2_DB_PATH, readonly=True)
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
     try:
         rows = {}
         for key in keys:
@@ -2405,20 +2510,23 @@ def api_eia_history():
             _EIA_HISTORY_CACHE.update(stamp=stamp, data=_v2rf.inventory_history(series))
         hist = _EIA_HISTORY_CACHE["data"]
     except Exception as e:
-        return jsonify({"status": "error", "message": f"{type(e).__name__}: {e}"}), 500
+        if isinstance(e, sqlite3.OperationalError) and _uninitialised(e):
+            return _not_initialised()
+        app.logger.error("EIA history failed: %s", e, exc_info=e)
+        return json_error("EIA history failed (see the server log).", 500)
     finally:
         conn.close()
     if hist.get("status") != "fresh":
-        return jsonify({"status": "error", "message": hist.get("reason") or "no EIA data yet: run the pipeline"}), 404
+        return json_error(hist.get("reason") or "no EIA data yet: run the pipeline", 404)
     return jsonify(dict(hist, status="success"))
 
 
 # ---------------------------------------------------------------- ask-in-words assistant (read-only)
 import assistant as _assistant
 
-_PORT = int(os.environ.get("OPTIONS_WHALE_PORT", "8080"))     # per-machine, set in .env, never committed
-_assistant.register(app, _PORT)
+_assistant.register(app)
 
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=_PORT, threaded=True)
+    # Port 8080 unless OPTIONS_WHALE_PORT is set in .env (per-machine, never committed)
+    app.run(host='0.0.0.0', port=config.OPTIONS_WHALE_PORT)

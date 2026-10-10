@@ -92,7 +92,7 @@ function askNewChat() {
 // Answers need space: if the console is a thin strip, move the divider up so it gets about 45% of the window.
 function askMakeRoom() {
     const section = document.getElementById('consoleSection');
-    if (!section || window.matchMedia('(max-width: 768px)').matches || typeof updateLayoutHeights !== 'function') return;
+    if (!section || (typeof isMobileLayout === 'function' && isMobileLayout()) || typeof updateLayoutHeights !== 'function') return;
     const want = Math.round(window.innerHeight * 0.45), have = section.getBoundingClientRect().height;
     if (have < want - 40) updateLayoutHeights(savedTopHeight - (want - have));
 }

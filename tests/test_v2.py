@@ -13,44 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
-FIX = ROOT / "tests" / "fixtures"
-TMP = Path(tempfile.mkdtemp(prefix="v2test_"))
-DATA = TMP / "CME_Data"
-os.environ["PORTFOLIO_DATA_DIR"] = str(DATA)
-for k in ("DATABENTO_API_KEY", "DB_API_KEY", "EMAIL_SENDER", "EMAIL_PASSWORD"):
-    os.environ[k] = ""
-sys.path.insert(0, str(ROOT))
-
-
-def build_installation():
-    DATA.mkdir(parents=True, exist_ok=True)
-    for f in FIX.iterdir():
-        shutil.copy(f, DATA / f.name)
-    # a download-dated duplicate like the real archive has (same bytes, different name)
-    shutil.copy(FIX / "daily_volume_20260819.xlsx", DATA / "daily_volume_20260820.xlsx")
-    (DATA / "state.json").write_text('{"cookies": [{"name": "secret"}]}')
-    conn = sqlite3.connect(DATA / "portfolio.db")
-    conn.execute('CREATE TABLE "comex_inventory_history" ("Date" TEXT, "Registered" REAL, "Eligible" REAL, '
-                 '"Total" REAL, "Reg_Change" REAL, "Elig_Change" REAL, "Total_Change" REAL, "Legacy_Extra" TEXT)')
-    conn.execute("INSERT INTO comex_inventory_history VALUES ('2026-09-24', 95494503.432, 235879562.0304, "
-                 "331374065.4624, 9661.2, 597730.65, 607391.85, 'keep-me')")
-    conn.execute('CREATE TABLE "crypto_metrics_history" ("Date" TEXT, "BTC_Price" REAL, "Silver_Price" REAL, '
-                 '"Gold_Price" REAL, "Silver_BTC_Ratio" REAL, "Gold_BTC_Ratio" REAL)')
-    import datetime as dt
-    for i in range(40):
-        d = (dt.date(2026, 9, 29) - dt.timedelta(days=i)).isoformat()
-        conn.execute("INSERT INTO crypto_metrics_history VALUES (?,?,?,?,?,?)",
-                     (d, 80000 + i * 100, 60 + i * 0.1, 4200 + i, (80000 + i * 100) / (60 + i * 0.1),
-                      (80000 + i * 100) / (4200 + i)))
-    conn.execute('CREATE TABLE "macro_master_ledger" ("Datetime" TEXT, "VMRI_Score" REAL, "SHFE_Premium" REAL, '
-                 '"High_Yield_OAS" REAL, "10Y_Yield" REAL, "Reverse_Repo_BN" REAL)')
-    conn.execute("INSERT INTO macro_master_ledger VALUES ('9/24/26 13:59', 172.7, 1.8, 2.73, 5.16, 0.63)")
-    conn.commit()
-    conn.close()
-
-
-build_installation()
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import DATA, FIX, ROOT, TMP, build_installation  # noqa: E402,F401  (sets up the environment)
 
 import config  # noqa: E402  (after env setup)
 from core import cme, lake, metrics, render  # noqa: E402
@@ -291,8 +255,8 @@ class T04Outputs(unittest.TestCase):
         import send_email
         r = self._latest()
         eml = Path(json.loads(r["artifacts_json"])["out_dir"]) / "email.eml"
-        status, _ = send_email.deliver(eml)          # no credentials configured
-        self.assertEqual(status, "failed")
+        status, _ = send_email.deliver(eml)          # no email settings at all: the channel is off, not failed
+        self.assertEqual(status, "skipped")
         self.assertTrue(eml.exists())
 
         class FlakySMTP:
@@ -302,7 +266,8 @@ class T04Outputs(unittest.TestCase):
             def login(self, *a): pass
             def send_message(self, m): raise ConnectionResetError("dropped after DATA")
         with mock.patch.object(send_email, "EMAIL_SENDER", "a@b"), mock.patch.object(send_email, "EMAIL_PASSWORD", "x"), \
-                mock.patch("smtplib.SMTP", FlakySMTP):
+                mock.patch.object(send_email, "SMTP_SERVER", "smtp.invalid"), \
+                mock.patch.object(send_email, "RECIPIENT_EMAIL", "c@d"), mock.patch("smtplib.SMTP", FlakySMTP):
             status, detail = send_email.deliver(eml)
         self.assertEqual(status, "outcome_unknown")
         self.assertIn("not retried", detail)
@@ -652,9 +617,14 @@ class T08Schedule(unittest.TestCase):
         at = lambda s: datetime.fromisoformat(s).replace(tzinfo=NEW_YORK)
         self.assertIsNone(scheduled_run_skip_reason(at("2026-10-06T09:31")))
         self.assertIsNone(scheduled_run_skip_reason(at("2026-10-06T15:45")))
-        self.assertIn("outside the regular session", scheduled_run_skip_reason(at("2026-10-06T19:00")))
+        # a fire is only valid close to a run slot (10 minutes before to 30 after), and never after the close
+        self.assertIn("outside the scheduled run windows", scheduled_run_skip_reason(at("2026-10-06T11:00")))
+        self.assertIn("after the 16:00 ET close", scheduled_run_skip_reason(at("2026-10-06T19:00")))
         self.assertIn("not an NYSE trading day", scheduled_run_skip_reason(at("2026-10-03T09:31")))
         self.assertIn("not an NYSE trading day", scheduled_run_skip_reason(at("2026-11-26T09:31")))
+        # the day after Thanksgiving closes at 13:00 ET: the morning run goes ahead, the afternoon run is skipped
+        self.assertIsNone(scheduled_run_skip_reason(at("2026-11-27T09:31")))
+        self.assertIn("after the 13:00 ET early close", scheduled_run_skip_reason(at("2026-11-27T15:45")))
 
     def test_scheduled_run_needs_opt_in(self):
         import main_pipeline

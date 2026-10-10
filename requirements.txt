@@ -1,6 +1,5 @@
 # Installed into .venv by setup.sh
 flask
-flask-cors
 yfinance
 pandas
 numpy
@@ -14,3 +13,4 @@ python-dotenv
 matplotlib
 openpyxl
 xlrd
+akshare

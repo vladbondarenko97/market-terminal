@@ -4,10 +4,11 @@
 #
 #   ./setup.sh                    full setup (no schedule)
 #   ./setup.sh --schedule         also make THIS Mac the one that runs the pipeline every NYSE trading day
-#                                 at the open (09:31 ET) and before the close (15:45 ET)
+#                                 at the open (09:31 ET) and before the close (15:45 ET; not on 13:00 ET early closes)
 #   ./setup.sh --remove-schedule  stop scheduled runs on this Mac (run it on every Mac except the scheduler)
 #   ./setup.sh --no-menubar       skip SwiftBar / the menu bar icon
-#   ./setup.sh --uninstall        stop the server and the schedule, remove both services (keeps .env, .venv, data)
+#   ./setup.sh --uninstall        stop the server and the schedule, remove both services and the menu bar link (keeps
+#                                 .env, .venv, data; only SCHEDULED_RUNS in .env is cleared)
 
 set -euo pipefail
 
@@ -36,7 +37,7 @@ for arg in "$@"; do
         --uninstall)  UNINSTALL=1 ;;
         --schedule)   SCHEDULE=1 ;;
         --remove-schedule) REMOVE_SCHEDULE=1 ;;
-        -h|--help)    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $arg (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -77,9 +78,15 @@ if [ "$UNINSTALL" = 1 ]; then
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
     rm -f "$PLIST"
     remove_schedule
-    if [ "$(defaults read "$SWIFTBAR_ID" PluginDirectory 2>/dev/null || true)" = "$PLUGIN_DIR" ]; then
+    CURRENT_DIR="$(defaults read "$SWIFTBAR_ID" PluginDirectory 2>/dev/null || true)"
+    LINK="$CURRENT_DIR/$(basename "$PLUGIN")"
+    if [ "$CURRENT_DIR" = "$PLUGIN_DIR" ]; then
         defaults delete "$SWIFTBAR_ID" PluginDirectory
         osascript -e 'quit app "SwiftBar"' 2>/dev/null || true
+    elif [ -n "$CURRENT_DIR" ] && [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$PLUGIN" ]; then
+        # Step 6 linked the plugin into SwiftBar's own folder; remove only a link that points at this repository.
+        rm -f "$LINK"
+        echo "Removed the menu bar plugin link $LINK"
     fi
     echo "Done. .env, .venv and the data folder were left in place; SwiftBar itself was not uninstalled."
     exit 0
@@ -126,13 +133,15 @@ chmod 600 "$ROOT/.env"
 # An explicit PORTFOLIO_DATA_DIR copied from another Mac may point at a folder that isn't here.
 DATA_DIR="$(cd "$ROOT" && "$VPY" -c 'from config import DATA_DIR; print(DATA_DIR)')"
 mkdir -p "$DATA_DIR" 2>/dev/null || die "Cannot create data folder $DATA_DIR. Fix PORTFOLIO_DATA_DIR in .env and re-run."
-PORT="$(sed -n 's/^OPTIONS_WHALE_PORT=\([0-9][0-9]*\).*/\1/p' "$ROOT/.env" | tail -1)"
+# Same reading as the menu bar plugin: a blank or missing OPTIONS_WHALE_PORT means 8080 (config.py does the same).
+PORT="$(sed -nE "s/^(export +)?OPTIONS_WHALE_PORT *= *[\"']?([0-9]+).*/\2/p" "$ROOT/.env" | tail -1 || true)"
 PORT="${PORT:-8080}"
 echo "data: $DATA_DIR"
 echo "port: $PORT"
 [ -f "$DATA_DIR/portfolio.db" ] || warn "No portfolio.db in $DATA_DIR yet. Copy CME_Data from another Mac, or run the pipeline to create it."
 
 HAVE_KEY="$(cd "$ROOT" && "$VPY" -c 'from config import DATABENTO_API_KEY as k; print(1 if k else 0)')"
+[ "$HAVE_KEY" = 1 ] || warn "DATABENTO_API_KEY is empty in .env: the server starts, but the dark pool panels stay empty."
 
 # --- 4. Server as a login service -----------------------------------------------------------
 step "Login service ($LABEL)"
@@ -173,37 +182,31 @@ plutil -lint "$PLIST" >/dev/null
 
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 SERVER_UP=0
-if [ "$HAVE_KEY" = 1 ]; then
-    # bootout returns before the old process is fully gone; retry the bootstrap briefly.
-    for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null && break; sleep 1; done
-    for _ in $(seq 1 45); do
-        if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/")" = "200" ]; then SERVER_UP=1; break; fi
-        sleep 1
-    done
-    if [ "$SERVER_UP" = 1 ]; then echo "ok: http://localhost:$PORT"; else warn "Server did not answer on port $PORT. See $LOG"; fi
-else
-    warn "DATABENTO_API_KEY is empty in .env, so the server was installed but not started."
-fi
+# bootout returns before the old process is fully gone; retry the bootstrap briefly.
+for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null && break; sleep 1; done
+for _ in $(seq 1 45); do
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/")" = "200" ]; then SERVER_UP=1; break; fi
+    sleep 1
+done
+if [ "$SERVER_UP" = 1 ]; then echo "ok: http://localhost:$PORT"; else warn "Server did not answer on port $PORT. See $LOG"; fi
 
 # --- 5. Pipeline schedule (only on the one Mac that is the source of truth) --------------------
 if [ "$SCHEDULE" = 1 ]; then
     step "Pipeline schedule ($SCHED_LABEL)"
-    # launchd uses this Mac's clock; convert the ET run times once (all US zones change DST on the same day).
-    TIMES="$("$VPY" -c '
-from datetime import datetime
-from zoneinfo import ZoneInfo
-et = ZoneInfo("America/New_York")
-d = datetime.now(et).date()
-for h, m in ((9, 31), (12, 30), (15, 45)):
-    t = datetime(d.year, d.month, d.day, h, m, tzinfo=et).astimezone()
-    print(t.hour, t.minute)
+    # launchd uses this Mac's clock. core/market_calendar.py lists every local fire time (weekday hour minute) that
+    # covers the 09:31 and 15:45 ET slots on each NYSE trading day of the coming year, so the job stays right through
+    # every daylight-saving change in any time zone. A fire on the wrong side of a clock change skips itself (the
+    # run's own gate), so having both clock times of a zone installed is harmless.
+    TIMES="$(cd "$ROOT" && "$VPY" -c '
+from core.market_calendar import launchd_intervals
+for weekday, hour, minute in launchd_intervals():
+    print(weekday, hour, minute)
 ')"
+    [ -n "$TIMES" ] || die "Could not work out the schedule times (core/market_calendar.py)."
     INTERVALS=""
-    while read -r H M; do
-        for WD in 1 2 3 4 5; do
-            INTERVALS="$INTERVALS        <dict><key>Weekday</key><integer>$WD</integer><key>Hour</key><integer>$H</integer><key>Minute</key><integer>$M</integer></dict>
+    while read -r WD H M; do
+        INTERVALS="$INTERVALS        <dict><key>Weekday</key><integer>$WD</integer><key>Hour</key><integer>$H</integer><key>Minute</key><integer>$M</integer></dict>
 "
-        done
     done <<< "$TIMES"
     cat > "$SCHED_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -240,7 +243,9 @@ EOF
     launchctl bootout "$DOMAIN/$SCHED_LABEL" 2>/dev/null || true
     for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$SCHED_PLIST" 2>/dev/null && break; sleep 1; done
     launchctl print "$DOMAIN/$SCHED_LABEL" >/dev/null 2>&1 || warn "launchd did not load $SCHED_PLIST"
-    echo "ok: weekdays at $(echo "$TIMES" | awk '{printf "%s%02d:%02d", (NR>1?" and ":""), $1, $2}') local time; NYSE holidays skip"
+    LOCAL_TIMES="$(echo "$TIMES" | awk '{printf "%02d:%02d\n", $2, $3}' | sort -u | tr '\n' ' ')"
+    echo "ok: $(echo "$TIMES" | wc -l | tr -d ' ') launch times, local clock times ${LOCAL_TIMES% }."
+    echo "    A fire runs only at 09:31, 12:30 or 15:45 ET (up to 30 minutes late) on an NYSE trading day; 13:00 ET early closes skip the 15:45 run."
     # Signal Watch alerts: every 5 minutes; the command itself exits outside the NYSE session and on holidays.
     cat > "$ALERT_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -271,7 +276,7 @@ EOF
     for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$ALERT_PLIST" 2>/dev/null && break; sleep 1; done
     launchctl print "$DOMAIN/$ALERT_LABEL" >/dev/null 2>&1 || warn "launchd did not load $ALERT_PLIST"
     echo "ok: Signal Watch alerts every 5 minutes during the session (log: $ALERT_LOG)"
-    # A sleeping Mac misses the run until it wakes (and the run then skips if the session is over).
+    # A sleeping Mac runs the missed job when it wakes; the run skips itself if that is more than 30 minutes late.
     SLEEP_MIN="$(pmset -g 2>/dev/null | awk '$1=="sleep"{print $2; exit}')"
     if [ -n "$SLEEP_MIN" ] && [ "$SLEEP_MIN" != "0" ]; then
         warn "This Mac sleeps after $SLEEP_MIN min idle and would miss runs. Turn on System Settings > Energy >"
@@ -306,11 +311,10 @@ fi
 step "Summary"
 if [ "$SERVER_UP" = 1 ]; then
     echo "Server:   running at http://localhost:$PORT (starts at login, restarts if it crashes)"
-elif [ "$HAVE_KEY" = 1 ]; then
-    echo "Server:   installed but NOT responding. Check $LOG"
 else
-    echo "Server:   NOT started. Fill in $ROOT/.env (at least DATABENTO_API_KEY), then run ./setup.sh again."
+    echo "Server:   installed but NOT responding. Check $LOG"
 fi
+[ "$HAVE_KEY" = 1 ] || echo "Keys:     DATABENTO_API_KEY is empty: fill in $ROOT/.env for the dark pool panels and block flow."
 [ "$MENUBAR" = 1 ] && echo "Menu bar: whale icon, top right (status, start, stop, restart)"
 if [ "$SCHEDULE" = 1 ]; then
     echo "Schedule: this Mac runs the pipeline at the open and before the close (log: $SCHED_LOG)"

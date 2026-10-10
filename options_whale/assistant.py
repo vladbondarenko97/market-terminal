@@ -66,7 +66,7 @@ SOURCES = OrderedDict([
         "vix_shift_pct in percent).")),
     ("vmri_history", ("/api/vmri_history", (), "Recorded VMRI scores over time with DXY, VIX, yields and moving averages.")),
     ("vmri_report", ("/vmri", (), "Latest VMRI breakdown with formula documentation.")),
-    ("macro_direction", ("/api/macro_direction", (), "One-line macro direction call from the latest run.")),
+    ("run_status", ("/api/run_status", (), "State of the pipeline run: stage, state (running, completed, interrupted), start and finish times, error.")),
     ("macro_calendar", ("/api/macro_calendar", (), "Upcoming economic events (CPI, FOMC, payrolls) with forecasts.")),
     ("macro_news", ("/api/macro_news", (), "Recent macro headlines with sentiment scores.")),
     ("macro_ledger", ("/api/macro_ledger_full", ("limit",), "Macro ledger rows per run: VMRI, DXY, yields, OAS, VIX, crude, gold, ratios. limit=N rows.")),

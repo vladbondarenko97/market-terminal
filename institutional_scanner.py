@@ -4,7 +4,7 @@ The scan is part of the coordinated run (main_pipeline.py): trades and option ch
 equities_darkpool_gex_ledger rows are written by the coordinator. Running this file prints the latest
 committed results; it no longer starts a separate, un-joined background collection.
 """
-from core import lake, render
+from core import lake
 from config import DB_PATH
 
 
@@ -15,7 +15,7 @@ def run_institutional_scan():
     conn.close()
     if ctx is None:
         return "No committed v2 snapshot yet. Run: python main_pipeline.py run"
-    out = [f"\n========================================", " 🦅 INSTITUTIONAL ENGINE SCANNER",
+    out = ["\n========================================", " 🦅 INSTITUTIONAL ENGINE SCANNER",
            f" {ctx['run']['generated_local']} (run {ctx['run']['run_id']})", "========================================"]
     for sym in ("SPY", "SLV"):
         f, o = ctx["flow"][sym], (ctx["options"].get(sym) or {}).get("gex") or {}
