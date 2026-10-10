@@ -29,6 +29,8 @@ When you change how a stored value is computed:
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
 | `SHANGHAI_VERSION` (`core/metrics.py`) | `shanghai_dated_v1` | Date-paired Shanghai silver spread (`shanghai.dated`) |
+| `EAGLE_VERSION` (`core/metrics.py`) | `eagle_premium_v1` | Silver Eagle premium statistics, units-sold flow and dealer-book summary (`ebay.premium`, `ebay.flow`, `ebay.book`) |
+| `PAPER_PHYSICAL_HISTORY_VERSION` (`core/metrics.py`) | `paper_physical_history_v1` | Paper:physical ratio history statistics (`paper_physical.history`) |
 | `SCHEMA_VERSION` (`core/lake.py`) | `v2.1` | SQLite `v2_*` schema, stored on every `v2_runs` row |
 | `HORIZON_VERSION` (`core/positions.py`) | `horizons_v2` | Engine ticket +1D / +1W / +2W values. Not stored in a snapshot: positions are priced when the terminal asks, so the version is returned as `_version` inside each ticket's `horizons` dict. |
 
@@ -39,6 +41,11 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **Card statistics moved into the run** (`eagle_premium_v1`, `paper_physical_history_v1`, October 2026): the Silver Eagle premium statistics,
+  the units-sold flow, the dealer-book summary and the paper:physical history statistics are computed by the pipeline and stored
+  (`ebay.premium`, `ebay.flow`, `ebay.book`, `paper_physical.history`). They were worked out per request by `/api/arbitrage_history` and in the browser. Same definitions and the same
+  numbers; they now carry a version and can be replayed. The cards show them from the first run made with this code. No existing stored
+  value changed.
 - **Shanghai silver spread** (`shanghai_dated_v1`, October 2026): new snapshot key `shanghai.dated`. It pairs each SGE silver benchmark with the
   SI=F close and the CNY=X close of the same date; terminal panel 14 shows it. The older values (`shanghai.premium_tax_adj`,
   `shanghai.raw_spread`, the ledger column `SHFE_Premium`) are computed as before: the newest fix the source returns, which is 2 to 8 days old,

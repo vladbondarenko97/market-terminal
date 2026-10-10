@@ -339,133 +339,59 @@ def _rnd(value, digits=2):
     return None if value is None else round(value, digits)
 
 
-def _arb_point(row):
-    """One verified reading as the dict the payload shows (rounded; the average fields are None without an average)."""
-    spot, cheap, avg = row.spot, row.cheap, row.avg
-    has_avg = math.isfinite(avg) and avg > 0
-    return {
-        "label": row.ts.strftime('%Y-%m-%d %H:%M'), "spot": _rnd(spot), "cheapest_price": _rnd(cheap),
-        "avg_price": _rnd(avg) if has_avg else None,
-        "cheapest_dollar": _rnd(cheap - spot), "avg_dollar": _rnd(avg - spot) if has_avg else None,
-        "cheapest_pct": _rnd((cheap / spot - 1) * 100), "avg_pct": _rnd((avg / spot - 1) * 100) if has_avg else None,
-    }
-
-
 def build_arbitrage_series(ledger, limit):
     """Silver Eagle premium over silver futures from the macro ledger, paired within each run's row.
-    Returns None when no row is a verified reading (both the futures price and the cheapest retail price above 0)."""
+    Returns None when no row is a verified reading (both the futures price and the cheapest retail price above 0).
+    The statistics are computed by the pipeline and read from the snapshot."""
     df = ledger.dropna(how='all').dropna(subset=['Datetime']).copy()
     df['ts'] = pd.to_datetime(df['Datetime'], format='mixed', errors='coerce')
     for col, name in (('COMEX_Silver', 'spot'), ('Retail_Silver_Cheapest', 'cheap'), ('Retail_Silver_Avg', 'avg')):
         df[name] = pd.to_numeric(df[col], errors='coerce') if col in df.columns else float('nan')
-    df = df.dropna(subset=['ts'])
-    df = df[(df.spot > 0) & (df.cheap > 0) & np.isfinite(df.spot) & np.isfinite(df.cheap)].sort_values('ts')
-    if df.empty:
+    df = df.dropna(subset=['ts']).sort_values('ts')
+    points = [metrics.premium_point(r.ts, r.spot, r.cheap, r.avg) for r in df.itertuples()
+              if metrics.verified_reading(r.spot, r.cheap)]
+    if not points:
         return None
-    df['pct'] = (df.cheap / df.spot - 1) * 100
-    points = [_arb_point(r) for r in df.tail(limit).itertuples()]
+    points = points[-limit:]
     keys = ("spot", "cheapest_price", "avg_price", "cheapest_dollar", "avg_dollar", "cheapest_pct", "avg_pct")
-    payload = {"labels": [p["label"] for p in points], **{k: [p[k] for p in points] for k in keys},
-               "benchmark_symbol": "SI=F"}
-
-    # Statistics use the last reading of each day, over the 90 days before the newest reading.
-    rows = [{"ts": r.ts, "label": r.ts.strftime('%Y-%m-%d %H:%M'), "pct": r.pct, "spot": r.spot, "cheap": r.cheap}
-            for r in df.itertuples()]
-    stats = metrics.premium_stats(rows, {"spot_pct": "spot", "retail_pct": "cheap"})
-    payload["stats"] = {**{k: v for k, v in stats.items() if k not in ("changes", "history")},
-                        "latest": _arb_point(next(df.tail(1).itertuples())),
-                        "changes": stats["changes"], "history": stats["history"]}
-    return payload
+    return {"labels": [p["label"] for p in points], **{k: [p[k] for p in points] for k in keys},
+            "benchmark_symbol": "SI=F"}
 
 
-def _units_between(earlier, later):
-    """Units sold per listing between two runs ({item_id: units}). A listing absent from either run, without an
-    integer count in both, or whose count went down has no delta and is left out (not zero)."""
-    out = {}
-    for item_id, now in later["listings"].items():
-        a, b = (earlier["listings"].get(item_id) or {}).get("sold_qty"), now.get("sold_qty")
-        if all(isinstance(v, int) and not isinstance(v, bool) for v in (a, b)) and b >= a:
-            out[item_id] = b - a
-    return out
+def _snapshot_sections(conn):
+    """(run_id, {"run_at", "ebay", "paper_physical", "shanghai"}) of the latest committed snapshot; (None, {}) without
+    one. One snapshot parse per run, shared by the routes."""
+    row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+    if not row:
+        return None, {}
+    key = f"snapshot_sections:{row['run_id']}"
+    data = data_cache.get(key)
+    if data is None:
+        ctx = _v2lake.load_snapshot(conn, row["run_id"])
+        data = {"run_at": _utc_to_local_label((ctx.get("run") or {}).get("generated_at")),
+                **{n: ctx.get(n) or {} for n in ("ebay", "paper_physical", "shanghai")}}
+        data_cache.set(key, data)
+    return row["run_id"], data
 
 
-def build_eagle_book(runs):
-    """The newest run's dealer book and the units-sold flow, from runs oldest first:
-    [{"run_at": aware datetime, "listings": {item_id: listing dict}}]. Returns (book, flow); flow is None under two runs."""
-    if not runs:
-        return None, None
-    newest = runs[-1]
-    stamp = lambda run: run["run_at"].astimezone(config.LOCAL_TZ).strftime('%Y-%m-%d %H:%M')
-    at_least = lambda days, before=newest: next(
-        (r for r in reversed(runs) if r["run_at"] <= before["run_at"] - timedelta(days=days)), None)
-    prev = runs[-2] if len(runs) > 1 else None
-    ref7 = at_least(7)
-    sold_prev = _units_between(prev, newest) if prev else {}
-    sold_7d = _units_between(ref7, newest) if ref7 else {}
-
-    listings = []
-    for item_id, l in newest["listings"].items():
-        listings.append({
-            "item_id": item_id, "title": l.get("title"), "seller": l.get("seller"), "url": l.get("url"),
-            "total_cost": _rnd(l.get("total_cost")), "shipping": _rnd(l.get("shipping")),
-            "premium_pct": _rnd(l.get("premium_percent")), "premium_dollars": _rnd(l.get("premium_dollars")),
-            "status": l.get("status"), "available_qty": l.get("available_qty"), "sold_qty": l.get("sold_qty"),
-            "sold_prev": sold_prev.get(item_id), "sold_7d": sold_7d.get(item_id)})
+def _eagle_book(ebay, run_at):
+    """The dealer book as the payload shows it, from the snapshot's eBay section (None without listings)."""
+    stored = ebay.get("listings") or []
+    if not stored:
+        return None
+    flow = ebay.get("flow") or {}
+    sold_prev, sold_7d = flow.get("sold_prev") or {}, flow.get("sold_7d") or {}
+    listings = [{
+        "item_id": l.get("item_id"), "title": l.get("title"), "seller": l.get("seller"), "url": l.get("url"),
+        "total_cost": _rnd(l.get("total_cost")), "shipping": _rnd(l.get("shipping")),
+        "premium_pct": _rnd(l.get("premium_percent")), "premium_dollars": _rnd(l.get("premium_dollars")),
+        "status": l.get("status"), "available_qty": l.get("available_qty"), "sold_qty": l.get("sold_qty"),
+        "sold_prev": sold_prev.get(l.get("item_id")), "sold_7d": sold_7d.get(l.get("item_id"))} for l in stored]
     listings.sort(key=lambda l: (l["total_cost"] is None, l["total_cost"] or 0))
-    premiums = [l["premium_pct"] for l in listings if l["premium_pct"] is not None]
-    book = {"run_at": stamp(newest), "count": len(listings),
-            "in_stock": sum(l["status"] in ("IN_STOCK", "LIMITED_STOCK") for l in listings),
-            "prev_count": len(prev["listings"]) if prev else None,
-            "cheapest_pct": min(premiums) if premiums else None,
-            "median_pct": _rnd(np.median(premiums)) if premiums else None, "listings": listings}
-    if prev is None:
-        return book, None
-
-    def rate(a, b):
-        deltas = _units_between(a, b) if a and b else {}
-        if not deltas:
-            return None
-        days = (b["run_at"] - a["run_at"]).total_seconds() / 86400
-        units = sum(deltas.values())
-        return {"ref_run_at": stamp(a), "units": units, "days": _rnd(days, 1),
-                "per_day": _rnd(units / days, 1) if days > 0 else None, "listings": len(deltas)}
-
-    per_date = {}
-    for a, b in zip(runs, runs[1:]):
-        deltas = _units_between(a, b)
-        if deltas:
-            date = b["run_at"].astimezone(config.LOCAL_TZ).strftime('%Y-%m-%d')
-            per_date[date] = per_date.get(date, 0) + sum(deltas.values())
-    flow = {"prev_run_at": stamp(prev), "units_prev": sum(sold_prev.values()) if sold_prev else None,
-            "rate_7d": rate(ref7, newest), "rate_prior_7d": rate(at_least(14), ref7) if ref7 else None,
-            "daily": [{"date": d, "units": u} for d, u in sorted(per_date.items())]}
-    return book, flow
-
-
-def _load_eagle_runs(conn):
-    """The live runs' eBay listings from the 36 days before the newest one, oldest run first."""
-    rows = conn.execute(
-        """SELECT o.run_id, o.entity, o.observed_at, o.value_json FROM v2_observations o
-           JOIN v2_runs r ON r.run_id = o.run_id
-           WHERE o.metric_id = 'ebay.listing' AND r.mode = 'live'
-             AND r.status IN ('committed', 'completed', 'completed_with_warnings')
-             AND o.observed_at >= (SELECT datetime(MAX(observed_at), '-37 days') FROM v2_observations
-                                   WHERE metric_id = 'ebay.listing')""").fetchall()
-    runs = {}
-    for r in rows:
-        try:
-            at = datetime.fromisoformat(r["observed_at"])
-            listing = json.loads(r["value_json"])
-        except (TypeError, ValueError):
-            continue
-        if at.tzinfo is None:
-            at = at.replace(tzinfo=timezone.utc)
-        runs.setdefault(r["run_id"], {"run_at": at, "listings": {}})["listings"][r["entity"]] = listing
-    ordered = sorted(runs.values(), key=lambda run: run["run_at"])
-    if ordered:
-        floor = ordered[-1]["run_at"] - timedelta(days=36)
-        ordered = [run for run in ordered if run["run_at"] >= floor]
-    return ordered
+    book = ebay.get("book") or {}    # a snapshot made before the book was stored has only the count
+    return {"run_at": run_at, "count": book.get("count", len(listings)), "in_stock": book.get("in_stock"),
+            "prev_count": flow.get("prev_count"), "cheapest_pct": book.get("cheapest_pct"),
+            "median_pct": book.get("median_pct"), "listings": listings}
 
 
 @app.route('/api/arbitrage_history', methods=['GET'])
@@ -478,18 +404,25 @@ def get_arbitrage_history():
     if payload is None:
         return json_error("Ledger is empty.", 404)
 
-    # The dealer book and the sales flow come from the pipeline database; without it the series is still served.
-    payload["book"] = payload["flow"] = None
+    # Statistics, dealer book and flow are the latest run's stored values; without them the series is still served.
+    payload["stats"] = payload["book"] = payload["flow"] = None
     conn = _open_readonly()
     if conn is not None:
         try:
-            payload["book"], payload["flow"] = build_eagle_book(_load_eagle_runs(conn))
+            _, snap = _snapshot_sections(conn)
+            ebay = snap.get("ebay") or {}
+            premium = ebay.get("premium") or {}
+            payload["stats"] = premium.get("stats") if premium.get("status") == "fresh" else None
+            flow = ebay.get("flow") or {}
+            payload["flow"] = {k: v for k, v in flow.items() if k not in ("sold_prev", "sold_7d")} \
+                if flow.get("status") == "fresh" else None
+            payload["book"] = _eagle_book(ebay, snap.get("run_at"))
         except sqlite3.OperationalError as exc:
             if not _uninitialised(exc):
                 raise
         finally:
             conn.close()
-    return jsonify({"status": "success", "data": payload})
+    return jsonify({"status": "success", "data": _json_safe(payload)})
 
 # The Databento client is created on first use: only /api/darkpool needs it, so the terminal starts without a key.
 db_client = None
@@ -1774,8 +1707,12 @@ def api_help():
       <description>Shanghai Gold Exchange silver benchmark against COMEX silver futures from the latest snapshot: legacy (the fields as stored, comparing the latest fix with the run-time quote) and dated (each fix paired with the SI=F and USD/CNY closes of its own date, with 90-day statistics and a daily series; null when the snapshot predates it).</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/paper_physical" format="json" source="stored">
+      <description>The latest snapshot's paper_physical section as stored: the ratio and tier, the open interest and registered stock behind it, and history (the recorded ratio's range, median, percentile and 30-day change; absent when the snapshot predates it).</description>
+      <parameters />
+    </endpoint>
     <endpoint method="GET" path="/api/arbitrage_history" format="json" source="stored">
-      <description>Silver Eagle premium history, paired per run from macro_master_ledger.csv (the retail prices against the silver futures price recorded by the same run), as parallel arrays, with 90-day statistics (stats) and the latest dealer book and units-sold flow from the pipeline database (book and flow, null when the database is not there yet).</description>
+      <description>Silver Eagle premium history, paired per run from macro_master_ledger.csv (the retail prices against the silver futures price recorded by the same run), as parallel arrays. The 90-day statistics (stats), the dealer book (book) and the units-sold flow (flow) are read from the latest run's snapshot; each is null when there is no database or snapshot yet, or the snapshot predates them.</description>
       <parameters>
         <param name="limit" type="int" default="50" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
       </parameters>
@@ -2932,19 +2869,14 @@ def api_shanghai_spread():
     if conn is None:
         return _not_initialised()
     try:
-        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
-        if not row:
+        run_id, snap = _snapshot_sections(conn)
+        if not run_id:
             return json_error("No committed run yet.", 404)
-        key = f"shanghai_snapshot:{row['run_id']}"
-        data = data_cache.get(key)
-        if data is None:
-            ctx = _v2lake.load_snapshot(conn, row["run_id"])
-            sh = ctx.get("shanghai") or {}
-            data = {"run_at": _utc_to_local_label((ctx.get("run") or {}).get("generated_at")),
-                    "legacy": {k: sh.get(k) for k in ("status", "reason", "sge_date", "sge_session", "cny_per_kg", "usdcny",
-                                                      "usd_per_oz", "comex_ref", "raw_spread", "premium_tax_adj")},
-                    "dated": sh.get("dated")}
-            data_cache.set(key, data)
+        sh = snap["shanghai"]
+        data = {"run_at": snap["run_at"],
+                "legacy": {k: sh.get(k) for k in ("status", "reason", "sge_date", "sge_session", "cny_per_kg", "usdcny",
+                                                  "usd_per_oz", "comex_ref", "raw_spread", "premium_tax_adj")},
+                "dated": sh.get("dated")}
     except sqlite3.OperationalError as exc:
         if _uninitialised(exc):
             return _not_initialised()
@@ -2952,6 +2884,27 @@ def api_shanghai_spread():
     finally:
         conn.close()
     return jsonify({"status": "success", "data": _json_safe(data)})
+
+
+@app.route('/api/paper_physical', methods=['GET'])
+@guarded("Paper physical")
+def api_paper_physical():
+    """The latest snapshot's paper_physical section as stored (ratio, tier, inputs, recorded-ratio history)."""
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        run_id, snap = _snapshot_sections(conn)
+        if not run_id:
+            return json_error("No committed run yet.", 404)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    return jsonify({"status": "success",
+                    "data": _json_safe({k: snap[k] for k in ("run_at", "paper_physical")})})
 
 
 @app.route('/api/chaos', methods=['GET'])

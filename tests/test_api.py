@@ -1028,13 +1028,6 @@ def ledger_frame(rows):
     return pd.DataFrame(rows, columns=["Datetime", "COMEX_Silver", "Retail_Silver_Cheapest", "Retail_Silver_Avg"])
 
 
-def eagle_run(at, **sold):
-    """A run at an ISO UTC time; `sold` maps an item id to its sold_qty (a listing per key)."""
-    return {"run_at": datetime.fromisoformat(at), "listings": {
-        k: {"title": k, "total_cost": 70.0, "premium_percent": 10.0, "status": "IN_STOCK", "sold_qty": v}
-        for k, v in sold.items()}}
-
-
 class ArbitrageHistory(ApiCase):
     def test_series_keeps_only_verified_readings_paired_within_the_row(self):
         df = ledger_frame([
@@ -1054,58 +1047,81 @@ class ArbitrageHistory(ApiCase):
         self.assertIsNone(api_router.build_arbitrage_series(df.iloc[1:4], 50))
         json.dumps(out, allow_nan=False)
 
-    def test_stats_use_the_last_reading_of_each_day(self):
-        # day 1: 10% then 20% (counts as 20); day 2: 30%; day 3: 40%; every spot is 100
-        df = ledger_frame([("10/1/26 09:00", 100, 110, None), ("10/1/26 15:00", 100, 120, None),
-                           ("10/2/26 15:00", 100, 130, None), ("10/3/26 15:00", 100, 140, None)])
-        s = api_router.build_arbitrage_series(df, 50)["stats"]
-        self.assertEqual((s["n"], s["mean"], s["std"], s["median"], s["min"], s["max"]), (3, 30.0, 10.0, 30.0, 20.0, 40.0))
-        self.assertEqual((s["zscore"], s["pct_rank"]), (None, None))      # under 20 days
-        self.assertEqual((s["history"]["n"], s["history"]["days"], s["history"]["min"]), (4, 3, 10.0))
-        # 1d: newest reading at or before 10/2 15:00 is that very reading; 7d and 30d have no reading that old
-        self.assertEqual(s["changes"]["1d"]["ref_label"], "2026-10-02 15:00")
-        self.assertEqual(s["changes"]["1d"]["pts"], 10.0)
-        self.assertIsNone(s["changes"]["7d"])
-        self.assertIsNone(s["changes"]["30d"])
-
-    def test_zscore_and_rank_with_twenty_days(self):
-        rows = [(f"10/{d}/26 15:00", 100, 100 + d, None) for d in range(1, 21)]      # premiums 1..20
-        s = api_router.build_arbitrage_series(ledger_frame(rows), 50)["stats"]
-        self.assertEqual((s["n"], s["mean"], s["median"]), (20, 10.5, 10.5))
-        self.assertEqual(s["std"], 5.92)
-        self.assertEqual(s["zscore"], 1.61)          # (20 - 10.5) / 5.916
-        self.assertEqual(s["pct_rank"], 95.0)        # 19 of 20 days are strictly lower
-        self.assertEqual(s["changes"]["7d"]["ref_label"], "2026-10-13 15:00")
-
-    def test_book_and_flow_leave_out_listings_without_a_delta(self):
-        runs = [eagle_run("2026-10-01T12:00:00+00:00", a=100, b=50, c=None, d=10),
-                eagle_run("2026-10-03T12:00:00+00:00", a=110, b=40, c=5, d=20),       # b went down, c had no count
-                eagle_run("2026-10-09T12:00:00+00:00", a=130, c=9, d=25, e=3)]        # b gone, e new
-        runs[-1]["listings"]["e"]["status"] = "LIMITED_STOCK"                         # still for sale
-        runs[-1]["listings"]["d"]["status"] = "OUT_OF_STOCK"
-        book, flow = api_router.build_eagle_book(runs)
-        by_id = {l["item_id"]: l for l in book["listings"]}
-        self.assertEqual({k: (v["sold_prev"], v["sold_7d"]) for k, v in by_id.items()},
-                         {"a": (20, 30), "c": (4, None), "d": (5, 15), "e": (None, None)})
-        self.assertEqual((book["count"], book["in_stock"], book["cheapest_pct"]), (4, 3, 10.0))
-        self.assertEqual(book["prev_count"], 4)                                       # the run before had a, b, c, d
-        self.assertEqual(flow["units_prev"], 29)
-        # the 7-day reference is the 10-01 run (8 days back; the 10-03 run is only 6 days back)
-        self.assertEqual(flow["rate_7d"]["ref_run_at"], "2026-10-01 07:00")
-        self.assertEqual((flow["rate_7d"]["units"], flow["rate_7d"]["listings"]), (30 + 15, 2))      # c has no count in the reference run
-        self.assertIsNone(flow["rate_prior_7d"])
-        # the daily credit goes to the later run's local date; pairs with no delta add nothing
-        self.assertEqual(flow["daily"], [{"date": "2026-10-03", "units": 10 + 10}, {"date": "2026-10-09", "units": 20 + 4 + 5}])
-        self.assertEqual(api_router.build_eagle_book([runs[0]]), (api_router.build_eagle_book([runs[0]])[0], None))
-        self.assertEqual(api_router.build_eagle_book([]), (None, None))
-
     def test_route_serves_the_series_without_a_database(self):
         ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
         data = self.get_json("/api/arbitrage_history?limit=5")["data"]
         self.assertEqual(data["labels"], ["2026-10-01 10:00"])
         self.assertEqual(data["benchmark_symbol"], "SI=F")
-        self.assertIsNone(data["book"])
+        self.assertEqual((data["stats"], data["book"], data["flow"]), (None, None, None))
+
+    def commit_snapshot(self, **sections):
+        conn = lake.connect(api_router._V2_DB_PATH)
+        lake.migrate(conn)
+        lake.create_run(conn, "r1", mode="live", trigger="test", run_folder="x", code_version="t")
+        lake.update_run(conn, "r1", status="committed")
+        lake.commit_snapshot(conn, "r1", {"run": {"run_id": "r1", "generated_at": "2026-10-09T19:45:01+00:00"}, **sections})
+        conn.close()
+
+    def test_route_reads_statistics_book_and_flow_from_the_snapshot(self):
+        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        listing = lambda i, cost, status, **kw: {"item_id": i, "title": i, "total_cost": cost, "premium_percent": cost - 60,
+                                                 "status": status, "sold_qty": 5, **kw}
+        self.commit_snapshot(ebay={
+            "premium": {"status": "fresh", "stats": {"n": 3, "mean": 12.0}},
+            "flow": {"status": "fresh", "units_prev": 4, "prev_count": 7, "sold_prev": {"a": 4}, "sold_7d": {"c": 2}},
+            "book": {"count": 3, "in_stock": 2, "cheapest_pct": 10.0, "median_pct": 12.0},
+            "listings": [listing("b", 75.0, "OUT_OF_STOCK"), listing("a", 70.0, "LIMITED_STOCK"),
+                         listing("c", 72.0, "IN_STOCK")]})
+        data = self.get_json("/api/arbitrage_history")["data"]
+        self.assertEqual(data["stats"], {"n": 3, "mean": 12.0})
+        self.assertEqual(data["flow"]["units_prev"], 4)
+        book = data["book"]
+        self.assertEqual([l["item_id"] for l in book["listings"]], ["a", "c", "b"])
+        self.assertEqual((book["count"], book["in_stock"], book["prev_count"], book["cheapest_pct"], book["median_pct"]),
+                         (3, 2, 7, 10.0, 12.0))
+        self.assertEqual((book["listings"][0]["sold_prev"], book["listings"][1]["sold_prev"]), (4, None))
+        self.assertEqual(book["listings"][1]["sold_7d"], 2)
+        self.assertNotIn("sold_prev", data["flow"])
+        self.assertEqual(book["run_at"], api_router._utc_to_local_label("2026-10-09T19:45:01+00:00"))
+
+    def test_missing_flow_is_null_and_a_book_without_a_summary_gives_the_count(self):
+        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        self.commit_snapshot(ebay={"flow": {"status": "missing", "reason": "x"}, "listings": [
+            {"item_id": "a", "total_cost": 70.0, "premium_percent": 10.0, "status": "IN_STOCK"}]})
+        data = self.get_json("/api/arbitrage_history")["data"]
         self.assertIsNone(data["flow"])
+        book = data["book"]
+        self.assertEqual((book["count"], book["in_stock"], book["cheapest_pct"], book["median_pct"]), (1, None, None, None))
+        self.assertEqual((book["listings"][0]["sold_prev"], book["listings"][0]["sold_7d"]), (None, None))
+
+    def test_route_with_a_snapshot_that_predates_the_statistics(self):
+        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        self.commit_snapshot(ebay={"status": "missing", "listings": []})
+        data = self.get_json("/api/arbitrage_history")["data"]
+        self.assertEqual((data["stats"], data["book"], data["flow"]), (None, None, None))
+        self.assertEqual(data["labels"], ["2026-10-01 10:00"])
+
+
+class PaperPhysicalRoute(ApiCase):
+    def test_no_database_and_no_snapshot(self):
+        self.assertEqual(self.client.get("/api/paper_physical").status_code, 503)
+        conn = lake.connect(api_router._V2_DB_PATH)
+        lake.migrate(conn)
+        conn.close()
+        self.assertEqual(self.client.get("/api/paper_physical").status_code, 404)
+
+    def test_serves_the_stored_section(self):
+        conn = lake.connect(api_router._V2_DB_PATH)
+        lake.migrate(conn)
+        lake.create_run(conn, "r1", mode="live", trigger="test", run_folder="x", code_version="t")
+        lake.update_run(conn, "r1", status="committed")
+        lake.commit_snapshot(conn, "r1", {"run": {"run_id": "r1", "generated_at": "2026-10-09T19:45:01+00:00"},
+                                          "paper_physical": {"ratio": 5.2, "history": {"status": "fresh", "n": 3}}})
+        conn.close()
+        d = self.get_json("/api/paper_physical")["data"]
+        self.assertEqual(set(d), {"run_at", "paper_physical"})
+        self.assertEqual((d["paper_physical"]["ratio"], d["paper_physical"]["history"]["n"]), (5.2, 3))
+        self.assertEqual(d["run_at"], api_router._utc_to_local_label("2026-10-09T19:45:01+00:00"))
 
 
 class JsonSafety(unittest.TestCase):
