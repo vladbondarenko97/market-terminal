@@ -1118,5 +1118,52 @@ class JsonSafety(unittest.TestCase):
             self.assertIsNone(api_router._num(bad))
 
 
+class InstitutionalHistorySideInfo(ApiCase):
+    NEW = ("dp_session", "dp_method", "dp_unknown_vol", "dp_above_vwap_vol", "dp_below_vwap_vol")
+    HEADER = ("Date,Ticker,Spot_Price,DP_Sentiment,DP_Total_Vol,DP_Notional_USD,DP_Largest_Block,DP_VWAP,DP_Bull_Vol,"
+              "DP_Bear_Vol,GEX_Call_Wall,GEX_Put_Wall,GEX_Zero_Gamma\n")
+
+    def ledger(self, dates):
+        body = "".join(f"{d},SLV,50,BULLISH,1,1,1,50,0,0,55,45,50\n" for d in dates)
+        (self.tmp / "equities_darkpool_gex_ledger.csv").write_text(self.HEADER + body)
+
+    def add_run(self, conn, run_id, generated_at, session=None):
+        lake.create_run(conn, run_id, mode="live", trigger="test", run_folder="x", code_version="t")
+        lake.update_run(conn, run_id, status="committed")
+        recs = [lake.obs("run.generated_at", generated_at, value=generated_at, source="derived")]
+        if session:
+            recs.append(lake.obs("flow.SLV.observed_session", generated_at, value=session, source="derived"))
+        lake.record_observations(conn, recs, run_id=run_id)
+
+    def test_without_a_database_the_arrays_are_null(self):
+        self.ledger(["2026-10-09 14:45"])
+        d = self.get_json("/api/institutional_history?ticker=SLV")["data"]
+        self.assertEqual(d["labels"], ["2026-10-09 14:45"])
+        for k in self.NEW:
+            self.assertEqual(d[k], [None])
+
+    def test_rows_are_matched_through_their_run_and_session(self):
+        a, b, c = "2026-10-09T19:45:01+00:00", "2026-10-09T21:00:00+00:00", "2026-10-10T20:00:00+00:00"
+        label = api_router._utc_to_local_label
+        conn = lake.connect(api_router._V2_DB_PATH)
+        lake.migrate(conn)
+        self.add_run(conn, "r1", a, "2026-10-07")
+        self.add_run(conn, "r2", b, "2026-10-07")
+        self.add_run(conn, "r3", c, "2026-10-08")                 # session without a summary
+        summary = {"session": "2026-10-07", "bias_method": "vwap_heuristic", "unknown_side_volume": 1000.0,
+                   "vwap_heuristic_unknown_side": {"at_or_above_vwap": 700.0, "below_vwap": 300.0}}
+        lake.record_observations(conn, [lake.obs("flow.SLV.summary", "2026-10-07", entity="SLV", value=summary,
+                                                 source="derived")], run_id="r2")
+        conn.close()
+        self.ledger([label(a), label(b), label(c), "2026-01-01 09:00"])
+        d = self.get_json("/api/institutional_history?ticker=SLV")["data"]
+        full = ["2026-10-07", "vwap_heuristic", 1000.0, 700.0, 300.0]
+        self.assertEqual([d[k][0] for k in self.NEW], full)
+        self.assertEqual([d[k][1] for k in self.NEW], full)
+        self.assertEqual([d[k][2] for k in self.NEW], ["2026-10-08", None, None, None, None])
+        self.assertEqual([d[k][3] for k in self.NEW], [None] * 5)
+        json.dumps(d, allow_nan=False)
+
+
 if __name__ == "__main__":
     unittest.main()

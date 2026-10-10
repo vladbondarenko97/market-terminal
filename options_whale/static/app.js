@@ -1536,8 +1536,8 @@ const ARB_ZONES = { RICH: '#f59e0b', CHEAP: '#22c55e', NORMAL: '#a1a1aa' };
 const arbSigned = (v, d = 2, suffix = '') => (isNum(v) ? `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(d)}${suffix}` : DASH);
 const arbWhen = label => (label ? `${ppDate(label)} ${String(label).slice(11, 16)}` : DASH);
 // Index of the first label within the range of the newest label (ALL = 0)
-function arbRangeStart(labels, range) {
-    const days = ARB_RANGE_DAYS[range];
+function arbRangeStart(labels, range) { return arbDaysStart(labels, ARB_RANGE_DAYS[range]); }
+function arbDaysStart(labels, days) {
     if (!days || !labels.length) return 0;
     const cut = new Date(labels[labels.length - 1].replace(' ', 'T')).getTime() - days * 864e5;
     const i = labels.findIndex(l => new Date(l.replace(' ', 'T')).getTime() >= cut);
@@ -1554,6 +1554,32 @@ function arbRegime(z) {
     return z >= 1 ? 'RICH' : z <= -1 ? 'CHEAP' : 'NORMAL';
 }
 
+// Shared by panels 5 and 14: regime chip, z track (marker and sigma tick labels) and change tile
+function arbSetChip(id, reg, text) {
+    const chip = document.getElementById(id);
+    chip.classList.toggle('hidden', !reg);
+    if (!reg) return;
+    const c = ARB_ZONES[reg];
+    chip.textContent = text;
+    chip.style.cssText = `color:${c};border-color:${c}66;background:${c}1a`;
+}
+function arbSetTrack(markId, ticksId, z, reg, band) {
+    const mark = document.getElementById(markId);
+    mark.classList.toggle('hidden', !reg);
+    if (reg) {
+        mark.style.left = `${(Math.max(-3, Math.min(3, z)) + 3) / 6 * 100}%`;
+        mark.style.background = reg === 'NORMAL' ? '#fff' : ARB_ZONES[reg];
+    }
+    document.querySelectorAll(`#${ticksId} span`).forEach((el, i) => { el.textContent = band ? `${band.ticks[i].toFixed(1)}%` : ''; });
+}
+function arbSetTile(id, c, sub, title) {
+    const tile = document.getElementById(id), val = tile.querySelector('.arb-chg');
+    val.textContent = c ? `${arbSigned(c.pts, 2)} pts` : DASH;
+    val.className = `arb-chg text-[12px] font-bold ${c && c.pts > 0 ? 'text-amber-400' : c && c.pts < 0 ? 'text-green-400' : 'text-white'}`;
+    tile.querySelector('.arb-sub').textContent = sub;
+    tile.title = title;
+}
+
 function arbRenderHeader(data) {
     const st = data.stats, last = st && st.latest;
     const n = data.labels.length - 1;
@@ -1564,32 +1590,16 @@ function arbRenderHeader(data) {
     ppSet('arbPremium', arbSigned(toNum(prem), 2, '%'));
     ppSet('arbSub', isNum(prem) ? `${fmt(dollar, 2, '$')} over ${fmt(spot, 2, '$')} · ${arbWhen(label)}` : '');
     const reg = st ? arbRegime(st.zscore) : null;
-    const chip = document.getElementById('arbRegime');
-    chip.classList.toggle('hidden', !reg);
-    if (reg) {
-        const c = ARB_ZONES[reg];
-        chip.textContent = reg;
-        chip.style.cssText = `color:${c};border-color:${c}66;background:${c}1a`;
-    }
+    arbSetChip('arbRegime', reg, reg);
     const z = st && st.zscore, rank = st && st.pct_rank, avg = last && last.avg_pct;
     ppSet('arbZ', isNum(z) ? `z-score ${arbSigned(z, 2, 'σ')}` : '');
     ppSet('arbRank', isNum(rank) ? `rank ${Math.round(rank)}% of ${st.window_days}d` : '');
     ppSet('arbAvgNow', isNum(avg) ? `avg dealer ${arbSigned(avg, 2, '%')}` : '');
-    const mark = document.getElementById('arbMark');
-    mark.classList.toggle('hidden', !reg);
-    if (reg) {
-        mark.style.left = `${(Math.max(-3, Math.min(3, z)) + 3) / 6 * 100}%`;
-        mark.style.background = reg === 'NORMAL' ? '#fff' : ARB_ZONES[reg];
-    }
-    const band = arbBand(st);
-    document.querySelectorAll('#arbTicks span').forEach((el, i) => { el.textContent = band ? `${band.ticks[i].toFixed(1)}%` : ''; });
+    arbSetTrack('arbMark', 'arbTicks', z, reg, arbBand(st));
     [['1d', 1], ['7d', 7], ['30d', 30]].forEach(([k, days]) => {
-        const tile = document.getElementById(`arbTile${k}`), c = st && st.changes && st.changes[k];
-        const val = tile.querySelector('.arb-chg');
-        val.textContent = c ? `${arbSigned(c.pts, 2)} pts` : DASH;
-        val.className = `arb-chg text-[12px] font-bold ${c && c.pts > 0 ? 'text-amber-400' : c && c.pts < 0 ? 'text-green-400' : 'text-white'}`;
-        tile.querySelector('.arb-sub').textContent = c ? `silver ${arbSigned(c.spot_pct, 1, '%')} · retail ${arbSigned(c.retail_pct, 1, '%')}` : '';
-        tile.title = c ? `Change in the premium, in percentage points, against the reading from ${days} days earlier (${c.ref_label}). Silver and retail are the percent moves of the futures price and the cheapest dealer price.` : '';
+        const c = st && st.changes && st.changes[k];
+        arbSetTile(`arbTile${k}`, c, c ? `silver ${arbSigned(c.spot_pct, 1, '%')} · retail ${arbSigned(c.retail_pct, 1, '%')}` : '',
+            c ? `Change in the premium, in percentage points, against the reading from ${days} days earlier (${c.ref_label}). Silver and retail are the percent moves of the futures price and the cheapest dealer price.` : '');
     });
     const f = data.flow, rate = f && f.rate_7d, prior = f && f.rate_prior_7d;
     const parts = f ? [f.units_prev != null && `Units sold on the tracked listings: ${f.units_prev} since the previous run`,
@@ -1644,6 +1654,19 @@ function arbRenderBook(book) {
     box.appendChild(table);
 }
 
+// Chart.js option builders shared by panels 5 and 14
+function arbChartKit() {
+    const tip = callbacks => ({ legend: { display: false },
+        tooltip: { backgroundColor: 'rgba(9, 9, 11, 0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, titleColor: '#fff', bodyColor: '#a1a1aa', displayColors: false,
+            filter: item => !['Mean', 'Low', 'High'].includes(item.dataset.label), callbacks } });
+    const xAxis = { grid: { display: false }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 5, maxRotation: 0, autoSkip: true,
+        callback(v) { return ppDate(this.getLabelForValue(v)); } } };
+    const yAxis = prefix => ({ grid: { color: '#18181b' }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 6, callback: v => `${prefix === '$' ? '$' : ''}${v}${prefix === '%' ? '%' : ''}` } });
+    const base = { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false } };
+    const line = (arr, color, width, dash) => ({ data: arr, borderColor: color, borderWidth: width, borderDash: dash || [], pointRadius: 0, pointHoverRadius: 3, spanGaps: false, tension: 0 });
+    return { tip, xAxis, yAxis, base, line };
+}
+
 function arbDrawChart(data, view) {
     const canvas = document.getElementById('arbChart');
     const empty = document.getElementById('arbNoFlow');
@@ -1653,13 +1676,7 @@ function arbDrawChart(data, view) {
     empty.classList.toggle('hidden', !noFlow);
     canvas.classList.toggle('hidden', noFlow);
     if (noFlow) return;
-    const tip = callbacks => ({ legend: { display: false },
-        tooltip: { backgroundColor: 'rgba(9, 9, 11, 0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, titleColor: '#fff', bodyColor: '#a1a1aa', displayColors: false,
-            filter: item => !['Mean', 'Low', 'High'].includes(item.dataset.label), callbacks } });
-    const xAxis = { grid: { display: false }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 5, maxRotation: 0, autoSkip: true,
-        callback(v) { return ppDate(this.getLabelForValue(v)); } } };
-    const yAxis = prefix => ({ grid: { color: '#18181b' }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 6, callback: v => `${prefix === '$' ? '$' : ''}${v}${prefix === '%' ? '%' : ''}` } });
-    const base = { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false } };
+    const { tip, xAxis, yAxis, base, line } = arbChartKit();
     const ctx = canvas.getContext('2d');
     if (view === 'flow') {
         arbChartInstance = new Chart(ctx, {
@@ -1672,7 +1689,6 @@ function arbDrawChart(data, view) {
     const s = arbRangeStart(data.labels, arbRange);
     const cut = a => a.slice(s).map(toNum);
     const labels = data.labels.slice(s), spot = cut(data.spot), n = labels.length;
-    const line = (arr, color, width, dash) => ({ data: arr, borderColor: color, borderWidth: width, borderDash: dash || [], pointRadius: 0, pointHoverRadius: 3, spanGaps: false, tension: 0 });
     const usd = c => (c.parsed.y == null ? '' : `${c.dataset.label} $${c.parsed.y.toFixed(2)}`);
     if (view === 'price') {
         const sets = [{ ...line(spot, '#ffffff', 1.5, [4, 3]), label: 'Silver' }, { ...line(cut(data.cheapest_price), '#38bdf8', 1.5), label: 'Cheapest' },
@@ -2175,6 +2191,32 @@ document.addEventListener('DOMContentLoaded', () => {
 let slvFlowChartInstance = null;
 window._slvFlowData = null;
 
+// One entry per trading session from the route's rows (several runs a day repeat the same session); pure, no DOM.
+// An absent array counts as all-null. Rows with no total are "no data" and are dropped.
+function slvSessions(d) {
+    const at = (k, i) => { const v = Array.isArray(d[k]) ? d[k][i] : null; return v === undefined ? null : v; };
+    const out = []; let prev = null;
+    (d.labels || []).forEach((lab, i) => {
+        const key = { sess: at('dp_session', i), total: toNum(at('dp_total_vol', i)), vwap: toNum(at('dp_vwap', i)) };
+        if (key.total === null) { prev = null; return; }
+        const buy = toNum(at('dp_bull_vol', i)), sell = toNum(at('dp_bear_vol', i));
+        const e = { label: key.sess || String(lab).slice(0, 10), buy, sell, above: toNum(at('dp_above_vwap_vol', i)), below: toNum(at('dp_below_vwap_vol', i)),
+            total: key.total, method: at('dp_method', i), bias: at('dp_sentiment', i) };
+        const u = toNum(at('dp_unknown_vol', i));
+        e.unknown = u !== null ? u : (buy !== null && sell !== null ? Math.max(0, key.total - buy - sell) : null);
+        const same = prev && (key.sess !== null ? key.sess === prev.sess : prev.sess === null && key.total === prev.total && key.vwap === prev.vwap);
+        if (same) out[out.length - 1] = e; else out.push(e);
+        prev = key;
+    });
+    return out;
+}
+function slvFlowNote(ses) {
+    const last = ses.slice(-20), n = last.length, k = last.filter(x => (x.buy || 0) + (x.sell || 0) > 0).length;
+    if (!n) return '';
+    return k === n ? `The feed reported a trade side for all of the last ${n} sessions.`
+        : `The feed reported a trade side for ${k} of the last ${n} sessions. Lighter bars split the rest by price against VWAP, which is a guess.`;
+}
+
 async function loadSlvInstitutionalFlow() {
     try {
         const json = await fetchJson(`${API_BASE}/api/institutional_history?ticker=SLV&limit=100`);
@@ -2190,6 +2232,11 @@ async function loadSlvInstitutionalFlow() {
             
             const sentEl = document.getElementById('slvDpSentiment');
             const lastSent = d.dp_sentiment[lastIdx];
+            const m = DP_METHODS[(d.dp_method || [])[lastIdx]];
+            const mEl = document.getElementById('slvDpMethod');
+            if (mEl) { mEl.textContent = m ? m.label : ''; mEl.title = m ? m.tip : ''; }
+            const noteEl = document.getElementById('slvFlowNote');
+            if (noteEl) noteEl.textContent = slvFlowNote(slvSessions(d));
             if (sentEl && lastSent) {
                 sentEl.innerText = lastSent;
                 if (lastSent === 'BULLISH') sentEl.className = 'text-green-500 font-bold text-sm drop-shadow-[0_0_5px_rgba(34,197,94,0.5)]';
@@ -2229,34 +2276,22 @@ function renderSlvFlowChart(view) {
     
     let datasets = [];
     
+    const ses = slvSessions(data), sLabels = ses.map(x => ppDate(x.label));
     if (view === 'sentiment') {
-        // Bull vs Bear volume bars
-        const bullData = data.dp_bull_vol.map(v => v != null ? parseFloat(v) : null);
-        const bearData = data.dp_bear_vol.map(v => v != null ? -parseFloat(v) : null);
-        
+        const bar = (label, vals, color) => ({ label, data: vals, backgroundColor: color, type: 'bar' });
+        const neg = v => (v === null ? null : -v);
         datasets = [
-            {
-                label: 'Bull Volume',
-                data: bullData,
-                backgroundColor: 'rgba(34, 197, 94, 0.7)',
-                borderColor: 'rgb(34, 197, 94)',
-                borderWidth: 1,
-                type: 'bar'
-            },
-            {
-                label: 'Bear Volume',
-                data: bearData,
-                backgroundColor: 'rgba(239, 68, 68, 0.7)',
-                borderColor: 'rgb(239, 68, 68)',
-                borderWidth: 1,
-                type: 'bar'
-            }
+            bar('Buy aggressor', ses.map(x => x.buy), 'rgba(34,197,94,0.85)'),
+            bar('Above VWAP, side unknown', ses.map(x => x.above), 'rgba(34,197,94,0.3)'),
+            bar('Sell aggressor', ses.map(x => neg(x.sell)), 'rgba(239,68,68,0.85)'),
+            bar('Below VWAP, side unknown', ses.map(x => neg(x.below)), 'rgba(239,68,68,0.3)'),
+            bar('Side unknown', ses.map(x => (x.above === null && x.below === null && x.unknown > 0 ? x.unknown : null)), 'rgba(161,161,170,0.35)'),
         ];
     } else if (view === 'volume') {
         datasets = [
             {
                 label: 'Total Block Volume',
-                data: data.dp_total_vol.map(v => v != null ? parseFloat(v) : null),
+                data: ses.map(x => x.total),
                 borderColor: '#a78bfa',
                 backgroundColor: 'rgba(167, 139, 250, 0.1)',
                 borderWidth: 2,
@@ -2301,26 +2336,33 @@ function renderSlvFlowChart(view) {
     
     slvFlowChartInstance = new Chart(ctx, {
         type: view === 'sentiment' ? 'bar' : 'line',
-        data: { labels: data.labels, datasets: datasets },
+        data: { labels: view === 'gex' ? data.labels : sLabels, datasets: datasets },
         options: {
-            devicePixelRatio: 3,
             responsive: true,
             maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
             plugins: {
-                legend: { labels: { color: '#a1a1aa', boxWidth: 10, font: { size: 9 } } },
+                legend: { labels: { color: '#a1a1aa', boxWidth: view === 'sentiment' ? 8 : 10, font: { size: view === 'sentiment' ? 8 : 9 } } },
                 tooltip: {
                     backgroundColor: 'rgba(9, 9, 11, 0.95)',
                     borderColor: '#27272a',
                     borderWidth: 1,
                     padding: 10,
                     titleColor: '#fff',
-                    bodyColor: '#a1a1aa'
+                    bodyColor: '#a1a1aa',
+                    ...(view === 'sentiment' ? {
+                        filter: item => item.parsed.y !== null && item.parsed.y !== 0,
+                        callbacks: {
+                            title: i => { const x = i.length && ses[i[0].dataIndex]; return x ? sLabels[i[0].dataIndex] + (x.bias ? ` · ${x.bias}` : '') : ''; },
+                            label: c => `${c.dataset.label}: ${formatCompact(Math.abs(c.parsed.y))}`,
+                        },
+                    } : {}),
                 }
             },
             scales: {
-                x: { grid: { display: false }, ticks: { color: '#a1a1aa', font: { size: 8 }, maxTicksLimit: 8 } },
+                x: { stacked: view === 'sentiment', grid: { display: false }, ticks: { color: '#a1a1aa', font: { size: 8 }, maxTicksLimit: 8 } },
                 y: {
+                    stacked: view === 'sentiment',
                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                     ticks: { color: '#a1a1aa', font: { size: 9 }, callback: (v) => {
                         if (view === 'gex') return '$' + v.toFixed(0);
@@ -2662,112 +2704,130 @@ async function loadFedLiquidity() {
 
 let arbSpreadChartInstance = null;
 window._arbSpreadData = null;
+let shView = 'spread', shRange = '1Y'; // chart view and range, kept for the buttons
+const SH_RANGE_DAYS = { '3M': 91, '1Y': 365, 'MAX': null };
+const SH_SESSION = { evening: 'late', morning: 'early' };
+
+// Pure helpers (no DOM)
+const shUsd = v => (isNum(v) ? `${v > 0 ? '+' : v < 0 ? '−' : ''}$${Math.abs(v).toFixed(2)}` : DASH);
+// Whole days from a "YYYY-MM-DD" fix date to the date part of run_at, by splitting the strings; null when either is unreadable
+function shDaysBefore(fixDate, runAt) {
+    const p = s => String(s || '').slice(0, 10).split('-').map(Number);
+    const [fy, fm, fd] = p(fixDate), [ry, rm, rd] = p(runAt);
+    if (![fy, fm, fd, ry, rm, rd].every(Number.isFinite) || !fy || !ry) return null;
+    return Math.round((Date.UTC(ry, rm - 1, rd) - Date.UTC(fy, fm - 1, fd)) / 864e5);
+}
+// Which source the card reads: the dated model when fresh, else the stored reading; every value is a number or null
+function shReading(data) {
+    const d = data.dated && data.dated.status === 'fresh' && data.dated.latest;
+    if (d) return { src: 'dated', date: d.date, session: d.session, pct: toNum(d.adj_pct), dollar: toNum(d.adj_dollar), rawPct: toNum(d.raw_pct),
+        rawDollar: toNum(d.raw_dollar), shanghai: toNum(d.shanghai), comex: toNum(d.comex), fx: toNum(d.usdcny) };
+    const g = data.legacy || {}, ref = toNum(g.comex_ref);
+    const pct = v => (isNum(v) && ref > 0 ? v / ref * 100 : null);
+    return { src: isNum(g.usd_per_oz) ? 'legacy' : null, date: g.sge_date, session: g.sge_session, pct: pct(toNum(g.premium_tax_adj)), dollar: toNum(g.premium_tax_adj),
+        rawPct: pct(toNum(g.raw_spread)), rawDollar: toNum(g.raw_spread), shanghai: toNum(g.usd_per_oz), comex: ref, fx: toNum(g.usdcny) };
+}
+// "fix Oct 7 late · 3 days before run" and whether it is older than 3 days; null without a fix date
+function shFixInfo(r, runAt) {
+    if (!r.date) return null;
+    const n = shDaysBefore(r.date, runAt), when = SH_SESSION[r.session];
+    const age = n === null ? '' : n === 0 ? ' · same day as run' : ` · ${n} day${n === 1 ? '' : 's'} before run`;
+    return { text: `fix ${ppDate(r.date)}${when ? ' ' + when : ''}${age}`, stale: n !== null && n > 3, days: n };
+}
+
+function shRender(data) {
+    const ok = data.dated && data.dated.status === 'fresh' && data.dated.latest;
+    const st = ok ? data.dated.stats : null, r = shReading(data);
+    ppSet('shPremium', arbSigned(r.pct, 2, '%'));
+    ppSet('shSub', isNum(r.dollar) ? `${shUsd(r.dollar)}/oz · raw ${arbSigned(r.rawPct, 2, '%')} (${shUsd(r.rawDollar)}) before 13% VAT` : '');
+    const z = st && st.zscore, reg = arbRegime(z);
+    arbSetChip('shRegime', reg, { RICH: 'HIGH', CHEAP: 'LOW' }[reg] || reg);
+    const row = (id, text) => { document.getElementById(id + 'Row').classList.toggle('hidden', !text); ppSet(id, text); };
+    row('shZ', isNum(z) ? `${arbSigned(z, 2, 'σ')}` : '');
+    row('shRank', st && isNum(st.pct_rank) ? `${Math.round(st.pct_rank)}% of ${st.window_days}d` : '');
+    const fix = shFixInfo(r, data.run_at), fixEl = document.getElementById('shFix');
+    fixEl.className = `font-bold ${fix && fix.stale ? 'text-amber-400' : 'text-zinc-200'}`;
+    fixEl.classList.toggle('hidden', !fix);
+    ppSet('shFix', fix ? fix.text : '');
+    document.getElementById('shTrackBlock').classList.toggle('hidden', !ok);
+    arbSetTrack('shMark', 'shTicks', z, reg, arbBand(st));
+    ['1d', '7d', '30d'].forEach(k => {
+        const c = st && st.changes && st.changes[k];
+        arbSetTile(`shTile${k}`, c, c ? `COMEX ${arbSigned(c.comex_pct, 1, '%')} · Shanghai ${arbSigned(c.shanghai_pct, 1, '%')}` : '',
+            c ? `Change in the VAT-adjusted spread, in percentage points, against the fix of ${c.ref_label}. COMEX and Shanghai are the percent moves of each price in dollars.` : '');
+    });
+    ppSet('liveShfe', fmt(r.shanghai, 2, '$'));
+    ppSet('liveComexSilver', fmt(r.comex, 2, '$'));
+    ppSet('liveShfePremium', shUsd(r.dollar));
+    ppSet('shFx', fmt(r.fx, 4));
+    let text, color = 'text-zinc-600';
+    if (ok) {
+        const h = st.history;
+        text = `${h ? `${h.n} fixes since ${formatDate(h.first_label)} · ` : ''}each fix against the SI=F and USD/CNY close of the same date, which are set hours apart, so one-day swings are noisy · 13% VAT stripped is an assumption · run ${arbWhen(data.run_at)}`;
+    } else if (r.src) {
+        const n = shDaysBefore(r.date, data.run_at);
+        text = `Stored reading: the newest Shanghai fix against this run's COMEX quote, ${n === null ? '' : n + ' days apart, '}so not a same-day spread. 13% VAT stripped is an assumption.`;
+        if (n > 1) color = 'text-amber-400';
+    } else {
+        text = `Shanghai price unavailable in the latest run (${data.run_at}): ${(data.legacy && data.legacy.reason) || 'no reason stored'}`;
+        color = 'text-red-400';
+    }
+    ppSet('shFooter', text);
+    document.getElementById('shFooter').className = `text-[8px] ${color} leading-tight`;
+    shDrawChart();
+}
+
+function shDrawChart() {
+    const data = window._arbSpreadData, canvas = document.getElementById('arbSpreadChart'), msg = document.getElementById('shNoChart');
+    if (arbSpreadChartInstance) { arbSpreadChartInstance.destroy(); arbSpreadChartInstance = null; }
+    document.querySelectorAll('.sh-view').forEach(b => b.classList.toggle('active', b.id === (shView === 'spread' ? 'btnShSpread' : 'btnShPrice')));
+    document.querySelectorAll('.sh-range').forEach(b => b.classList.toggle('active', b.id === `btnShR${shRange}`));
+    const d = data && data.dated, ok = d && d.status === 'fresh' && d.series;
+    msg.classList.toggle('hidden', !!ok);
+    canvas.classList.toggle('hidden', !ok);
+    if (!ok) { msg.textContent = !data ? '' : d && d.status === 'missing' ? (d.reason || 'Date-paired history is missing.') : 'Date-paired history starts with the next pipeline run.'; return; }
+    const { tip, xAxis, yAxis, base, line } = arbChartKit();
+    const s = d.series, i0 = arbDaysStart(s.dates, SH_RANGE_DAYS[shRange]), cut = a => (a || []).slice(i0).map(toNum);
+    const labels = s.dates.slice(i0), n = labels.length, ctx = canvas.getContext('2d');
+    const title = i => (i.length ? labels[i[0].dataIndex] : '');
+    if (shView === 'price') {
+        const usd = c => (c.parsed.y == null ? '' : `${c.dataset.label} $${c.parsed.y.toFixed(2)}`);
+        arbSpreadChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: [{ ...line(cut(s.shanghai), '#fb7185', 1.5), label: 'Shanghai' },
+            { ...line(cut(s.comex), '#ffffff', 1.5, [4, 3]), label: 'COMEX' }] }, options: { ...base, plugins: tip({ title, label: usd }), scales: { x: xAxis, y: yAxis('$') } } });
+        return;
+    }
+    const adj = cut(s.adj_pct), raw = cut(s.raw_pct), adjD = cut(s.adj_dollar), rawD = cut(s.raw_dollar), sh = cut(s.shanghai), cx = cut(s.comex);
+    const band = arbBand(d.stats), fill = v => Array(n).fill(v);
+    const lastIdx = adj.reduce((a, v, i) => (v !== null ? i : a), -1);
+    // The raw spread is the adjusted one divided by a constant, so it has the same shape: it is listed in the tooltip, not drawn.
+    const sets = [{ ...line(adj, '#e4e4e7', 1.5), label: 'VAT-adjusted', pointRadius: adj.map((_, i) => (i === lastIdx ? 3 : 0)), pointBackgroundColor: '#e4e4e7' }];
+    if (band) {
+        sets.push({ ...line(fill(band.mean), 'rgba(255,255,255,0.35)', 1, [4, 4]), label: 'Mean', pointHoverRadius: 0 },
+            { ...line(fill(band.lo), 'transparent', 0), label: 'Low', pointHoverRadius: 0 },
+            { ...line(fill(band.hi), 'transparent', 0), label: 'High', pointHoverRadius: 0, fill: '-1', backgroundColor: 'rgba(228,228,231,0.07)' });
+    }
+    arbSpreadChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: sets }, options: { ...base, plugins: tip({ title,
+        label: c => (c.parsed.y == null ? '' : [`VAT-adjusted ${arbSigned(c.parsed.y, 2, '%')} (${shUsd(adjD[c.dataIndex])})`,
+            `Raw ${arbSigned(raw[c.dataIndex], 2, '%')} (${shUsd(rawD[c.dataIndex])})`]),
+        afterBody: i => (i.length ? `Shanghai ${fmt(sh[i[0].dataIndex], 2, '$')} · COMEX ${fmt(cx[i[0].dataIndex], 2, '$')}` : ''),
+    }), scales: { x: xAxis, y: yAxis('%') } } });
+}
+function shSetView(v) { shView = v; shDrawChart(); }
+function shSetRange(r) { shRange = r; shDrawChart(); }
 
 async function loadShfeArbSpread() {
     try {
-        const json = await fetchJson(`${API_BASE}/api/macro_ledger_full?limit=200`);
-        
-        if (json.status !== 'success' || !json.data) {
-            log(`Shanghai-COMEX Arb Error: ${json.message || 'no data'}`, 'error');
-        } else {
-            const d = json.data;
-            window._arbSpreadData = { labels: d.labels, shfe: d.shfe_silver_usd, comex: d.comex_silver, premium: d.shfe_premium };
-            
-            // Update header stats
-            const lastIdx = d.labels.length - 1;
-            const shfeEl = document.getElementById('liveShfe');
-            const comexEl = document.getElementById('liveComexSilver');
-            const premEl = document.getElementById('liveShfePremium');
-            
-            if (shfeEl && d.shfe_silver_usd[lastIdx] != null) shfeEl.innerText = `$${d.shfe_silver_usd[lastIdx].toFixed(2)}`;
-            if (comexEl && d.comex_silver[lastIdx] != null) comexEl.innerText = `$${d.comex_silver[lastIdx].toFixed(2)}`;
-            if (premEl && d.shfe_premium[lastIdx] != null) {
-                const prem = d.shfe_premium[lastIdx];
-                premEl.innerText = `${prem >= 0 ? '+' : ''}$${prem.toFixed(2)}`;
-                premEl.className = prem >= 0 
-                    ? 'text-green-400 font-bold text-sm font-mono drop-shadow-[0_0_5px_rgba(34,197,94,0.5)]'
-                    : 'text-red-400 font-bold text-sm font-mono';
-            }
-            
-            // Render chart
-            const ctx = document.getElementById('arbSpreadChart').getContext('2d');
-            if (arbSpreadChartInstance) arbSpreadChartInstance.destroy();
-            
-            arbSpreadChartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: d.labels,
-                    datasets: [
-                        {
-                            label: 'SHFE Silver (USD/oz)',
-                            data: d.shfe_silver_usd,
-                            borderColor: '#f43f5e',
-                            borderWidth: 2,
-                            tension: 0.3,
-                            pointRadius: 0,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'COMEX Silver',
-                            data: d.comex_silver,
-                            borderColor: 'rgba(255, 255, 255, 0.7)',
-                            borderWidth: 2,
-                            tension: 0.3,
-                            pointRadius: 0,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'Arb Premium ($/oz)',
-                            data: d.shfe_premium,
-                            borderColor: '#22c55e',
-                            backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                            borderWidth: 2,
-                            fill: true,
-                            tension: 0.3,
-                            pointRadius: 0,
-                            yAxisID: 'y1'
-                        }
-                    ]
-                },
-                options: {
-                    devicePixelRatio: 3,
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
-                    plugins: {
-                        legend: { labels: { color: '#a1a1aa', boxWidth: 10, font: { size: 9 } } },
-                        tooltip: {
-                            backgroundColor: 'rgba(9, 9, 11, 0.95)',
-                            borderColor: '#27272a',
-                            borderWidth: 1,
-                            padding: 10,
-                            titleColor: '#fff',
-                            bodyColor: '#a1a1aa',
-                            callbacks: {
-                                label: function(context) {
-                                    return `${context.dataset.label}: $${context.parsed.y?.toFixed(2) || 'N/A'}`;
-                                }
-                            }
-                        }
-                    },
-                    scales: {
-                        x: { grid: { display: false }, ticks: { color: '#a1a1aa', font: { size: 8 }, maxTicksLimit: 8 } },
-                        y: {
-                            position: 'left',
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                            ticks: { color: '#a1a1aa', font: { size: 9 }, callback: (v) => '$' + v.toFixed(0) }
-                        },
-                        y1: {
-                            position: 'right',
-                            grid: { display: false },
-                            ticks: { color: '#22c55e', font: { size: 9 }, callback: (v) => '$' + v.toFixed(2) }
-                        }
-                    }
-                }
-            });
-        }
+        const json = await fetchJson(`${API_BASE}/api/shanghai_spread`);
+        if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
+        window._arbSpreadData = json.data;
+        shRender(json.data);
+        log('Shanghai-COMEX spread loaded.', 'success');
     } catch (e) {
         log(`Shanghai-COMEX Arb Error: ${e.message}`, 'error');
+        window._arbSpreadData = null;
+        shDrawChart();
+        ppSet('shFooter', `Could not load the Shanghai spread: ${e.message}`);
+        document.getElementById('shFooter').className = 'text-[8px] text-red-400 leading-tight';
     }
 }
 

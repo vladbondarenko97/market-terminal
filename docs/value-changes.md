@@ -28,6 +28,7 @@ When you change how a stored value is computed:
 | `VERSION` (`core/forecast.py`) | `forecast_v2` | Forecast Lab cards 1–9 |
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
+| `SHANGHAI_VERSION` (`core/metrics.py`) | `shanghai_dated_v1` | Date-paired Shanghai silver spread (`shanghai.dated`) |
 | `SCHEMA_VERSION` (`core/lake.py`) | `v2.1` | SQLite `v2_*` schema, stored on every `v2_runs` row |
 | `HORIZON_VERSION` (`core/positions.py`) | `horizons_v2` | Engine ticket +1D / +1W / +2W values. Not stored in a snapshot: positions are priced when the terminal asks, so the version is returned as `_version` inside each ticket's `horizons` dict. |
 
@@ -38,6 +39,13 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **Shanghai silver spread** (`shanghai_dated_v1`, October 2026): new snapshot key `shanghai.dated`. It pairs each SGE silver benchmark with the
+  SI=F close and the CNY=X close of the same date; terminal panel 14 shows it. The older values (`shanghai.premium_tax_adj`,
+  `shanghai.raw_spread`, the ledger column `SHFE_Premium`) are computed as before: the newest fix the source returns, which is 2 to 8 days old,
+  against the run-time COMEX quote. No existing stored value changed. The run makes one more request (CNY=X, 5 years of daily closes).
+- **SLV / SPY flow sides in the terminal** (`/api/institutional_history`, panel 9, October 2026): the route adds the stored side information
+  per row. The ledger columns `DP_Bull_Vol` and `DP_Bear_Vol` are unchanged: they are the volume whose trade side the feed reported, which is 0
+  for SLV in every run since 2026-09-29, so the panel now also draws the unknown-side volume, split by price against VWAP and marked as a guess.
 - **Silver Eagle premium history** (`/api/arbitrage_history`, terminal panel 5, October 2026): every premium is now the retail price over the
   silver futures price recorded by the same pipeline run (`macro_master_ledger`: `Retail_Silver_Cheapest`, `Retail_Silver_Avg`, `COMEX_Silver`).
   The route used to serve the premium columns of `physical_arbitrage_ledger.csv`, whose benchmark was a fixed $67.80 in 69 rows and a stale

@@ -660,6 +660,7 @@
                                 <div>
                                     <div class="text-[8px] text-zinc-500 uppercase tracking-widest">Sentiment</div>
                                     <div id="slvDpSentiment" class="text-zinc-400 font-bold text-sm">---</div>
+                                    <div id="slvDpMethod" class="text-[7px] text-zinc-500 uppercase tracking-widest cursor-help"></div>
                                 </div>
                                 <div>
                                     <div class="text-[8px] text-zinc-500 uppercase tracking-widest">VWAP</div>
@@ -687,6 +688,7 @@
                             <div class="flex-1 relative w-full min-h-[100px]">
                                 <canvas id="slvFlowChart"></canvas>
                             </div>
+                            <div id="slvFlowNote" class="text-[8px] text-zinc-500 leading-tight"></div>
                         </div>
                     </div>
 
@@ -880,24 +882,89 @@
                         </div>
                         <div
                             class="zoomable origin-top-left transition-transform duration-200 flex-1 p-3 flex flex-col gap-2 cursor-default relative overflow-hidden">
-                            <div class="grid grid-cols-3 gap-2 text-center border-b border-zinc-800 pb-2 mb-1">
+                            <!-- spread now + how unusual it is -->
+                            <div class="flex items-end justify-between gap-3">
                                 <div>
-                                    <div class="text-[8px] text-zinc-500 uppercase tracking-widest">SHFE Silver</div>
-                                    <div id="liveShfe" class="text-rose-400 font-bold text-sm font-mono">---</div>
-                                </div>
-                                <div>
-                                    <div class="text-[8px] text-zinc-500 uppercase tracking-widest">COMEX Silver</div>
-                                    <div id="liveComexSilver" class="text-white font-bold text-sm font-mono">---</div>
-                                </div>
-                                <div>
-                                    <div class="text-[8px] text-zinc-500 uppercase tracking-widest">Premium</div>
-                                    <div id="liveShfePremium" class="text-amber-400 font-bold text-sm font-mono">---
+                                    <div class="text-[8px] text-zinc-500 uppercase tracking-widest">Shanghai over COMEX · VAT-adjusted</div>
+                                    <div id="shPremium" class="war-score text-white">—</div>
+                                    <div class="flex items-center gap-2">
+                                        <div id="shSub" class="text-[9px] text-zinc-500"></div>
+                                        <span id="shRegime" class="arb-chip hidden"></span>
                                     </div>
                                 </div>
+                                <div class="text-right text-[9px] leading-snug text-zinc-500">
+                                    <div id="shZRow" class="hidden">z-score <span id="shZ" class="text-zinc-200 font-bold"></span></div>
+                                    <div id="shRankRow" class="hidden">rank <span id="shRank" class="text-zinc-200 font-bold"></span></div>
+                                    <div id="shFix" class="hidden text-zinc-200 font-bold"></div>
+                                </div>
                             </div>
-                            <div class="flex-1 relative w-full min-h-[100px]">
-                                <canvas id="arbSpreadChart"></canvas>
+                            <div id="shTrackBlock" class="hidden">
+                                <div class="war-track">
+                                    <div class="war-zone" style="left:0;width:33.33%;background:#16a34a;border-radius:999px 0 0 999px"></div>
+                                    <div class="war-zone" style="left:33.33%;width:33.34%;background:#52525b"></div>
+                                    <div class="war-zone" style="left:66.67%;width:33.33%;background:#d97706;border-radius:0 999px 999px 0"></div>
+                                    <div id="shMark" class="war-mark pp-mark hidden" title="Latest spread against its 90-day normal"></div>
+                                </div>
+                                <div class="war-ticks text-[7px] text-zinc-500 uppercase">
+                                    <span style="left:16.67%">Low</span><span style="left:50%">Normal 90d</span><span style="left:83.33%">High</span>
+                                </div>
+                                <div id="shTicks" class="war-ticks text-[7px] text-zinc-600">
+                                    <span style="left:0%"></span><span style="left:33.33%"></span><span style="left:50%"></span><span style="left:66.67%"></span><span style="left:100%"></span>
+                                </div>
                             </div>
+
+                            <div class="grid grid-cols-3 gap-1.5">
+                                <div class="war-factor" id="shTile1d">
+                                    <div class="text-[7px] text-zinc-500 uppercase tracking-widest">Prev fix</div>
+                                    <div class="arb-chg text-[12px] text-white font-bold">—</div>
+                                    <div class="arb-sub text-[7px] text-zinc-600"></div>
+                                </div>
+                                <div class="war-factor" id="shTile7d">
+                                    <div class="text-[7px] text-zinc-500 uppercase tracking-widest">7 days</div>
+                                    <div class="arb-chg text-[12px] text-white font-bold">—</div>
+                                    <div class="arb-sub text-[7px] text-zinc-600"></div>
+                                </div>
+                                <div class="war-factor" id="shTile30d">
+                                    <div class="text-[7px] text-zinc-500 uppercase tracking-widest">30 days</div>
+                                    <div class="arb-chg text-[12px] text-white font-bold">—</div>
+                                    <div class="arb-sub text-[7px] text-zinc-600"></div>
+                                </div>
+                            </div>
+
+                            <div class="bg-zinc-950 border border-zinc-800 rounded p-2 flex flex-col">
+                                <div class="flex justify-between items-center gap-2 mb-1">
+                                    <div class="flex gap-1">
+                                        <button onclick="shSetView('spread')" id="btnShSpread" class="arb-toggle sh-view active px-2 py-0.5 rounded-full text-[8px] font-bold border border-zinc-600 text-zinc-400 hover:text-white hover:border-zinc-300 transition-all tracking-widest uppercase">Spread</button>
+                                        <button onclick="shSetView('price')" id="btnShPrice" class="arb-toggle sh-view px-2 py-0.5 rounded-full text-[8px] font-bold border border-zinc-600 text-zinc-400 hover:text-white hover:border-zinc-300 transition-all tracking-widest uppercase">Price</button>
+                                    </div>
+                                    <div class="flex gap-1"><button onclick="shSetRange('3M')" id="btnShR3M" class="arb-toggle sh-range px-2 py-0.5 rounded-full text-[8px] font-bold border border-zinc-600 text-zinc-400 hover:text-white hover:border-zinc-300 transition-all tracking-widest uppercase">3M</button><button onclick="shSetRange('1Y')" id="btnShR1Y" class="arb-toggle sh-range active px-2 py-0.5 rounded-full text-[8px] font-bold border border-zinc-600 text-zinc-400 hover:text-white hover:border-zinc-300 transition-all tracking-widest uppercase">1Y</button><button onclick="shSetRange('MAX')" id="btnShRMAX" class="arb-toggle sh-range px-2 py-0.5 rounded-full text-[8px] font-bold border border-zinc-600 text-zinc-400 hover:text-white hover:border-zinc-300 transition-all tracking-widest uppercase">MAX</button></div>
+                                </div>
+                                <div class="arb-chart relative">
+                                    <canvas id="arbSpreadChart"></canvas>
+                                    <div id="shNoChart" class="hidden absolute inset-0 flex items-center justify-center text-center text-[9px] text-zinc-500"></div>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-4 gap-2 text-center">
+                                <div>
+                                    <div class="text-[8px] text-zinc-500 uppercase tracking-widest">Shanghai (SGE)</div>
+                                    <div id="liveShfe" class="text-rose-400 font-bold text-[12px] font-mono">---</div>
+                                </div>
+                                <div>
+                                    <div class="text-[8px] text-zinc-500 uppercase tracking-widest">COMEX (SI=F)</div>
+                                    <div id="liveComexSilver" class="text-white font-bold text-[12px] font-mono">---</div>
+                                </div>
+                                <div>
+                                    <div class="text-[8px] text-zinc-500 uppercase tracking-widest">VAT-adj. spread</div>
+                                    <div id="liveShfePremium" class="text-amber-400 font-bold text-[12px] font-mono">---</div>
+                                </div>
+                                <div>
+                                    <div class="text-[8px] text-zinc-500 uppercase tracking-widest">USD/CNY</div>
+                                    <div id="shFx" class="text-zinc-200 font-bold text-[12px] font-mono">---</div>
+                                </div>
+                            </div>
+
+                            <div id="shFooter" class="text-[8px] text-zinc-600 leading-tight">AWAITING DATA</div>
                         </div>
                     </div> <!-- End of panel14 -->
 

@@ -77,6 +77,10 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 `{"status": "missing", "reason": "..."}`. The daily file `report_snapshot.json` is this document, indented.
 `python main_pipeline.py catalog` lists the metrics with their paths.
 
+`shanghai.dated` (model `shanghai_dated_v1`) is the date-paired Shanghai spread: `latest`, 90-day `stats` and a `series` of up to 400
+fix dates, each SGE silver benchmark against the SI=F close and the CNY=X close of the same date. The other keys of `shanghai`
+keep the older reading (the newest fix against the run-time COMEX quote), which the report and the macro ledger still use.
+
 ### Observations and payloads
 
 `v2_observations.metric_id` families:

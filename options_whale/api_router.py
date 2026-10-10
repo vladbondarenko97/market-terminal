@@ -369,33 +369,12 @@ def build_arbitrage_series(ledger, limit):
                "benchmark_symbol": "SI=F"}
 
     # Statistics use the last reading of each day, over the 90 days before the newest reading.
-    latest = df.iloc[-1]
-    daily = df.groupby(df.ts.dt.date).tail(1)
-    window = daily[daily.ts > latest['ts'] - timedelta(days=90)].pct
-    n = len(window)
-    std = window.std(ddof=1) if n > 1 else float('nan')
-    ranked = n >= 20 and math.isfinite(std) and std > 0
-    changes = {}
-    for h in (1, 7, 30):
-        older = df[df.ts <= latest['ts'] - timedelta(days=h)]
-        if older.empty:
-            changes[f"{h}d"] = None
-            continue
-        ref = older.iloc[-1]
-        changes[f"{h}d"] = {
-            "ref_label": ref['ts'].strftime('%Y-%m-%d %H:%M'), "pts": _rnd(latest.pct - ref.pct),
-            "spot_pct": _rnd((latest.spot / ref.spot - 1) * 100), "retail_pct": _rnd((latest.cheap / ref.cheap - 1) * 100)}
-    latest_point = _arb_point(next(df.tail(1).itertuples()))
-    payload["stats"] = {
-        "basis": "last reading of each day", "window_days": 90, "n": n,
-        "mean": _rnd(window.mean()), "std": _rnd(std), "median": _rnd(window.median()),
-        "min": _rnd(window.min()), "max": _rnd(window.max()),
-        "zscore": _rnd((latest.pct - window.mean()) / std) if ranked else None,
-        "pct_rank": _rnd((window < latest.pct).mean() * 100, 1) if ranked else None,
-        "latest": latest_point, "changes": changes,
-        "history": {"n": len(df), "days": int(df.ts.dt.date.nunique()), "first_label": df.iloc[0]['ts'].strftime('%Y-%m-%d %H:%M'),
-                    "min": _rnd(df.pct.min()), "max": _rnd(df.pct.max())},
-    }
+    rows = [{"ts": r.ts, "label": r.ts.strftime('%Y-%m-%d %H:%M'), "pct": r.pct, "spot": r.spot, "cheap": r.cheap}
+            for r in df.itertuples()]
+    stats = metrics.premium_stats(rows, {"spot_pct": "spot", "retail_pct": "cheap"})
+    payload["stats"] = {**{k: v for k, v in stats.items() if k not in ("changes", "history")},
+                        "latest": _arb_point(next(df.tail(1).itertuples())),
+                        "changes": stats["changes"], "history": stats["history"]}
     return payload
 
 
@@ -1214,105 +1193,303 @@ def get_inventory_data():
 # --- ENDPOINT 2: THE DASHBOARD VIEWER ---
 @app.route('/inventory_chart')
 def inventory_chart_page():
-    """Serves a single-page HTML dashboard optimized for iFrame embedding."""
+    """The COMEX inventory chart page shown in the terminal's panel 2 frame. It draws /api/inventory_data."""
     html_template = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>COMEX Inventory Live Chart</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>COMEX Silver Inventory</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
         <style>
-            /* OPTIMIZED FOR TERMINAL IFRAME */
-            body { font-family: sans-serif; background: transparent; color: #eee; margin: 0; padding: 10px; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }
-            .container { flex: 1; display: flex; flex-direction: column; background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #27272a; }
-            h2 { text-align: center; color: #ffcc00; font-size: 14px; margin: 0 0 10px 0; font-weight: bold; letter-spacing: 1px; }
-            .stats { display: flex; justify-content: space-around; margin-bottom: 10px; font-weight: bold; font-size: 11px; }
-            .chart-wrapper { flex: 1; position: relative; min-height: 0; }
+            * { box-sizing: border-box; }
+            body { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; background: #000; color: #a1a1aa; margin: 0; padding: 10px 12px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+            .head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 14px; margin-bottom: 6px; }
+            .cap { font-size: 8px; text-transform: uppercase; letter-spacing: 1.5px; color: #71717a; }
+            .big { display: flex; align-items: center; gap: 8px; }
+            .score { font-size: 28px; font-weight: 800; line-height: 1.1; color: #fff; font-variant-numeric: tabular-nums; }
+            .unit { font-size: 11px; font-weight: 400; color: #71717a; }
+            .mid { font-size: 9px; line-height: 1.6; padding-top: 10px; }
+            .mid span { white-space: nowrap; }
+            .ctl { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+            .seg { display: flex; }
+            .seg button { font: inherit; font-size: 9px; background: #09090b; border: 1px solid #27272a; color: #a1a1aa; padding: 2px 7px; cursor: pointer; margin-left: -1px; }
+            .seg button:first-child { margin-left: 0; border-radius: 3px 0 0 3px; }
+            .seg button:last-child { border-radius: 0 3px 3px 0; }
+            .seg button[aria-pressed="true"] { color: #fff; border-color: #3f3f46; background: #18181b; position: relative; }
+            .chart-wrap { flex: 1; min-height: 0; position: relative; }
+            .foot { font-size: 9px; color: #71717a; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         </style>
     </head>
     <body>
-        <div class="container">
-            <h2>🏦 COMEX PHYSICAL INVENTORY HISTORY</h2>
-            <div class="stats" id="currentStats">Loading latest data...</div>
-            <div class="chart-wrapper">
-                <canvas id="inventoryChart"></canvas>
+        <div class="head">
+            <div>
+                <div class="cap" id="cap">REGISTERED</div>
+                <div class="big"><span class="score"><span id="score">&mdash;</span><span class="unit" id="unit"></span></span></div>
+            </div>
+            <div class="mid" id="mid"></div>
+            <div class="ctl">
+                <div class="seg" id="views"></div>
+                <div class="seg" id="ranges"></div>
             </div>
         </div>
+        <div class="chart-wrap"><canvas id="invChart"></canvas></div>
+        <div class="foot" id="foot"></div>
 
         <script>
-            async function loadChart() {
-                const response = await fetch('/api/inventory_data');
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok || !Array.isArray(data.labels) || !data.labels.length) {
-                    document.getElementById('currentStats').textContent =
-                        data.error || data.message || `No COMEX inventory history yet (HTTP ${response.status}).`;
+            var VIEWS = ['REG', 'STACK', 'SHARE'];
+            var RANGES = { '1M': 30, '3M': 91, 'ALL': null };
+            var CHANGES = [1, 5, 20];
+            var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            var DAY = 86400000;
+            var UP = '#4ade80', DOWN = '#f87171';
+
+            Chart.defaults.font.family = "'JetBrains Mono', ui-monospace, Menlo, monospace";
+
+            var rows = [];
+            var view = 'REG';
+            var range = '3M';
+            var chart = null;
+
+            function $(id) { return document.getElementById(id); }
+            function isNum(v) { return typeof v === 'number' && isFinite(v); }
+            function dayText(t) { var d = new Date(t); return MONTHS[d.getMonth()] + ' ' + d.getDate(); }
+            function fullText(t) { return dayText(t) + ', ' + new Date(t).getFullYear(); }
+            function mText(v, n) { return (v / 1e6).toFixed(n); }
+            function pctText(v) { return v.toFixed(1) + '%'; }
+
+            function lastIndex(list, key) {
+                for (var i = list.length - 1; i >= 0; i--) { if (isNum(list[i][key])) return i; }
+                return -1;
+            }
+
+            // Selected range: rows from the cutoff to the newest report, or everything when fewer than 2 registered values fall inside.
+            function pickView() {
+                var days = RANGES[range], last = rows[rows.length - 1].t;
+                var min = days === null ? rows[0].t : last - days * DAY;
+                var v = rows.filter(function (r) { return r.t >= min; });
+                if (v.filter(function (r) { return isNum(r.reg); }).length < 2) { v = rows; min = rows[0].t; }
+                return { view: v, min: min, max: last };
+            }
+
+            // Bounds rounded outward to the smallest step that leaves at most 5 intervals.
+            function niceBounds(lo, hi, steps) {
+                for (var i = 0; i < steps.length; i++) {
+                    var s = steps[i], a = Math.floor(lo / s) * s, b = Math.ceil(hi / s) * s;
+                    if (b === a) b = a + s;
+                    if ((b - a) / s <= 5 || i === steps.length - 1) return { min: a, max: b, step: s };
+                }
+            }
+
+            function span(list) {
+                var ys = list.filter(isNum);
+                return [Math.min.apply(null, ys), Math.max.apply(null, ys)];
+            }
+
+            function setText(id, text, color) {
+                var el = $(id);
+                el.textContent = text;
+                el.style.color = color || '';
+            }
+
+            function line(text, color) {
+                var s = document.createElement('span');
+                s.textContent = text;
+                s.style.color = color || '';
+                var mid = $('mid');
+                if (mid.children.length) mid.appendChild(document.createTextNode(' · '));
+                mid.appendChild(s);
+            }
+
+            function renderHeader() {
+                var n = rows.length - 1, r = rows[n];
+                $('cap').textContent = 'REGISTERED · report ' + dayText(r.t);
+                $('mid').textContent = '';
+                if (!isNum(r.reg)) {
+                    setText('score', '—');
+                    setText('unit', '');
+                    line('Latest report (' + dayText(r.t) + ') has no registered figure.');
                     return;
                 }
+                setText('score', mText(r.reg, 1) + 'M');
+                setText('unit', ' oz');
+                CHANGES.forEach(function (k) {
+                    var p = rows[n - k];
+                    if (!p || !isNum(p.reg) || p.reg <= 0) return;
+                    var d = r.reg - p.reg, sign = d > 0 ? '+' : d < 0 ? '-' : '';
+                    line(k + (k === 1 ? ' report ' : ' reports ') + sign + mText(Math.abs(d), 2) + 'M (' + sign + (Math.abs(d) / p.reg * 100).toFixed(1) + '%)',
+                        d > 0 ? UP : d < 0 ? DOWN : '');
+                });
+            }
 
-                // Update Stats Header
-                const lastIdx = data.labels.length - 1;
-                document.getElementById('currentStats').innerHTML = `
-                    <span>Total: ${(data.total[lastIdx]/1e6).toFixed(2)}M oz</span>
-                    <span style="color: #ff4444">Registered: ${(data.registered[lastIdx]/1e6).toFixed(2)}M oz</span>
-                    <span style="color: #44ff44">Eligible: ${(data.eligible[lastIdx]/1e6).toFixed(2)}M oz</span>
-                `;
+            function renderFooter(v) {
+                var r = rows[rows.length - 1], parts = [];
+                if (isNum(r.el)) parts.push('Eligible ' + mText(r.el, 1) + 'M');
+                if (isNum(r.tot)) parts.push('Total ' + mText(r.tot, 1) + 'M');
+                if (isNum(r.share)) parts.push('Registered share ' + pctText(r.share));
+                parts.push(v.length + ' reports in view');
+                var regs = v.filter(function (x) { return isNum(x.reg); });
+                if (regs.length) {
+                    var lo = regs[0], hi = regs[0];
+                    regs.forEach(function (x) { if (x.reg < lo.reg) lo = x; if (x.reg > hi.reg) hi = x; });
+                    parts.push('registered low ' + mText(lo.reg, 1) + 'M (' + dayText(lo.t) + ')');
+                    parts.push('high ' + mText(hi.reg, 1) + 'M (' + dayText(hi.t) + ')');
+                }
+                setText('foot', parts.join(' · '));
+            }
 
-                const ctx = document.getElementById('inventoryChart').getContext('2d');
-                new Chart(ctx, {
+            function showMessage(text, color) {
+                if (chart) { chart.destroy(); chart = null; }
+                setText('foot', text, color);
+            }
+
+            var crosshair = {
+                id: 'crosshair',
+                beforeDatasetsDraw: function (c) {
+                    var act = c.tooltip && c.tooltip.getActiveElements();
+                    if (!act || !act.length) return;
+                    var x = act[0].element.x, ctx = c.ctx;
+                    ctx.save();
+                    ctx.strokeStyle = '#3f3f46';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(x, c.chartArea.top);
+                    ctx.lineTo(x, c.chartArea.bottom);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            };
+
+            function series(v, key) {
+                return v.map(function (r) { return { x: r.t, y: isNum(r[key]) ? r[key] : null }; });
+            }
+
+            function renderChart() {
+                var p = pickView(), v = p.view, datasets, yb, fmt, stacked = view === 'STACK';
+                var lastIdx = lastIndex(v, view === 'SHARE' ? 'share' : 'reg');
+                function dot(c) { return c.dataIndex === lastIdx ? 4 : 0; }
+                if (stacked) {
+                    // a report missing either figure is missing in both layers
+                    var ok = v.map(function (r) { return isNum(r.reg) && isNum(r.el); });
+                    var top = v.map(function (r, i) { return ok[i] ? r.reg + r.el : null; });
+                    yb = niceBounds(0, span(top)[1], [25e6, 50e6, 100e6, 200e6]);
+                    yb.min = 0;
+                    fmt = function (x) { return x === 0 ? '0' : mText(x, 0) + 'M'; };
+                    datasets = [
+                        { label: 'Registered', data: v.map(function (r, i) { return { x: r.t, y: ok[i] ? r.reg : null }; }), parsing: false, borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.35)', fill: 'origin', borderWidth: 1, tension: 0, spanGaps: false, pointRadius: 0, pointHoverRadius: 3 },
+                        { label: 'Eligible', data: v.map(function (r, i) { return { x: r.t, y: ok[i] ? r.el : null }; }), parsing: false, borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.18)', fill: '-1', borderWidth: 1, tension: 0, spanGaps: false, pointRadius: 0, pointHoverRadius: 3 }
+                    ];
+                } else if (view === 'SHARE') {
+                    var sb = span(v.map(function (r) { return r.share; }));
+                    yb = niceBounds(sb[0], sb[1], [0.5, 1, 2, 5, 10, 20]);
+                    fmt = function (x) { return x + '%'; };
+                    datasets = [{ label: 'Registered share', data: series(v, 'share'), parsing: false, borderColor: '#e4e4e7', borderWidth: 1.75, tension: 0.15, spanGaps: false, pointRadius: dot, pointHoverRadius: 3, pointBackgroundColor: '#e4e4e7', pointBorderWidth: 0 }];
+                } else {
+                    var rb = span(v.map(function (r) { return r.reg; }));
+                    yb = niceBounds(rb[0], rb[1], [0.5e6, 1e6, 2e6, 5e6, 10e6, 20e6]);
+                    fmt = function (x) { return (Math.round(x / 1e5) / 10) + 'M'; };
+                    datasets = [{ label: 'Registered', data: series(v, 'reg'), parsing: false, borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.08)', fill: 'start', borderWidth: 1.75, tension: 0.15, spanGaps: false, pointRadius: dot, pointHoverRadius: 3, pointBackgroundColor: '#f59e0b', pointBorderWidth: 0 }];
+                }
+                if (chart) chart.destroy();
+                chart = new Chart($('invChart').getContext('2d'), {
                     type: 'line',
-                    data: {
-                        labels: data.labels,
-                        datasets: [
-                            {
-                                label: 'Registered (Sellable)',
-                                data: data.registered,
-                                borderColor: '#ff4444',
-                                backgroundColor: 'rgba(255, 68, 68, 0.1)',
-                                fill: true,
-                                tension: 0.3,
-                                pointRadius: 1
-                            },
-                            {
-                                label: 'Eligible (Vaulted)',
-                                data: data.eligible,
-                                borderColor: '#44ff44',
-                                tension: 0.3,
-                                pointRadius: 1
-                            },
-                            {
-                                label: 'Total Inventory',
-                                data: data.total,
-                                borderColor: '#ffcc00',
-                                borderDash: [5, 5],
-                                tension: 0.3,
-                                pointRadius: 1
-                            }
-                        ]
-                    },
+                    data: { datasets: datasets },
+                    plugins: [crosshair],
                     options: {
-                        devicePixelRatio: 3,    
                         responsive: true,
-                        maintainAspectRatio: false, // <--- THE CRITICAL FIX
-                        interaction: {
-                            mode: 'index',
-                            intersect: false,
-                        },
+                        maintainAspectRatio: false,
+                        animation: false,
+                        interaction: { mode: 'nearest', axis: 'x', intersect: false },
                         plugins: {
-                            legend: { labels: { color: '#eee', boxWidth: 12, font: {size: 10} } }
+                            legend: { display: false },
+                            tooltip: {
+                                backgroundColor: 'rgba(9,9,11,0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, displayColors: false,
+                                titleColor: '#a1a1aa', bodyColor: '#e4e4e7',
+                                titleFont: { size: 10 }, bodyFont: { size: 11 },
+                                filter: function (item, i) { return i === 0; },
+                                callbacks: {
+                                    title: function (items) { return fullText(items[0].parsed.x); },
+                                    label: function (item) {
+                                        // The rows come from the report at that x, whichever layer was hit.
+                                        var r = v.find(function (q) { return q.t === item.parsed.x; });
+                                        if (!r) return '';
+                                        function oz(name, x) { return name + (isNum(x) ? ' ' + mText(x, 2) + 'M oz' : ' n/a'); }
+                                        return [oz('Registered', r.reg), oz('Eligible', r.el), oz('Total', r.tot),
+                                            'Registered share ' + (isNum(r.share) ? pctText(r.share) : 'n/a')];
+                                    }
+                                }
+                            }
                         },
                         scales: {
-                            y: { 
-                                ticks: { color: '#aaa', font: {size: 10}, callback: (v) => (v/1e6).toFixed(0) + 'M' },
-                                grid: { color: '#333' }
+                            x: {
+                                type: 'linear', min: p.min, max: p.max, grid: { display: false }, border: { color: '#27272a' },
+                                ticks: { color: '#71717a', font: { size: 9 }, maxRotation: 0, align: 'inner', callback: function (t) { return dayText(t); } },
+                                afterBuildTicks: function (axis) {
+                                    var step = Math.max(1, Math.ceil((axis.max - axis.min) / DAY / 5)) * DAY, ticks = [];
+                                    for (var t = new Date(axis.max).setHours(0, 0, 0, 0); t >= axis.min; t -= step) ticks.unshift({ value: t });
+                                    axis.ticks = ticks;
+                                }
                             },
-                            x: { 
-                                ticks: { color: '#aaa', font: {size: 10}, maxTicksLimit: 10 },
-                                grid: { display: false }
+                            y: {
+                                min: yb.min, max: yb.max, stacked: stacked, grid: { color: '#18181b' }, border: { display: false },
+                                ticks: { color: '#71717a', font: { size: 9 }, stepSize: yb.step, callback: fmt }
                             }
                         }
                     }
                 });
+                renderFooter(v);
             }
+
+            function makeButtons(id, names, isOn, onClick) {
+                var box = $(id);
+                box.textContent = '';
+                names.forEach(function (name) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = name;
+                    b.setAttribute('aria-pressed', String(isOn(name)));
+                    b.addEventListener('click', function () { onClick(name); });
+                    box.appendChild(b);
+                });
+            }
+
+            function refresh() {
+                makeButtons('views', VIEWS, function (n) { return n === view; }, function (n) { view = n; refresh(); });
+                makeButtons('ranges', Object.keys(RANGES), function (n) { return n === range; }, function (n) { range = n; refresh(); });
+                renderChart();
+            }
+
+            function noHistory() {
+                setText('score', '—');
+                setText('unit', '');
+                showMessage('No COMEX inventory history recorded yet.');
+            }
+
+            async function loadChart() {
+                try {
+                    var response = await fetch('/api/inventory_data');
+                    var d = await response.json();
+                    if (!response.ok || d.status === 'error' || !Array.isArray(d.labels)) {
+                        showMessage('Could not load the COMEX inventory history.' + (d && d.message ? ': ' + d.message : ''), '#f87171');
+                        return;
+                    }
+                    rows = d.labels.map(function (l, i) {
+                        var q = l.split('-'), r = { t: new Date(+q[0], +q[1] - 1, +q[2]).getTime() };
+                        function num(a) { var x = a && a[i]; return isNum(x) ? x : null; }
+                        r.reg = num(d.registered); r.el = num(d.eligible); r.tot = num(d.total);
+                        r.share = isNum(r.reg) && isNum(r.tot) && r.tot > 0 ? r.reg / r.tot * 100 : null;
+                        return r;
+                    });
+                    if (!rows.length || lastIndex(rows, 'reg') < 0) { noHistory(); return; }
+                    renderHeader();
+                    refresh();
+                } catch (e) {
+                    console.error('Inventory chart failed:', e);
+                    showMessage('Could not load the COMEX inventory history.', '#f87171');
+                }
+            }
+
             loadChart();
         </script>
     </body>
@@ -1533,7 +1710,7 @@ def api_help():
       </parameters>
     </endpoint>
     <endpoint method="GET" path="/api/institutional_history" format="json" source="stored">
-      <description>Dark pool and GEX history for one ticker from the equities_darkpool_gex_ledger.csv ledger.</description>
+      <description>Dark pool and GEX history for one ticker from the equities_darkpool_gex_ledger.csv ledger. Five more arrays aligned with labels come from the pipeline database and are null where a row has no stored run: dp_session (the trading session the flow describes), dp_method (aggressor or vwap_heuristic), dp_unknown_vol (block volume with no provider side), dp_above_vwap_vol and dp_below_vwap_vol (the unknown-side volume at or above, and below, the block VWAP).</description>
       <parameters>
         <param name="ticker" type="string" default="SLV" />
         <param name="limit" type="int" default="100" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
@@ -1588,6 +1765,10 @@ def api_help():
   <group name="Silver and arbitrage">
     <endpoint method="POST" path="/api/silver_eagle_prices" format="xml" source="live" writes="appends a row to physical_arbitrage_ledger">
       <description>Runs ebay.py: prices of tracked 1 oz Silver Eagle listings from the eBay Browse API, with premium over the benchmark, the silver futures price SI=F (the root attribute benchmark_symbol names it; comex_spot is the historical attribute name and holds that price). Each successful call appends a row to the arbitrage ledger (CSV and SQLite). Needs eBay credentials. POST only.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/shanghai_spread" format="json" source="stored">
+      <description>Shanghai Gold Exchange silver benchmark against COMEX silver futures from the latest snapshot: legacy (the fields as stored, comparing the latest fix with the run-time quote) and dated (each fix paired with the SI=F and USD/CNY closes of its own date, with 90-day statistics and a daily series; null when the snapshot predates it).</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/arbitrage_history" format="json" source="stored">
@@ -1941,6 +2122,48 @@ def api_macro_news():
 # --- INSTITUTIONAL FLOW HISTORY API ---
 # ==========================================
 
+def _utc_to_local_label(stamp):
+    """A stored UTC timestamp as the ledger's 'YYYY-MM-DD HH:MM' in the configured local zone (None if unparseable)."""
+    try:
+        moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(config.LOCAL_TZ).strftime('%Y-%m-%d %H:%M')
+
+
+def _flow_side_info(conn, ticker):
+    """{ledger row date: {session, method, unknown_vol, above_vwap_vol, below_vwap_vol}} from the pipeline database.
+    Row date -> run (run.generated_at in local time) -> session (flow.<T>.observed_session) -> summary
+    (flow.<T>.summary, newest per session). A missing link leaves the later fields None."""
+    runs = conn.execute("""SELECT o.run_id, o.observed_at FROM v2_observations o JOIN v2_runs r ON r.run_id = o.run_id
+                           WHERE o.metric_id = 'run.generated_at' AND r.mode = 'live'
+                             AND r.status IN ('committed', 'completed', 'completed_with_warnings')""").fetchall()
+    sessions = {r["run_id"]: r["value_text"] for r in conn.execute(
+        "SELECT run_id, value_text FROM v2_observations WHERE metric_id = ?", (f"flow.{ticker}.observed_session",))}
+    summaries = {}
+    for r in conn.execute("SELECT value_json FROM v2_observations WHERE metric_id = ? ORDER BY obs_id",
+                          (f"flow.{ticker}.summary",)):
+        try:
+            summary = json.loads(r["value_json"] or "null")
+        except ValueError:
+            continue
+        if isinstance(summary, dict) and summary.get("session"):
+            summaries[summary["session"]] = summary
+    out = {}
+    for run in runs:
+        label, session = _utc_to_local_label(run["observed_at"]), sessions.get(run["run_id"])
+        if label is None or not session:
+            continue
+        summary = summaries.get(session) or {}
+        split = summary.get("vwap_heuristic_unknown_side") or {}
+        out[label] = {"session": session, "method": summary.get("bias_method"),
+                      "unknown_vol": summary.get("unknown_side_volume"),
+                      "above_vwap_vol": split.get("at_or_above_vwap"), "below_vwap_vol": split.get("below_vwap")}
+    return out
+
+
 @app.route('/api/institutional_history')
 def get_institutional_history():
     """Returns time-series data from the institutional scanner ledger (SPY + SLV dark pool + GEX)."""
@@ -1983,7 +2206,22 @@ def get_institutional_history():
             "gex_put_wall": df['GEX_Put_Wall'].tolist(),
             "gex_zero_gamma": df['GEX_Zero_Gamma'].tolist()
         }
-        
+
+        # How the bias was reached, from the pipeline database (all null when it is not there yet).
+        side = {}
+        conn = _open_readonly()
+        if conn is not None:
+            try:
+                side = _flow_side_info(conn, ticker)
+            except sqlite3.OperationalError as exc:
+                if not _uninitialised(exc):
+                    raise
+            finally:
+                conn.close()
+        for key, field in (("dp_session", "session"), ("dp_method", "method"), ("dp_unknown_vol", "unknown_vol"),
+                           ("dp_above_vwap_vol", "above_vwap_vol"), ("dp_below_vwap_vol", "below_vwap_vol")):
+            payload[key] = [(side.get(str(d)) or {}).get(field) for d in payload["labels"]]
+
         return jsonify({"status": "success", "data": payload})
     
     except Exception as e:
@@ -2680,6 +2918,36 @@ def api_forecast():
                     "macro_regime": fc.get("macro_regime"), "source_errors": fc.get("source_errors"),
                     "refining": fc.get("_refining"), "chaos": fc.get("chaos"),
                     "scorecard": score, "signals": signals})
+
+
+@app.route('/api/shanghai_spread', methods=['GET'])
+@guarded("Shanghai spread")
+def api_shanghai_spread():
+    """The latest snapshot's Shanghai silver section: the legacy fields as stored and the date-paired spread."""
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+        if not row:
+            return json_error("No committed run yet.", 404)
+        key = f"shanghai_snapshot:{row['run_id']}"
+        data = data_cache.get(key)
+        if data is None:
+            ctx = _v2lake.load_snapshot(conn, row["run_id"])
+            sh = ctx.get("shanghai") or {}
+            data = {"run_at": _utc_to_local_label((ctx.get("run") or {}).get("generated_at")),
+                    "legacy": {k: sh.get(k) for k in ("status", "reason", "sge_date", "sge_session", "cny_per_kg", "usdcny",
+                                                      "usd_per_oz", "comex_ref", "raw_spread", "premium_tax_adj")},
+                    "dated": sh.get("dated")}
+            data_cache.set(key, data)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    return jsonify({"status": "success", "data": _json_safe(data)})
 
 
 @app.route('/api/chaos', methods=['GET'])
