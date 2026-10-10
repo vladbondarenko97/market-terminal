@@ -229,7 +229,13 @@ def _form4_filings(sym):
             conn.close()
     except Exception:
         return None
-    return [{**json.loads(r["value_json"]), "accession": r["entity"], "date": r["observed_at"][:10]} for r in rows if r["value_json"]]
+    out = [{**json.loads(r["value_json"]), "accession": r["entity"], "date": r["observed_at"][:10]} for r in rows if r["value_json"]]
+    # A company's EDGAR file also lists the Form 4s it filed itself, as the OWNER of another issuer's shares. Those are not its
+    # insiders: keep a filing only when its issuer is this company (company_cik; for rows stored before that field, the usual issuer).
+    known = [f["issuer_cik"] for f in out if f.get("issuer_cik")]
+    usual = max(set(known), key=known.count) if known else None
+    num = lambda v: int(v) if str(v or "").isdigit() else None
+    return [f for f in out if not f.get("issuer_cik") or num(f["issuer_cik"]) == num(f.get("company_cik") or usual)]
 
 
 def insider_clusters(filings):
