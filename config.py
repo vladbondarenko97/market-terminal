@@ -127,6 +127,7 @@ def flag_env(name):
 DATABENTO_API_KEY = optional_env("DATABENTO_API_KEY", default="", alt_name="DB_API_KEY")
 FRED_API_KEY = optional_env("FRED_API_KEY", default="")
 EIA_API_KEY = optional_env("EIA_API_KEY", default="")
+SEC_USER_AGENT = optional_env("SEC_USER_AGENT", default="")   # "Name email": the contact string SEC asks automated clients to send
 NEWS_FEEDS_FILE = optional_env("NEWS_FEEDS_FILE", default="")   # empty: the bundled core/news_feeds.json
 GOLD_API_KEY = optional_env("GOLD_API_KEY", default="")
 EBAY_APP_ID = optional_env("EBAY_APP_ID", default="")

@@ -380,7 +380,12 @@ and only a row with tested evidence can say "Buy"; hover any cell for what it me
   the 200-day average) on a saved watchlist (`+ ADD`, stored in `scanner_watchlist.json`). SPY trades as a call spread
   of at most $300 and opens a paper position (`v2_watch_positions`) that a sell alert closes 5 trading days later.
 - **13 · Edge Lab** (`core/edges.py`, `/api/edges`): the published edges (reversal, post-earnings drift, turn of month,
-  trend, 12-month momentum, volatility premium, overnight vs intraday) tested on any ticker's own history; `QUERY` analyses a symbol, `+ TRACK` saves it (`edges_tracked.json`).
+  trend, 12-month momentum, volatility premium, overnight vs intraday, insider cluster buys) tested on any ticker's own history; `QUERY` analyses a symbol, `+ TRACK` saves it (`edges_tracked.json`).
+  The insider edge (mid horizon) counts a day when 3 or more different officers have each filed a Form 4 with an open-market purchase (code P) within 10 calendar days, first day
+  of a cluster only, and compares the 21 trading days after it with normal months. It describes what was filed and what the price did afterwards, nothing about why.
+  It reads Form 4 filings stored by `scripts/backfill_form4.py` (re-run to update); a symbol with none reads "no Form 4 history stored", a fund reads "not applicable".
+  Two planned edges are not built: news sentiment against the VMRI, and a news-shock gate on the reversal edge. RSS has no archive, so they wait for about 60 pipeline runs of `v2_news_items` history.
+  Forecast Lab card 7 gains a "Fed Board speech day" row.
 
 Alerts: `python main_pipeline.py signal-alerts` (launchd `com.vlad.signalalerts`, every 15 minutes of the session on weekdays, installed by
 `./setup.sh --schedule`) pushes to `NTFY_URL` and raises a macOS banner when a row goes from waiting to FIRED; it
