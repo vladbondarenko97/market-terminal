@@ -429,6 +429,7 @@ body.resizing-active #v-resizer {
 .fc-scanbar input { width: 84px; background: #0c0c10; border: 1px solid #27272a; border-radius: 6px; padding: 3px 8px; color: #fafafa;
     font: 11px ui-monospace, Menlo, monospace; text-transform: uppercase; }
 .fc-x { color: #52525b; font-size: 10px; } .fc-x:hover { color: #f87171; }
+.fc-matrix td:first-child { white-space: nowrap; }
 .fc-sig .fc-pick { cursor: pointer; color: #a1a1aa; } .fc-sig .fc-pick:hover, .fc-sig .fc-pick.sel { color: #fafafa; font-weight: 700; }
 .fc-sig th, .fc-sig td { text-align: left; white-space: normal; vertical-align: top; cursor: help; }
 .fc-chart { position: relative; height: 170px; }
@@ -674,4 +675,22 @@ body.fc-lock { overflow: hidden; }
     .fc-seg { flex-wrap: wrap; }
     .fc-seg button { min-height: 32px; min-width: 36px; padding: 4px 10px; }
     .fc-table a { display: inline-block; padding: 10px 6px; margin: -10px -6px; }
+
+    /* --- Forecast Lab: nothing may be wider than its card, and the tab never scrolls sideways.
+           A wide table scrolls inside its own card (the table is the scroll box, its body is the table). --- */
+    #forecastGrid { overflow-x: hidden; }
+    .rainbow-card, .rainbow-inner, .fc-body { min-width: 0; }
+    .fc-table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .fc-table > tbody { display: table; min-width: 100%; border-collapse: collapse; }
+    /* The rule tables (Signal Watch, Day Scanner, Edge Lab detail, live-watch positions) read as one block per row
+       instead of seven narrow columns; each cell shows its column name (data-label, set in forecast.js). */
+    .fc-sig:not(.fc-matrix) { overflow-x: visible; }
+    .fc-sig:not(.fc-matrix) > tbody, .fc-sig:not(.fc-matrix) tr, .fc-sig:not(.fc-matrix) td { display: block; min-width: 0; }
+    .fc-sig:not(.fc-matrix) tr:first-child { display: none; }                      /* the header row */
+    .fc-sig:not(.fc-matrix) tr { border: 1px solid #1f1f23; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+    .fc-sig:not(.fc-matrix) td { border: 0; padding: 3px 0; overflow-wrap: anywhere; }
+    .fc-sig:not(.fc-matrix) td::before { content: attr(data-label); display: block; font-size: 8px; font-weight: 600; color: #71717a;
+                                         text-transform: uppercase; letter-spacing: .1em; }
+    .fc-sig:not(.fc-matrix) td:nth-child(-n+2) { display: inline-block; margin-right: 8px; font-weight: 700; color: #fafafa; }
+    .fc-sig:not(.fc-matrix) td:nth-child(-n+2)::before { content: none; }           /* ticker and name are the block's title */
 }

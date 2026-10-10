@@ -141,6 +141,10 @@ classes) the page changes as follows. The wide layout is not affected by any of 
 - **Menu.** The Macro Triggers and the Custom Whale Hunter form are in the [menu drawer](#menu-drawer), opened by **☰** in
   the header. There is no bar above the tabs, so the active tab gets the screen (header, tab bar and bottom bar take about
   200 px; the docked console bar below takes 36 px).
+- **Forecast Lab tables.** No table is wider than its card and the tab does not scroll sideways. A wide table (the
+  Edge Lab matrix, the model cards' tables) scrolls inside its own card. The rule tables (Signal Watch, Day Scanner,
+  Edge Lab detail, live-watch positions) are shown as one block per row, each cell under its column name
+  (`fcLabelCells` in `forecast.js` sets `data-label`).
 - **Console states.** The console has three states on a phone. They are not stored; a phone always starts MINIMIZED.
   - **MINIMIZED** (default; **Panels** is lit in the bottom bar). The tab bar and the active tab (Macro Direction, Time
     Arbitrage or Forecast Lab) are shown. The console is a single docked bar, 36 px high, just above the bottom bar. It reads

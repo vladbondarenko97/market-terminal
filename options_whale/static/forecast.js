@@ -96,6 +96,14 @@ function copyForecastCard(id) {
 // ---------------------------------------------------------------- 0. signal watch / 12. day scanner
 const sigTd = (txt, tip, cls = '') => `<td class="${cls}" title="${fcEsc(tip)}">${fcEsc(txt)}</td>`;
 const sigTh = (txt, tip) => `<th title="${fcEsc(tip)}">${txt}</th>`;
+// On a phone the rule tables are shown as one block per row (styles.css); each cell then needs its column name.
+function fcLabelCells(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('table.fc-sig:not(.fc-matrix)').forEach(table => {
+        const heads = [...table.querySelectorAll('th')].map(th => th.textContent.trim());
+        table.querySelectorAll('tr').forEach(tr => [...tr.children].forEach((cell, i) => { if (cell.tagName === 'TD') cell.dataset.label = heads[i] || ''; }));
+    });
+}
 function sigTable(rows, when, lead = () => '') {
     const td = sigTd, th = sigTh;
     const body = rows.map(r => {
@@ -124,6 +132,7 @@ function renderSignals(j) {
             ${kpi('Trades on', trades.length, trades.map(r => r.asset).join(' · '), trades.length ? 'fc-pos' : '')}${kpi('As of', fcEsc(j.run?.generated_local || '—'))}</div>
         ${sigTable(rows, j.run?.generated_local || 'latest')}
         <div class="fc-note">Rules only: no model output. Price-driven rows use live quotes; the rest are as of the latest run. Both markets are shown whichever ticker is selected. Actions are generated from each rule's own backtest, so a fired signal with no measured edge says so instead of giving a trade.</div>`;
+    fcLabelCells(el);
 }
 async function loadScanner(opts = {}) {
     const el = document.getElementById('fc12');
@@ -180,6 +189,7 @@ function renderScanner(j, error = '') {
                 ${td(p.closed_at ? `closed ${p.closed_at.slice(0, 10)}` : `sell ${p.exit_due}`, p.closed_at ? 'Exit alert sent' : 'Open: waiting for the exit date', p.closed_at ? 'fc-muted' : 'fc-warn')}</tr>`).join('')}</table>`
           : `<div class="fc-muted">None yet. When SPY's "Dip in an uptrend" fires the alert names a call spread of at most $300, it is recorded here, and a sell alert follows 5 trading days later.</div>`}
         <div class="fc-note">One row per symbol, plus any context state that is true right now. Green evidence = the dip rule beat a normal uptrend day on that symbol's own history (5 points of up-rate, t ≥ 2, in both halves); grey = no measured edge, so it never says Buy. Added tickers are saved on this Mac and scanned by the 5-minute alert job. After the 3 PM CT close the triggers shown are the next session's.</div>`;
+    fcLabelCells(el);
 }
 
 // ---------------------------------------------------------------- 13. edge lab
@@ -219,7 +229,7 @@ function renderEdges(j, error = '') {
     const vcell = (v, h) => td(v.label, v.edges.length ? `Active ${h} edges: ${v.edges.join(', ')}` : `No tested edge is active on the ${h} horizon`,
                                v.bias === 'bullish' ? 'fc-pos' : v.bias === 'bearish' ? 'fc-neg' : 'fc-muted');
     const cols = (tracked[0] || {}).edges || [];
-    const matrix = tracked.length ? `<table class="fc-table fc-sig"><tr>${th('Ticker', 'Click a symbol to show its detail below; ✕ stops tracking it')}${th('Price', 'Latest price')}
+    const matrix = tracked.length ? `<table class="fc-table fc-sig fc-matrix"><tr>${th('Ticker', 'Click a symbol to show its detail below; ✕ stops tracking it')}${th('Price', 'Latest price')}
             ${th('Short', 'Days to weeks: verdict from the tested short-horizon edges that are active now')}${th('Mid', 'About 1–12 months: verdict from the tested mid-horizon edges')}
             ${th('Long', 'Years: verdict from the tested long-horizon edges')}
             ${cols.map(c => th(fcEsc(c.label), `${c.name} — ${c.what} Source: ${c.source}`)).join('')}</tr>
@@ -261,6 +271,7 @@ function renderEdges(j, error = '') {
         ${(j.failed || []).length ? `<div class="fc-note">No data right now for: ${j.failed.map(s => `${fcEsc(s)} <button class="fc-x" title="Remove ${fcEsc(s)}" onclick="loadEdges({remove:'${jsArg(s)}'})">✕</button>`).join(' · ')}</div>` : ''}
         ${detail}
         <div class="fc-note">Each edge is graded on this ticker's own history. Only green evidence can produce a trade; an active edge with grey evidence is context, not a signal.</div>`;
+    fcLabelCells(el);
 }
 
 // ---------------------------------------------------------------- 1. implied range

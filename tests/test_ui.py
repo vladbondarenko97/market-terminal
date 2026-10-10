@@ -281,6 +281,18 @@ class TerminalPhoneLayout(unittest.TestCase):
         for f in (*STATIC.glob("*.js"), STYLES):
             self.assertNotIn("max-width: 768px", f.read_text(encoding="utf-8"), f.name)
 
+    def test_forecast_lab_tables_stay_inside_their_cards_on_a_phone(self):
+        # A table wider than its card used to stick out past the border and make the whole tab scroll sideways.
+        css = phone_css()
+        self.assertRegex(css_rule(css, "#forecastGrid") or "", r"overflow-x:\s*hidden")
+        self.assertRegex(css_rule(css, ".fc-table") or "", r"display:\s*block;[^}]*overflow-x:\s*auto")      # scrolls inside the card
+        self.assertRegex(css_rule(css, ".rainbow-card, .rainbow-inner, .fc-body") or "", r"min-width:\s*0")
+        # the rule tables become one block per row; the cells get their column names from forecast.js
+        self.assertRegex(css_rule(css, ".fc-sig:not(.fc-matrix) td::before") or "", r"content:\s*attr\(data-label\)")
+        forecast = (STATIC / "forecast.js").read_text(encoding="utf-8")
+        self.assertEqual(forecast.count("fcLabelCells(el);"), 3)                               # Signal Watch, Day Scanner, Edge Lab
+        self.assertIn('class="fc-table fc-sig fc-matrix"', forecast)                           # the matrix stays a table and scrolls
+
     def test_console_on_a_phone_is_a_docked_bar_that_opens_over_the_tabs(self):
         app = (STATIC / "app.js").read_text(encoding="utf-8")
         css = phone_css()
