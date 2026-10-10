@@ -759,11 +759,15 @@ def vmri_chart_page():
                 var datasets = [
                     {
                         label: 'VMRI', data: view.map(function (r) { return { x: r.t, y: r.y }; }), parsing: false,
-                        borderColor: '#a1a1aa', borderWidth: 1.75, tension: 0.15, spanGaps: false, yAxisID: 'y',
+                        borderColor: '#a1a1aa', borderWidth: 1.75, tension: 0.15, spanGaps: true, yAxisID: 'y',
                         pointRadius: function (c) { return c.dataIndex === lastIdx ? 4 : 0; }, pointHoverRadius: 3,
                         pointBackgroundColor: function (c) { return c.raw && isNum(c.raw.y) ? tierOf(c.raw.y).color : '#a1a1aa'; },
                         pointBorderWidth: 0,
-                        segment: { borderColor: function (c) { var y = c.p1.parsed.y; return isNum(y) ? tierOf(y).color : '#a1a1aa'; } }
+                        // a run that recorded no score is bridged with a faint dashed line, so it reads as a gap, not as a value
+                        segment: {
+                            borderColor: function (c) { return c.p0.skip || c.p1.skip ? 'rgba(161,161,170,0.4)' : tierOf(c.p1.parsed.y).color; },
+                            borderDash: function (c) { return c.p0.skip || c.p1.skip ? [2, 3] : undefined; }
+                        }
                     },
                     {
                         label: '10-run avg', data: view.map(function (r) { return { x: r.t, y: r.avg }; }), parsing: false,
@@ -809,7 +813,12 @@ def vmri_chart_page():
                         scales: {
                             x: {
                                 type: 'linear', min: p.min, max: p.max, grid: { display: false }, border: { color: '#27272a' },
-                                ticks: { color: '#71717a', font: { size: 9 }, maxTicksLimit: 6, maxRotation: 0, includeBounds: false, callback: function (v) { return dayText(v); } }
+                                ticks: { color: '#71717a', font: { size: 9 }, maxRotation: 0, align: 'inner', callback: function (v) { return dayText(v); } },
+                                afterBuildTicks: function (axis) {
+                                    var step = Math.max(1, Math.ceil((axis.max - axis.min) / DAY / 5)) * DAY, ticks = [];
+                                    for (var v = new Date(axis.max).setHours(0, 0, 0, 0); v >= axis.min; v -= step) ticks.unshift({ value: v });
+                                    axis.ticks = ticks;
+                                }
                             },
                             y: { min: yb.min, max: yb.max, grid: { color: '#18181b' }, border: { display: false }, ticks: { color: '#71717a', font: { size: 9 } } },
                             y1: { display: !!overlay, position: 'right', grid: { display: false }, ticks: { color: '#38bdf8', font: { size: 9 } } }
