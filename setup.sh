@@ -138,7 +138,7 @@ PORT="$(sed -nE "s/^(export +)?OPTIONS_WHALE_PORT *= *[\"']?([0-9]+).*/\2/p" "$R
 PORT="${PORT:-8080}"
 echo "data: $DATA_DIR"
 echo "port: $PORT"
-[ -f "$DATA_DIR/portfolio.db" ] || warn "No portfolio.db in $DATA_DIR yet. Copy CME_Data from another Mac, or run the pipeline to create it."
+[ -f "$DATA_DIR/portfolio.db" ] || warn "No portfolio.db in $DATA_DIR yet. Run the pipeline to create it (or copy CME_Data from another Mac)."
 
 HAVE_KEY="$(cd "$ROOT" && "$VPY" -c 'from config import DATABENTO_API_KEY as k; print(1 if k else 0)')"
 [ "$HAVE_KEY" = 1 ] || warn "DATABENTO_API_KEY is empty in .env: the server starts, but the dark pool panels stay empty."

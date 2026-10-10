@@ -8,7 +8,8 @@ read or write storage, and for operators who back up or move the data folder. Fo
 
 ## Overview
 
-The data folder (`CME_Data/`) lives outside the repository. Its main file is `portfolio.db`, one SQLite database
+The data folder (`CME_Data/`) is never part of the repository: it sits next to it, or inside it and git-ignored
+(see [Configuration](configuration.md#data-folder)). Its main file is `portfolio.db`, one SQLite database
 with two kinds of content:
 
 - **Legacy ledger tables.** The original append-only history (`macro_master_ledger`, `comex_inventory_history`

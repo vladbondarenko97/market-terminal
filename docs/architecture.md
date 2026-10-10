@@ -11,7 +11,7 @@ every file in the repository. Read this before changing code. For day-to-day com
 | **Pipeline** | A batch run that collects market data, stores it, computes the models, commits one snapshot, renders files and the email, and delivers them. It runs on a schedule or by hand, then exits. | `python main_pipeline.py run` |
 | **Terminal** | A Flask server with a browser UI. Most cards read what the pipeline stored; some routes still fetch live data. | `python options_whale/api_router.py` |
 
-Both run on one Mac. Data lives in a folder outside the repository (`CME_Data/`, see
+Both run on one Mac. Data lives in its own folder, never in git (`CME_Data/`, see
 [Configuration](configuration.md#data-folder)).
 
 ## One run, step by step

@@ -210,7 +210,7 @@ def run(*, offline=False, deliver=True, upload=True, trigger="manual", use_brows
             print(f"⏭️  Scheduled run skipped: {skip}")
             return 0
     deliver = deliver and not offline              # an offline run never sends or uploads anything
-    config.ensure_data_dir(allow_create=True)      # creates only the default sibling CME_Data, never PORTFOLIO_DATA_DIR
+    config.ensure_data_dir(allow_create=True)      # creates only the default CME_Data, never PORTFOLIO_DATA_DIR
     lock = RunLock()
     if not lock.acquire():
         print(busy_message())

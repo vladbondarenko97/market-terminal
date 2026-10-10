@@ -27,9 +27,10 @@ channel failed after the snapshot was committed; see [Exit codes](#exit-codes)).
 `config.py`:
 
 1. `PORTFOLIO_DATA_DIR` from `.env`, if set.
-2. Otherwise the folder `CME_Data` next to the repository. `main_pipeline.py run` creates it if it does not exist
-   (importing `config` does not).
-3. If that sibling does not exist but `~/Desktop/CME_Data/portfolio.db` does, the Desktop folder is used.
+2. Otherwise the folder `CME_Data` next to the repository, when it already exists (older installs).
+3. If that sibling does not exist but `~/Desktop/CME_Data/portfolio.db` does, the Desktop folder is used. With
+   neither, the folder is `CME_Data` inside the repository (git-ignored). `main_pipeline.py run` creates it if it
+   does not exist (importing `config` does not).
 4. If both the sibling and the Desktop folder hold a `portfolio.db`, the code refuses to guess and raises
    `ConfigError`. Set `PORTFOLIO_DATA_DIR`.
 

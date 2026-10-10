@@ -41,15 +41,17 @@ session. `config.py` resolves it once, when it is first imported, in this order:
      you want.
    - If the sibling folder does **not exist** and the Desktop folder has a `portfolio.db`, the Desktop folder is
      used.
-   - Otherwise the sibling is used. An existing but empty sibling wins over a Desktop installation.
+   - Otherwise an existing sibling is used (even an empty one wins over a Desktop installation). With no sibling,
+     which is every fresh clone, the folder is `<repository>/CME_Data`. It is git-ignored, so your data never
+     reaches a commit.
 3. **Nothing is created on import.** Importing `config` only works out the path (`config.DATA_DIR`, and
    `config.DATA_DIR_EXPLICIT`, which is true when `PORTFOLIO_DATA_DIR` is set). Folders are created by commands:
-   `main_pipeline.py run`, `cme-login`, `download_volume.py` and `update_inventory.py` create the default sibling
+   `main_pipeline.py run`, `cme-login`, `download_volume.py` and `update_inventory.py` create the default
    `CME_Data` when it is missing (`config.ensure_data_dir(allow_create=True)`). A `PORTFOLIO_DATA_DIR` that does
    not exist is never created, by anything: the command stops with `ConfigError: Data directory ... does not
    exist` (exit code 1 from `main_pipeline.py`). Commands that only read, and `import-history`, never create the
-   folder. `setup.sh` creates it itself with `mkdir -p`. A script run from a fresh clone therefore leaves no empty
-   `CME_Data` next to the repository.
+   folder. `setup.sh` creates it itself with `mkdir -p`. A script that only imports `config` therefore leaves no empty
+   `CME_Data` behind.
 
 On a Mac that could hold two installations, pin the folder in `.env` and leave it there:
 
@@ -138,7 +140,7 @@ An upload counts only when the receiver's JSON reply says `ok` for every file se
 
 | Variable | Default | Read by | When empty |
 |---|---|---|---|
-| `PORTFOLIO_DATA_DIR` | see [Data folder](#data-folder) | `config.py` | The sibling `CME_Data` (or the Desktop fallback) is used. A folder named here is never created for you. |
+| `PORTFOLIO_DATA_DIR` | see [Data folder](#data-folder) | `config.py` | `CME_Data` inside the repository, or an existing sibling `../CME_Data` (or the Desktop fallback), is used. A folder named here is never created for you. |
 | `OPTIONS_WHALE_PORT` | `8080` | `config.OPTIONS_WHALE_PORT`, read by `options_whale/api_router.py`; `setup.sh` and `menubar/optionswhale.10s.sh` (parse `.env` with `sed`) | Empty means 8080. **Write it unquoted** (`OPTIONS_WHALE_PORT=9090`): the shell scripts only match digits right after `=`, so a quoted value would be read as 8080 by them and as 9090 by Python. |
 | `SCHEDULED_RUNS` | `""` | `config.SCHEDULED_RUNS`; `main_pipeline.py run`; written by `setup.sh` | Must be exactly `1` on the one Mac that owns the schedule. With any other value, runs started with `--trigger scheduled` print a skip message and exit 0. Manual runs ignore it. `setup.sh --schedule` sets it to `1`; `--remove-schedule` and `--uninstall` blank it. `run_dashboard.command` with no argument uses the `scheduled` trigger. |
 

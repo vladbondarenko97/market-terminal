@@ -33,8 +33,8 @@ Do not run `./setup.sh` in a sandbox. It is macOS-only and installs launchd serv
 | CLI help | `.venv/bin/python main_pipeline.py --help` and `... run --help` |
 
 Always set `PORTFOLIO_DATA_DIR` to a scratch folder when you run anything outside the test suite. Without it,
-`import config` resolves (and may create) a real `CME_Data` folder next to the repository, and a live run writes
-to the operator's database.
+`import config` resolves (and a run may create) a real `CME_Data` folder inside or next to the repository, and a
+live run writes to the operator's database.
 
 ## Hard rules
 

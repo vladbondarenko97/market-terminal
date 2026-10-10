@@ -25,7 +25,8 @@ def _blank(value):
 def _resolve_data_dir():
     """Resolve CME_Data once. Pure: nothing is created.
 
-    Order: PORTFOLIO_DATA_DIR (explicit) -> the project's sibling CME_Data (historical default).
+    Order: PORTFOLIO_DATA_DIR (explicit) -> an existing sibling ../CME_Data (how older installs are laid out)
+    -> CME_Data inside the project folder (git-ignored; what a fresh clone gets).
     If the sibling and ~/Desktop/CME_Data are different directories that both hold a portfolio.db,
     refuse to guess: the operator must set PORTFOLIO_DATA_DIR.
     """
@@ -41,7 +42,7 @@ def _resolve_data_dir():
         )
     if not sibling.exists() and (desktop / "portfolio.db").exists():
         return desktop
-    return sibling
+    return sibling if sibling.exists() else PROJECT_ROOT / "CME_Data"
 
 
 # True when the operator pinned the folder with PORTFOLIO_DATA_DIR. An explicit folder is never created for them.
@@ -74,7 +75,7 @@ def daily_dir(moment=None):
 def ensure_data_dir(allow_create=False):
     """Return DATA_DIR, which must exist. Importing config never creates it.
 
-    allow_create=True creates the default sibling CME_Data only. A folder named by PORTFOLIO_DATA_DIR is never
+    allow_create=True creates the default CME_Data only. A folder named by PORTFOLIO_DATA_DIR is never
     created here, so a wrong path copied from another Mac is reported instead of becoming a fresh, empty
     installation somewhere new."""
     if DATA_DIR.exists():

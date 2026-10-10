@@ -104,6 +104,7 @@ ipython_config.py
 index.keys.js
 
 # Personal / runtime data (examples or generators are in the repo)
+CME_Data/
 deployment_state.json
 deployment_payload.json
 deployment_payload.js

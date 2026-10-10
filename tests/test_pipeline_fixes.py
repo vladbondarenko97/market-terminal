@@ -102,6 +102,16 @@ class ConfigParsing(unittest.TestCase):
                 self.assertEqual(config.ensure_data_dir(allow_create=True), target)
                 self.assertTrue(target.is_dir())
 
+    def test_fresh_clone_keeps_data_inside_the_project_and_an_existing_sibling_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "clone"
+            env = {k: v for k, v in os.environ.items() if k != "PORTFOLIO_DATA_DIR"}
+            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(config, "PROJECT_ROOT", root), \
+                    mock.patch.object(config.Path, "home", return_value=root):
+                self.assertEqual(config._resolve_data_dir(), root / "CME_Data")
+                (root.parent / "CME_Data").mkdir()
+                self.assertEqual(config._resolve_data_dir(), root.parent / "CME_Data")
+
     def test_run_refuses_a_missing_explicit_folder_and_creates_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "typo" / "CME_Data"
@@ -112,7 +122,7 @@ class ConfigParsing(unittest.TestCase):
             self.assertFalse(target.parent.exists())
 
     def test_import_in_a_fresh_clone_creates_no_folder_and_survives_blank_settings(self):
-        """config.py copied next to nothing: a blank SMTP_PORT must not crash and the sibling CME_Data must not appear."""
+        """config.py copied next to nothing: a blank SMTP_PORT must not crash and no CME_Data must appear."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             proj, home = tmp / "proj", tmp / "home"
@@ -138,8 +148,9 @@ class ConfigParsing(unittest.TestCase):
             self.assertEqual((got["dash"], got["url"], got["token"]),
                              ("https://dash.invalid", "https://up.invalid/r.php", "tok"))
             self.assertFalse(got["explicit"])
-            self.assertEqual(Path(got["data"]), (tmp / "CME_Data").resolve())
+            self.assertEqual(Path(got["data"]), (proj / "CME_Data").resolve())
             self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["home", "proj"], "import created a folder")
+            self.assertFalse((proj / "CME_Data").exists(), "import created the data folder")
 
 
 # ============================================================ delivery channels
