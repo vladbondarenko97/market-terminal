@@ -33,7 +33,12 @@ from. How the card looks in the browser is in [Terminal](terminal.md#forecast-la
 | 4 | Positioning | CFTC Commitments of Traders (3-year COT index) and SLV trust ounces | Is any trader group at an extreme? | shared; the card shows the silver groups for SLV and the S&P 500 groups for SPY | `forecast.positioning` |
 | 5 | Silver fair value | Weekly regression of silver on gold, 10-year TIPS real yield, DXY, copper and industrial production | Is silver above or below its model value, and how fast do gaps close? | shared, silver only (the SPY view shows a notice) | `forecast.silver_fair_value` |
 | 6 | Macro regime | NY Fed recession probit, NFCI, Sahm rule, high-yield spread | Expansion or stress? | shared | `forecast.macro_regime` |
-| 7 | Calendar & event drift | FOMC, CPI, OPEX, turn-of-month and weekday effects, with n and t-statistics | Does the calendar tilt the odds this week? | per ticker | `forecast[SYM].calendar` |
+| 7 | Calendar & event drift | FOMC, CPI, payrolls, PPI, GDP, PCE, retail sales and FOMC-minutes days, OPEX, turn-of-month and weekday effects, with n, t-statistics and (release days) the Day Scanner's evidence `grade` | Does the calendar tilt the odds this week? | per ticker | `forecast[SYM].calendar` |
+
+Card 7 release-day rows (`effects.payrolls_day`, `ppi_day`, `gdp_day`, `pce_day`, `retail_sales_day`, `fomc_minutes_day`) use the
+release dates of the FRED release calendars (and decision + 21 days for the minutes, a rule). Each is the release-day close-to-close
+return with `n`, `mean_pct`, `hit_rate`, `t_vs_baseline` and `grade`: `core.watch.grade()` of that day's returns against all other days
+(`tested`, `thin` under 30 cases, `none`; under 8 cases it is `none`). A release without dates is `{"status": "missing", "reason"}`.
 | 8 | Mechanical flows | Vol-control funds, leveraged-ETF rebalancing, dealer gamma, CTA sensitivity | Who is forced to buy or sell after a move of 1% to 5%? | per ticker | `forecast[SYM].flows` |
 | 9 | Forecast scorecard | Every logged forecast graded after its target date, plus walk-forward backtests | Were past forecasts right? Hit rate, 68% coverage, Brier score | per ticker | not in the snapshot: graded per request from `v2_forecasts` |
 | 10 | Diesel & refining | Crack spreads, EIA refinery runs and stocks, 10-year maintenance-season path, Texas refinery outage filings (TCEQ), CFTC ULSD positioning | Is refining tight, and is a major unit down? | shared | `ctx["refining"]` (`margins`, `fundamentals`, `maintenance`, `outages`, `ulsd_positioning`) |

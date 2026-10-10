@@ -22,7 +22,7 @@ import pandas as pd
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-VERSION = "forecast_v1"
+VERSION = "forecast_v2"
 HORIZONS = [{"key": "1d", "days": 1, "td": 1}, {"key": "1w", "days": 7, "td": 5},
             {"key": "1m", "days": 30, "td": 21}, {"key": "1y", "days": 365, "td": 252}]
 R = 0.05
@@ -579,7 +579,7 @@ def _third_friday(y, m):
     return d + timedelta(days=(4 - d.weekday()) % 7)
 
 
-def calendar_effects(df, fomc_dates, cpi_dates, today):
+def calendar_effects(df, fomc_dates, cpi_dates, today, releases=None):
     c = _naive_index(_closes(df))
     if len(c) < 500:
         return {"status": "missing", "reason": "need >= 500 daily closes"}
@@ -606,6 +606,19 @@ def calendar_effects(df, fomc_dates, cpi_dates, today):
     cpi = [r.iloc[pos[d]] for d in cd if d in pos]
     eff["cpi_day"] = {**stats(cpi, base_mean), "avg_abs_vs_normal": (np.mean(np.abs(cpi)) * 100 / base_abs) if cpi else None,
                       "definition": "CPI release day close-to-close"}
+    # release days (close-to-close) graded against every other day with the Day Scanner's evidence gate
+    from core.watch import grade
+    mins = [(x + timedelta(days=21)).isoformat() for x in fd]
+    for key, label, dates in (("payrolls_day", "payrolls", (releases or {}).get("payrolls")), ("ppi_day", "PPI", (releases or {}).get("ppi")),
+                              ("gdp_day", "GDP", (releases or {}).get("gdp")), ("pce_day", "PCE", (releases or {}).get("pce")),
+                              ("retail_sales_day", "retail sales", (releases or {}).get("retail_sales")),
+                              ("fomc_minutes_day", "FOMC minutes", mins if fd else None)):
+        if not dates:
+            eff[key] = {"status": "missing", "reason": f"no {label} release dates"}
+            continue
+        hit = r.index.normalize().isin(pd.to_datetime(list(dates)))
+        eff[key] = {**stats(list(r[hit]), base_mean), "grade": grade(r[hit], r[~hit])["edge"],
+                    "definition": f"{label} release day close-to-close" + (" (decision + 21 days, by rule)" if key == "fomc_minutes_day" else "")}
     # OPEX week (Mon-Fri week containing the 3rd Friday) vs all weeks
     wk = c.resample("W-FRI").last().pct_change().dropna()
     opex = [v for d, v in wk.items() if d.date() == _third_friday(d.year, d.month)]
@@ -725,7 +738,7 @@ def build(inputs):
                                    prior_spot=float(prior.iloc[-1]) if len(prior) else None)
         vol = vol_forecast(fr.get(key), imp, spot)
         tr = trend_model(fr.get(key))
-        cal = calendar_effects(fr.get(key), inputs.get("fomc"), inputs.get("cpi"), today)
+        cal = calendar_effects(fr.get(key), inputs.get("fomc"), inputs.get("cpi"), today, inputs.get("releases"))
         flows = mechanical_flows(sym, fr.get(key), inputs.get("aum", {}), gx, tr, spot)
         out[sym] = {"spot": spot, "implied": imp, "vol_forecast": vol, "trend": tr, "calendar": cal, "flows": flows}
     out["positioning"] = positioning(inputs.get("cot", {}).get("silver"), inputs.get("cot", {}).get("sp"),

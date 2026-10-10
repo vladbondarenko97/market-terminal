@@ -73,7 +73,7 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 `vmri`, `paper_physical`, `oi_divergence`, `es_put_call`, `options`, `flow`, `technicals`, `weather`, `breadth`,
 `execution`, `ebay`, `sources`, `stage_seconds`, the model-feature sections from `extended_features()`
 (`price_stats`, `vol_regime`, `cme_positioning`, `silver_options_cme`, `inventory_trend`, `silver_basis`,
-`regime_context`), `position_marks`, `forecast`, `refining` and `appendix`. A section that could not be built is
+`regime_context`), `position_marks`, `forecast`, `refining`, `news` and `appendix`. A section that could not be built is
 `{"status": "missing", "reason": "..."}`. The daily file `report_snapshot.json` is this document, indented.
 `python main_pipeline.py catalog` lists the metrics with their paths.
 
@@ -91,7 +91,7 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 
 `v2_payloads.kind` values: `ohlcv`, `option_expirations`, `option_chain`, `fred_series`, `fred_release_dates`,
 `calendar_xml`, `spot_quote`, `sge_benchmark`, `trades`, `listing`, `cot`, `etf_page`, `fomc_calendar`,
-`fund_info`, `eia_weekly`, `refinery_capacity`, `tceq_rss`, `tceq_event`; CME `volume_workbook`,
+`fund_info`, `eia_weekly`, `refinery_capacity`, `tceq_rss`, `tceq_event`, `rss_xml` (one raw RSS or Atom feed); CME `volume_workbook`,
 `inventory_workbook`, `*_workbook_invalid` and `*_rejected`; run output `daily_market_report` and `email_mime`;
 imported files `ledger_csv`, the daily file name, `spy_wicks_1m`, `deployment_simulation`. The eBay OAuth token is
 never stored (kind `auth`).
@@ -262,6 +262,25 @@ sqlite3 CME_Data/portfolio.db ".backup 'portfolio-copy.db'"
 ```
 
 `state.json` and `.cme_browser_profile/` hold a live CME login. Copy them only to machines you trust.
+
+## News
+
+- Snapshot key **`news`**: `{status, reason, as_of, window, feeds, coverage, items, clusters}`. `feeds` maps each enabled feed to
+  `{status, count, payload_id, reason, category}`; `coverage` is `{enabled, answered, priority_answered}`. `status` is `fresh` when
+  an official feed answered and at least half of the enabled feeds did, `partial` when any feed answered, else `missing` (an offline
+  run is `missing` with the offline reason). `clusters` are near-identical headlines merged (newest first, ids `S1`...): `title`,
+  `published_at`, `category`, `official`, `sentiment` (VADER), `new` (first seen in this run), `sources` (`name`, `url` of every
+  copy) and `cluster_key`. `items` counts fetched, in-window (36 hours; 7 days for the official category), undated (excluded,
+  never treated as fresh), new this run and clusters dropped by the 120-cluster cap. Only titles, links, source names and
+  timestamps are stored, never article text. The feed list is `core/news_feeds.json` (or `NEWS_FEEDS_FILE`).
+- **`v2_news_items`** (lake table, additive): one row per distinct URL ever fetched: `url_hash` (SHA-256 of the URL, primary key),
+  `title`, `url`, `source`, `category`, `published_at` (NULL when the feed gave no date), `first_seen_run`, `first_seen_at`,
+  `cluster_key`, `sentiment`. `INSERT OR IGNORE`, so a rerun adds nothing. RSS has no archive: **history starts the day this
+  shipped** and cannot be back-filled.
+- `calendar.upcoming_releases` and `calendar.releases`: release dates after the Forex Factory coverage and within 45 days
+  (FRED release calendars for CPI, payrolls, PPI, GDP, PCE and retail sales, `source: "fred"`; FOMC minutes as decision + 21 days,
+  `source: "fed_rule"`, a rule and not a confirmed date). Dates only. `releases` says how many of the 7 parts answered. The
+  existing `calendar.upcoming` (7 days, Forex Factory) is unchanged.
 
 ## Rule cards: tables and files
 

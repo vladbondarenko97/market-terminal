@@ -762,6 +762,21 @@ def master_market_csv(ctx):
 
 
 # ============================================================ report text
+def headlines_text(ctx, limit=15):
+    """Official-source headlines only (new in this run first, then newest). Never an empty heading."""
+    n = ctx.get("news") or {}
+    cov = g(n, "coverage") or {}
+    note = f"feeds answered {cov.get('answered', 0)} of {cov.get('enabled', 0)}, official {cov.get('priority_answered', 0)}"
+    rows = sorted((c for c in n.get("clusters") or [] if c.get("official")), key=lambda c: c["published_at"], reverse=True)
+    rows = sorted(rows, key=lambda c: not c.get("new"))[:limit]       # stable: new ones first, each group newest first
+    if not rows:
+        why = n.get("reason") or ("no official-source headline in the window" if n else "no news section in this snapshot")
+        return f"  - No official-source headlines (status: {n.get('status', 'missing')}; {why}); {note}"
+    ct = __import__("zoneinfo").ZoneInfo("America/Chicago")
+    return "\n".join(f"  - {datetime.fromisoformat(c['published_at']).astimezone(ct).strftime('%Y-%m-%d %H:%M')} CT | "
+                     f"{c['sources'][0]['name']} | {c['title']} | {c['sources'][0]['url']}" for c in rows) + f"\n  - ({note})"
+
+
 def calendar_text(ctx):
     cal = ctx["calendar"]
     out = ["📅 7-DAY MACRO OUTLOOK (USD)", "=" * 40]
@@ -779,6 +794,12 @@ def calendar_text(ctx):
         out.append("No High/Medium impact USD events in the covered window.")
     if cal["status"] == "partial":
         out.append(f"⚠️ Coverage incomplete: {cal['reason']}")
+    rel, meta = cal.get("upcoming_releases") or [], cal.get("releases") or {}
+    if rel or meta.get("reason"):
+        out += ["", f"Later releases, dates only (to {meta.get('to')}):"]
+        out += [f"  {r['date_ct']}  {r['title']} [{r['source']}]" for r in rel]
+        if meta.get("reason"):
+            out.append(f"  ({meta['status']}: {meta['reason']})")
     return "\n".join(out)
 
 
@@ -927,6 +948,9 @@ def market_brief_text(ctx):
   - Status: {cal.get('catalyst_status')}
   - Scheduled Events:
   - {events}
+
+📰 HEADLINES SINCE LAST RUN (official sources)
+{headlines_text(ctx)}
 
 🏦 COMEX INVENTORY{inv_note}
   - Registered: {metrics.fmt_moz(inv.get('registered'))}

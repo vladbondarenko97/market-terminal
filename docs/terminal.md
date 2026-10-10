@@ -198,7 +198,7 @@ Fifteen panels in a three-column grid (two on medium screens, one on phones). Na
 | 9 | SLV INSTITUTIONAL FLOW | Sentiment, VWAP, Call Wall, Put Wall. Chart toggles: Sentiment, Block Vol, GEX Walls. | `/api/institutional_history?ticker=SLV&limit=100` | stored (`equities_darkpool_gex_ledger`) |
 | 10 | SLV DEALER MAP (GEX) | Same as panel 6 for SLV. SCAN button. | `/api/gex?ticker=SLV` | live |
 | 11 | CATALYST CALENDAR | Upcoming macro events with date, time, impact, forecast and previous. REFRESH. | `/api/macro_calendar` | stored (`upcoming_macro_events` in the newest `tactical_ruling.txt`) |
-| 12 | MACRO NEWS FEED | Top Yahoo Finance headlines, each tagged BULLISH, NEUTRAL or BEARISH from a sentiment score (beyond plus or minus 0.05). REFRESH. | `/api/macro_news` | live (RSS, 10 items) |
+| 12 | MACRO NEWS FEED | Up to 30 de-duplicated headlines from the latest run, each tagged BULLISH, NEUTRAL or BEARISH from a sentiment score (beyond plus or minus 0.05), with the feeds that carried it. A line above them shows how many feeds answered, the run time and the status. REFRESH. | `/api/macro_news` | stored (`news` in the latest snapshot) |
 | 13 | FED LIQUIDITY PLUMBING | Reverse Repo ($B) and Fed Balance Sheet ($B), with a chart. | `/api/macro_ledger_full?limit=200` | stored |
 | 14 | SHANGHAI-COMEX ARB | SHFE Silver, COMEX Silver, Premium, with a chart. | `/api/macro_ledger_full?limit=200` | stored |
 | 15 | ENGINE POSITIONS | Execution-engine tickets and how they moved. See [Engine Positions](#engine-positions). | `/api/positions` | stored and live |

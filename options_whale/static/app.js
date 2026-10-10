@@ -2415,7 +2415,12 @@ async function loadMacroNews() {
             }));
             
             container.innerHTML = '';
-            
+            const root = xmlDoc.documentElement;
+            const meta = document.createElement('div');
+            meta.className = 'text-zinc-600 text-[8px] uppercase tracking-widest';
+            meta.textContent = `${root.getAttribute('feeds_answered')} of ${root.getAttribute('feeds_enabled')} feeds | run ${root.getAttribute('as_of')} | ${root.getAttribute('status')}`;
+            container.appendChild(meta);
+
             articles.forEach(article => {
                 const title = article.getAttribute('title') || 'No Title';
                 const published = article.getAttribute('published') || '';
@@ -2440,7 +2445,7 @@ async function loadMacroNews() {
                     <div class="news-published text-zinc-600 text-[8px] mt-1 uppercase tracking-widest"></div>
                 `;
                 row.querySelector('.news-title').textContent = title;
-                row.querySelector('.news-published').textContent = published;
+                row.querySelector('.news-published').textContent = `${published} | ${article.getAttribute('source') || ''}`;
                 container.appendChild(row);
             });
         } else {
