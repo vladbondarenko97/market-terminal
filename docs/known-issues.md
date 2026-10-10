@@ -10,6 +10,7 @@ Last checked against the code: October 2026.
 
 | Issue | Where | Effect |
 |---|---|---|
+| The Macro News Feed panel is empty | `options_whale/api_router.py` (`/api/macro_news`) | Yahoo's RSS address (`finance.yahoo.com/news/rss`) answers HTTP 404 (seen 2026-10-10), so the panel shows `News unavailable`. The route reports the failure; nothing else depends on it. |
 | Phones held sideways get the desktop layout | `options_whale/static/app.js` (`MOBILE_QUERY`), `options_whale/static/styles.css` | The phone layout (docked console bar, bottom Panels/Console bar) applies below 768 px wide. A phone in landscape is usually wider, so it shows the desktop layout, where the panels get about 200 px of height above the console. Use the phone upright, or press the console's [Minimize] (more room for panels) or [Maximize] (console only). |
 | AlphaFlow stores fixed placeholder columns | `alphaflow/engine.py` `run_historical_scan()` | Every sweep row gets `term` "Mid Term", `entry` "NEXT OPEN", `max_risk` 500 and an `expiration` of scan date + 44 days. They are not computed from the trade. The AlphaFlow docs page says so; the email appendix prints them. |
 

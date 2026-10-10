@@ -136,6 +136,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 |---|---|
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
 | `scripts/backfill_crypto_metals.py` | Adds up to one year of BTC, silver and gold history to `crypto_metrics_history` |
+| `scripts/record_demo.py` | Records `docs/demo.gif` from a terminal that is already running (Playwright video, then ffmpeg). Read-only. |
 | `scripts/dump_spy_wicks.py` | Downloads SPY one-minute candles (last 5 days) to `spy_wicks_1m.json` in the repository root, where `import-history` picks them up. Uses the network; manual only. |
 | `download_volume.py` | Manual, bounded CME volume backfill (needs a saved CME session) |
 
