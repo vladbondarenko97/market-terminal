@@ -1238,11 +1238,13 @@ async function syncComexModule() {
     } catch (e) {
         console.error("Failed to sync COMEX module:", e);
     }
-    let ledger = true, note = '';
+    let ledger = true, note = '', drawn = 0;
     try {
         const json = await fetchJson(`${API_BASE}/api/macro_ledger_full?limit=500`);
         if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
-        ppDrawHistory(json.data.labels || [], json.data.paper_physical_ratio || []);
+        const ratios = json.data.paper_physical_ratio || [];
+        drawn = ratios.filter(v => Number.isFinite(v) && v > 0).length;
+        ppDrawHistory(json.data.labels || [], ratios);
     } catch (e) {
         ledger = false;
         note = `Could not load the recorded history: ${e.message}`;
@@ -1264,7 +1266,8 @@ async function syncComexModule() {
         const d30 = stats.d30;
         note = `Low ${stats.low.toFixed(2)} · median ${stats.median.toFixed(2)} · high ${stats.high.toFixed(2)}.`
             + (d30 && isNum(d30.oi_chg_pct) && isNum(d30.registered_chg_pct) ? ` 30 days: open interest ${ppPct(d30.oi_chg_pct)}, registered stock ${ppPct(d30.registered_chg_pct)} (implied).` : '')
-            + (stats.excluded ? ` ${stats.excluded} runs recorded no ratio.` : '');
+            + (stats.excluded ? ` ${stats.excluded} runs recorded no ratio.` : '')
+            + (ledger && drawn && stats.n > drawn + 1 ? ` The chart shows the last ${drawn}.` : '');   // the statistics cover the whole ledger, the chart its last 500 rows
     } else if (ledger) {
         note = hist && hist.status === 'missing' && hist.reason ? hist.reason : 'History statistics appear after the next pipeline run.';
     }
@@ -1274,7 +1277,7 @@ async function syncComexModule() {
         const d30 = stats && stats.d30;
         p30.innerHTML = d30 ? `30d ago <span class="text-zinc-200 font-bold">${d30.ratio.toFixed(2)}</span> <span class="${d30.ratio_chg_pct > 0 ? 'text-red-400' : 'text-green-400'}">(${ppPct(d30.ratio_chg_pct)})</span>` : '';
         const pc = stats && stats.percentile;
-        pPct.innerHTML = pc ? `${pc.side} <span class="text-zinc-200 font-bold">${pc.pct}%</span> of readings` : '';
+        pPct.innerHTML = pc ? `${esc(pc.side)} <span class="text-zinc-200 font-bold">${pc.pct}%</span> of readings` : '';
     }
 }
 

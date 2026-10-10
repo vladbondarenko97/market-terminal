@@ -105,7 +105,7 @@ def flow_ledger_daily(conn, ticker, as_of=None):
 
 
 def eagle_listing_runs(conn, as_of=None):
-    """The live runs' eBay listings from the 36 days before the newest one, oldest run first:
+    """The live runs' eBay listings from the 36 days before `as_of` (the newest run when None), oldest run first:
     [{"run_at": aware datetime, "listings": {item_id: listing dict}}]."""
     rows = conn.execute(
         """SELECT o.run_id, o.entity, o.observed_at, o.value_json FROM v2_observations o
@@ -113,8 +113,9 @@ def eagle_listing_runs(conn, as_of=None):
            WHERE o.metric_id = 'ebay.listing' AND r.mode = 'live'
              AND r.status IN ('committed', 'completed', 'completed_with_warnings')
              AND (? IS NULL OR o.observed_at <= ?)
-             AND o.observed_at >= (SELECT datetime(MAX(observed_at), '-37 days') FROM v2_observations
-                                   WHERE metric_id = 'ebay.listing')""", (as_of, as_of)).fetchall()
+             AND o.observed_at >= datetime(COALESCE(?, (SELECT MAX(observed_at) FROM v2_observations
+                                                        WHERE metric_id = 'ebay.listing')), '-37 days')""",
+        (as_of, as_of, as_of)).fetchall()
     runs = {}
     for r in rows:
         try:
@@ -127,6 +128,10 @@ def eagle_listing_runs(conn, as_of=None):
         runs.setdefault(r["run_id"], {"run_at": at, "listings": {}})["listings"][r["entity"]] = listing
     ordered = sorted(runs.values(), key=lambda run: run["run_at"])
     if ordered:
-        floor = ordered[-1]["run_at"] - timedelta(days=36)
+        anchor = ordered[-1]["run_at"]
+        if as_of:
+            anchor = datetime.fromisoformat(as_of)
+            anchor = anchor if anchor.tzinfo else anchor.replace(tzinfo=timezone.utc)
+        floor = anchor - timedelta(days=36)
         ordered = [run for run in ordered if run["run_at"] >= floor]
     return ordered

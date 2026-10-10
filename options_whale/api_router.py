@@ -347,34 +347,29 @@ def build_arbitrage_series(ledger, limit):
     df['ts'] = pd.to_datetime(df['Datetime'], format='mixed', errors='coerce')
     for col, name in (('COMEX_Silver', 'spot'), ('Retail_Silver_Cheapest', 'cheap'), ('Retail_Silver_Avg', 'avg')):
         df[name] = pd.to_numeric(df[col], errors='coerce') if col in df.columns else float('nan')
-    df = df.dropna(subset=['ts'])
-    df = df[(df.spot > 0) & (df.cheap > 0) & np.isfinite(df.spot) & np.isfinite(df.cheap)].sort_values('ts')
-    if df.empty:
+    df = df.dropna(subset=['ts']).sort_values('ts')
+    points = [metrics.premium_point(r.ts, r.spot, r.cheap, r.avg) for r in df.itertuples()
+              if metrics.verified_reading(r.spot, r.cheap)]
+    if not points:
         return None
-    points = []
-    for r in df.tail(limit).itertuples():
-        has_avg = math.isfinite(r.avg) and r.avg > 0
-        points.append({
-            "label": r.ts.strftime('%Y-%m-%d %H:%M'), "spot": _rnd(r.spot), "cheapest_price": _rnd(r.cheap),
-            "avg_price": _rnd(r.avg) if has_avg else None,
-            "cheapest_dollar": _rnd(r.cheap - r.spot), "avg_dollar": _rnd(r.avg - r.spot) if has_avg else None,
-            "cheapest_pct": _rnd((r.cheap / r.spot - 1) * 100), "avg_pct": _rnd((r.avg / r.spot - 1) * 100) if has_avg else None})
+    points = points[-limit:]
     keys = ("spot", "cheapest_price", "avg_price", "cheapest_dollar", "avg_dollar", "cheapest_pct", "avg_pct")
     return {"labels": [p["label"] for p in points], **{k: [p[k] for p in points] for k in keys},
             "benchmark_symbol": "SI=F"}
 
 
-def _snapshot_sections(conn, *names):
-    """(run_id, {name: section}) of the latest committed snapshot; (None, {}) without one. Cached per run."""
+def _snapshot_sections(conn):
+    """(run_id, {"run_at", "ebay", "paper_physical", "shanghai"}) of the latest committed snapshot; (None, {}) without
+    one. One snapshot parse per run, shared by the routes."""
     row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
     if not row:
         return None, {}
-    key = f"snapshot_sections:{row['run_id']}:{','.join(names)}"
+    key = f"snapshot_sections:{row['run_id']}"
     data = data_cache.get(key)
     if data is None:
         ctx = _v2lake.load_snapshot(conn, row["run_id"])
         data = {"run_at": _utc_to_local_label((ctx.get("run") or {}).get("generated_at")),
-                **{n: ctx.get(n) or {} for n in names}}
+                **{n: ctx.get(n) or {} for n in ("ebay", "paper_physical", "shanghai")}}
         data_cache.set(key, data)
     return row["run_id"], data
 
@@ -384,19 +379,19 @@ def _eagle_book(ebay, run_at):
     stored = ebay.get("listings") or []
     if not stored:
         return None
+    flow = ebay.get("flow") or {}
+    sold_prev, sold_7d = flow.get("sold_prev") or {}, flow.get("sold_7d") or {}
     listings = [{
         "item_id": l.get("item_id"), "title": l.get("title"), "seller": l.get("seller"), "url": l.get("url"),
         "total_cost": _rnd(l.get("total_cost")), "shipping": _rnd(l.get("shipping")),
         "premium_pct": _rnd(l.get("premium_percent")), "premium_dollars": _rnd(l.get("premium_dollars")),
         "status": l.get("status"), "available_qty": l.get("available_qty"), "sold_qty": l.get("sold_qty"),
-        "sold_prev": l.get("sold_prev"), "sold_7d": l.get("sold_7d")} for l in stored]
+        "sold_prev": sold_prev.get(l.get("item_id")), "sold_7d": sold_7d.get(l.get("item_id"))} for l in stored]
     listings.sort(key=lambda l: (l["total_cost"] is None, l["total_cost"] or 0))
-    premiums = [l["premium_pct"] for l in listings if l["premium_pct"] is not None]
-    return {"run_at": run_at, "count": len(listings),
-            "in_stock": sum(l["status"] in ("IN_STOCK", "LIMITED_STOCK") for l in listings),
-            "prev_count": (ebay.get("flow") or {}).get("prev_count"),
-            "cheapest_pct": min(premiums) if premiums else None,
-            "median_pct": _rnd(np.median(premiums)) if premiums else None, "listings": listings}
+    book = ebay.get("book") or {}    # a snapshot made before the book was stored has only the count
+    return {"run_at": run_at, "count": book.get("count", len(listings)), "in_stock": book.get("in_stock"),
+            "prev_count": flow.get("prev_count"), "cheapest_pct": book.get("cheapest_pct"),
+            "median_pct": book.get("median_pct"), "listings": listings}
 
 
 @app.route('/api/arbitrage_history', methods=['GET'])
@@ -414,11 +409,13 @@ def get_arbitrage_history():
     conn = _open_readonly()
     if conn is not None:
         try:
-            _, snap = _snapshot_sections(conn, "ebay")
+            _, snap = _snapshot_sections(conn)
             ebay = snap.get("ebay") or {}
             premium = ebay.get("premium") or {}
             payload["stats"] = premium.get("stats") if premium.get("status") == "fresh" else None
-            payload["flow"] = ebay.get("flow") or None
+            flow = ebay.get("flow") or {}
+            payload["flow"] = {k: v for k, v in flow.items() if k not in ("sold_prev", "sold_7d")} \
+                if flow.get("status") == "fresh" else None
             payload["book"] = _eagle_book(ebay, snap.get("run_at"))
         except sqlite3.OperationalError as exc:
             if not _uninitialised(exc):
@@ -2872,7 +2869,7 @@ def api_shanghai_spread():
     if conn is None:
         return _not_initialised()
     try:
-        run_id, snap = _snapshot_sections(conn, "shanghai")
+        run_id, snap = _snapshot_sections(conn)
         if not run_id:
             return json_error("No committed run yet.", 404)
         sh = snap["shanghai"]
@@ -2897,7 +2894,7 @@ def api_paper_physical():
     if conn is None:
         return _not_initialised()
     try:
-        run_id, snap = _snapshot_sections(conn, "paper_physical")
+        run_id, snap = _snapshot_sections(conn)
         if not run_id:
             return json_error("No committed run yet.", 404)
     except sqlite3.OperationalError as exc:
@@ -2906,7 +2903,8 @@ def api_paper_physical():
         raise
     finally:
         conn.close()
-    return jsonify({"status": "success", "data": _json_safe(snap)})
+    return jsonify({"status": "success",
+                    "data": _json_safe({k: snap[k] for k in ("run_at", "paper_physical")})})
 
 
 @app.route('/api/chaos', methods=['GET'])

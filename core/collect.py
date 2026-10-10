@@ -495,8 +495,8 @@ def _dated_spread(session, fixes):
 
 
 def _card_stats(conn, as_of, run, ebay, pp):
-    """Statistics the terminal cards show, stored with the run: ebay["premium"], ebay["flow"] and sold_prev / sold_7d
-    on each listing, and pp["history"]. Each part fails on its own into a missing section; nothing escapes."""
+    """Statistics the terminal cards show, stored with the run: ebay["premium"], ebay["flow"], ebay["book"]
+    and pp["history"]. Each part fails on its own into a missing section; nothing escapes."""
     def guard(fn, version, target, key):
         try:
             target[key] = fn()
@@ -525,11 +525,9 @@ def _card_stats(conn, as_of, run, ebay, pp):
     def flow():
         listings = ebay.get("listings") or []
         runs = history.eagle_listing_runs(conn, as_of) + [{"run_at": run_dt, "listings": {l["item_id"]: l for l in listings}}]
-        res = metrics.listing_flow(runs, CHICAGO)
-        for l in listings:
-            l["sold_prev"], l["sold_7d"] = res["sold_prev"].get(l["item_id"]), res["sold_7d"].get(l["item_id"])
-        return res["flow"]
+        return metrics.listing_flow(runs, CHICAGO)
     guard(flow, metrics.EAGLE_VERSION, ebay, "flow")
+    guard(lambda: metrics.listing_book(ebay.get("listings") or []), metrics.EAGLE_VERSION, ebay, "book")
 
     def pphist():
         if ledger_err:

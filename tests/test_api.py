@@ -1068,17 +1068,31 @@ class ArbitrageHistory(ApiCase):
                                                  "status": status, "sold_qty": 5, **kw}
         self.commit_snapshot(ebay={
             "premium": {"status": "fresh", "stats": {"n": 3, "mean": 12.0}},
-            "flow": {"units_prev": 4, "prev_count": 7},
-            "listings": [listing("b", 75.0, "OUT_OF_STOCK"), listing("a", 70.0, "LIMITED_STOCK", sold_prev=4, sold_7d=None),
+            "flow": {"status": "fresh", "units_prev": 4, "prev_count": 7, "sold_prev": {"a": 4}, "sold_7d": {"c": 2}},
+            "book": {"count": 3, "in_stock": 2, "cheapest_pct": 10.0, "median_pct": 12.0},
+            "listings": [listing("b", 75.0, "OUT_OF_STOCK"), listing("a", 70.0, "LIMITED_STOCK"),
                          listing("c", 72.0, "IN_STOCK")]})
         data = self.get_json("/api/arbitrage_history")["data"]
         self.assertEqual(data["stats"], {"n": 3, "mean": 12.0})
         self.assertEqual(data["flow"]["units_prev"], 4)
         book = data["book"]
         self.assertEqual([l["item_id"] for l in book["listings"]], ["a", "c", "b"])
-        self.assertEqual((book["count"], book["in_stock"], book["prev_count"], book["cheapest_pct"]), (3, 2, 7, 10.0))
+        self.assertEqual((book["count"], book["in_stock"], book["prev_count"], book["cheapest_pct"], book["median_pct"]),
+                         (3, 2, 7, 10.0, 12.0))
         self.assertEqual((book["listings"][0]["sold_prev"], book["listings"][1]["sold_prev"]), (4, None))
+        self.assertEqual(book["listings"][1]["sold_7d"], 2)
+        self.assertNotIn("sold_prev", data["flow"])
         self.assertEqual(book["run_at"], api_router._utc_to_local_label("2026-10-09T19:45:01+00:00"))
+
+    def test_missing_flow_is_null_and_a_book_without_a_summary_gives_the_count(self):
+        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        self.commit_snapshot(ebay={"flow": {"status": "missing", "reason": "x"}, "listings": [
+            {"item_id": "a", "total_cost": 70.0, "premium_percent": 10.0, "status": "IN_STOCK"}]})
+        data = self.get_json("/api/arbitrage_history")["data"]
+        self.assertIsNone(data["flow"])
+        book = data["book"]
+        self.assertEqual((book["count"], book["in_stock"], book["cheapest_pct"], book["median_pct"]), (1, None, None, None))
+        self.assertEqual((book["listings"][0]["sold_prev"], book["listings"][0]["sold_7d"]), (None, None))
 
     def test_route_with_a_snapshot_that_predates_the_statistics(self):
         ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
@@ -1105,6 +1119,7 @@ class PaperPhysicalRoute(ApiCase):
                                           "paper_physical": {"ratio": 5.2, "history": {"status": "fresh", "n": 3}}})
         conn.close()
         d = self.get_json("/api/paper_physical")["data"]
+        self.assertEqual(set(d), {"run_at", "paper_physical"})
         self.assertEqual((d["paper_physical"]["ratio"], d["paper_physical"]["history"]["n"]), (5.2, 3))
         self.assertEqual(d["run_at"], api_router._utc_to_local_label("2026-10-09T19:45:01+00:00"))
 

@@ -752,16 +752,16 @@ EAGLE_VERSION = "eagle_premium_v1"
 PAPER_PHYSICAL_HISTORY_VERSION = "paper_physical_history_v1"
 
 
-def _reading(v):
-    v = safe_float(v)
-    return v if v is not None and math.isfinite(v) and v > 0 else None
+def verified_reading(spot, cheap):
+    """True when the futures price and the cheapest retail price are both finite and above 0."""
+    return _positive(spot) is not None and _positive(cheap) is not None
 
 
-def _arb_point(r):
-    """One verified reading ({"ts", "spot", "cheap", "avg"}) as the dict the payload shows (rounded; no average -> None)."""
-    spot, cheap, avg = r["spot"], r["cheap"], _reading(r.get("avg"))
+def premium_point(ts, spot, cheap, avg):
+    """One verified reading as the dict the payload shows (rounded; no positive average -> the average fields None)."""
+    avg = _positive(avg)
     return {
-        "label": r["ts"].strftime('%Y-%m-%d %H:%M'), "spot": _r(spot), "cheapest_price": _r(cheap),
+        "label": ts.strftime('%Y-%m-%d %H:%M'), "spot": _r(spot), "cheapest_price": _r(cheap),
         "avg_price": _r(avg), "cheapest_dollar": _r(cheap - spot), "avg_dollar": _r(avg - spot) if avg else None,
         "cheapest_pct": _r((cheap / spot - 1) * 100), "avg_pct": _r((avg / spot - 1) * 100) if avg else None,
     }
@@ -769,20 +769,23 @@ def _arb_point(r):
 
 def eagle_premium(history, current):
     """Premium of the cheapest Silver Eagle over silver futures. history: time-ascending earlier readings
-    [{"ts" (naive Chicago), "spot", "cheap", "avg"}]; current: this run's reading or None. A reading counts only
-    when spot and cheap are finite and above 0."""
+    [{"ts" (naive Chicago), "spot", "cheap", "avg"}]; current: this run's reading or None (then the statistics
+    describe the history alone). A reading counts only when spot and cheap are finite and above 0."""
     base = {"version": EAGLE_VERSION}
-    if current is None or not (_reading(current.get("spot")) and _reading(current.get("cheap"))):
-        return {"status": "missing", "reason": "this run has no retail price or no silver price", **base}
     rows = []
-    for r in [*history, current]:
-        spot, cheap = _reading(r.get("spot")), _reading(r.get("cheap"))
-        if spot and cheap:
-            rows.append({"ts": r["ts"], "label": r["ts"].strftime('%Y-%m-%d %H:%M'), "pct": (cheap / spot - 1) * 100,
-                         "spot": spot, "cheap": cheap, "avg": r.get("avg")})
+    for r in [*history, *([current] if current else [])]:
+        if verified_reading(r.get("spot"), r.get("cheap")):
+            rows.append({"ts": r["ts"], "label": r["ts"].strftime('%Y-%m-%d %H:%M'), "spot": r["spot"], "cheap": r["cheap"],
+                         "avg": r.get("avg"), "pct": (r["cheap"] / r["spot"] - 1) * 100})
+    if not rows:
+        return {"status": "missing", "reason": "no Silver Eagle premium recorded yet", **base}
     stats = premium_stats(rows, {"spot_pct": "spot", "retail_pct": "cheap"})
-    stats["latest"] = _arb_point(rows[-1])
-    return {"status": "fresh", "reason": None, **base, "stats": stats}
+    last = rows[-1]
+    stats["latest"] = premium_point(last["ts"], last["spot"], last["cheap"], last["avg"])
+    reason = None
+    if not (current and verified_reading(current.get("spot"), current.get("cheap"))):
+        reason = f"this run has no retail price or no silver price; the statistics describe the readings up to {last['label']}"
+    return {"status": "fresh", "reason": reason, **base, "stats": stats}
 
 
 def _units_between(earlier, later):
@@ -797,8 +800,9 @@ def _units_between(earlier, later):
 
 
 def listing_flow(runs, tz):
-    """Units sold per listing since the previous run and since the run at least 7 days back, and the flow summary.
-    runs: oldest first, the current run last: [{"run_at": aware datetime, "listings": {item_id: listing}}]."""
+    """The flow summary stored as ebay["flow"], with units sold per listing since the previous run (sold_prev) and
+    since the run at least 7 days back (sold_7d). runs: oldest first, the current run last:
+    [{"run_at": aware datetime, "listings": {item_id: listing}}]."""
     newest = runs[-1]
     stamp = lambda run: run["run_at"].astimezone(tz).strftime('%Y-%m-%d %H:%M')
     at_least = lambda days, before=newest: next(
@@ -808,7 +812,7 @@ def listing_flow(runs, tz):
     sold_prev = _units_between(prev, newest) if prev else {}
     sold_7d = _units_between(ref7, newest) if ref7 else {}
     if prev is None:
-        return {"sold_prev": sold_prev, "sold_7d": sold_7d, "flow": None}
+        return {"status": "missing", "reason": "no earlier run with listings", "version": EAGLE_VERSION}
 
     def rate(a, b):
         deltas = _units_between(a, b) if a and b else {}
@@ -825,11 +829,21 @@ def listing_flow(runs, tz):
         if deltas:
             date = b["run_at"].astimezone(tz).strftime('%Y-%m-%d')
             per_date[date] = per_date.get(date, 0) + sum(deltas.values())
-    flow = {"prev_run_at": stamp(prev), "prev_count": len(prev["listings"]),
+    return {"status": "fresh", "reason": None, "version": EAGLE_VERSION, "prev_run_at": stamp(prev), "prev_count": len(prev["listings"]),
             "units_prev": sum(sold_prev.values()) if sold_prev else None,
             "rate_7d": rate(ref7, newest), "rate_prior_7d": rate(at_least(14), ref7) if ref7 else None,
-            "daily": [{"date": d, "units": u} for d, u in sorted(per_date.items())], "version": EAGLE_VERSION}
-    return {"sold_prev": sold_prev, "sold_7d": sold_7d, "flow": flow}
+            "daily": [{"date": d, "units": u} for d, u in sorted(per_date.items())],
+            "sold_prev": sold_prev, "sold_7d": sold_7d}
+
+
+def listing_book(listings):
+    """Summary of the dealer book: listing count, listings in stock, cheapest and median premium percent."""
+    pcts = sorted(p for p in (_r(l.get("premium_percent")) for l in listings) if p is not None)
+    n = len(pcts)
+    return {"version": EAGLE_VERSION, "count": len(listings),
+            "in_stock": sum(l.get("status") in ("IN_STOCK", "LIMITED_STOCK") for l in listings),
+            "cheapest_pct": pcts[0] if pcts else None,
+            "median_pct": _r(pcts[n // 2] if n % 2 else (pcts[n // 2 - 1] + pcts[n // 2]) / 2) if pcts else None}
 
 
 def paper_physical_history(history, current):
@@ -837,8 +851,8 @@ def paper_physical_history(history, current):
     from the ledger; current: this run's reading or None (then the statistics describe the history alone)."""
     base = {"version": PAPER_PHYSICAL_HISTORY_VERSION}
     allrows = [*history, *([current] if current else [])]
-    rows = [{"ts": r["ts"], "label": r["label"], "ratio": _reading(r.get("ratio")), "oi": _reading(r.get("oi"))}
-            for r in allrows if _reading(r.get("ratio"))]
+    rows = [{"ts": r["ts"], "label": r["label"], "ratio": _positive(r.get("ratio")), "oi": _positive(r.get("oi"))}
+            for r in allrows if _positive(r.get("ratio"))]
     n = len(rows)
     if not n:
         return {"status": "missing", "reason": "no ratio recorded yet", **base}
@@ -848,9 +862,9 @@ def paper_physical_history(history, current):
     pct = None
     if n >= 20:
         if last["ratio"] < median:
-            pct = {"side": "below", "pct": int(round(sum(v > last["ratio"] for v in vals) / n * 100))}
+            pct = {"side": "below", "pct": int(sum(v > last["ratio"] for v in vals) / n * 100 + 0.5)}
         else:
-            pct = {"side": "above", "pct": int(round(sum(v < last["ratio"] for v in vals) / n * 100))}
+            pct = {"side": "above", "pct": int(sum(v < last["ratio"] for v in vals) / n * 100 + 0.5)}
     ref = next((r for r in reversed(rows) if r["ts"] <= last["ts"] - timedelta(days=30)), None)
     d30 = None
     if ref:
