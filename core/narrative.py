@@ -115,6 +115,10 @@ def chaos_rows(block):
     if es.get("status") == "missing":
         rows.append(("Midterm event study", f"Midterm event study missing ({es.get('reason')})"))
     for r in es.get("rows") or []:
+        if r.get("mean_pct") is None or r.get("base_mean_pct") is None or r.get("hit_rate") is None:      # under 8 cases: grade() gives no stats
+            rows.append((f"Midterm event study {r['series']} {r['window']}",
+                         f"Midterm event study {r['series']} days {r['window']}: too few cases for statistics, n {r['n']}"))
+            continue
         rows.append((f"Midterm event study {r['series']} {r['window']}",
                      f"Midterm event study {r['series']} days {r['window']}: mean {r['mean_pct']:+.1f}% vs {r['base_mean_pct']:+.1f}% "
                      f"in other windows, up in {r['hit_rate'] * 100:.0f}% of cases, n {r['n']}, evidence grade {r['grade']}"))
@@ -393,7 +397,11 @@ def write(ctx, chat, *, engine, model, budget_s=150, max_chars=None):
         out.update(reason=f"driver error: {type(e).__name__}: {str(e)[:200]}", seconds=round(_clock() - t0, 1))
         return out
     seen = dict(inp, numbers=inp["numbers"] | numbers_in("\n".join(prompt["tool_results"])))   # figures the analyst looked up
-    clean, out["dropped"], out["counts"] = validate(note, seen)
+    try:
+        clean, out["dropped"], out["counts"] = validate(note, seen)
+    except Exception as e:                        # valid JSON of the wrong shape ("focus": {...}, "refs": 5) is model misbehaviour too
+        out.update(reason=f"the model's JSON had the wrong shape ({type(e).__name__})", seconds=round(_clock() - t0, 1))
+        return out
     out.update(note=clean, seconds=round(_clock() - t0, 1))
     if out["counts"]["issues_kept"] < 2:
         out.update(reason=f"validator kept {out['counts']['issues_kept']} of {out['counts']['issues_in']} issues")

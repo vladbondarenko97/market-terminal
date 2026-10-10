@@ -139,6 +139,10 @@ class Studies(unittest.TestCase):
         row = next(r for r in st["rows"] if r["lever"].startswith("Fed assets"))
         self.assertEqual((row["n"], row["n_base"]), (11, 12))          # even years 2004..2024; odd years 2003..2025
         self.assertIn("up = easier", row["definition"])
+        late = w.copy()
+        late[pd.Timestamp("2026-10-28")] = late.iloc[-1]        # six days before the 2026 election: its window is not complete yet
+        row = next(r for r in CH._lever_study({"fred": {"WALCL": late}})["rows"] if r["lever"].startswith("Fed assets"))
+        self.assertEqual((row["n"], row["n_base"]), (11, 12))          # 2026 is not counted before its election day
         self.assertTrue(all(r["status"] == "missing" for r in st["rows"] if not r["lever"].startswith("Fed assets")))
         self.assertIn("Descriptive only", st["note"])
 

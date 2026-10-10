@@ -242,6 +242,8 @@ def _lever_study(inp):
         sig, base = {}, {}
         for y in range(s.index[0].year, s.index[-1].year + 1):
             e = pd.Timestamp(election_day(y))
+            if e > s.index[-1]:               # this year's election day is still ahead: its 60-day window is not complete
+                continue
             a, b = s[s.index <= e - pd.Timedelta(days=60)], s[s.index <= e]
             if a.empty or b.empty or (e - b.index[-1]).days > 14 or (e - pd.Timedelta(days=60) - a.index[-1]).days > 14 or a.iloc[-1] <= 0:
                 continue

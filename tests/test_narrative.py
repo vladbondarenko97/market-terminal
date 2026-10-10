@@ -138,6 +138,17 @@ class Validator(unittest.TestCase):
         self.assertIn("direction", self.check("SPY fell +0.60% [D2]; VIX fell -3.70% [D5]"))
         self.assertIsNone(self.check("SPY rose +0.60% [D2]; VIX fell -3.70% [D5]"))
 
+    def test_json_of_the_wrong_shape_is_a_missing_note_not_an_exception(self):
+        for bad in ({"tagline": "x", "focus": {"a": 1}, "issues": []}, {"issues": {"a": 1}}, {"issues": [{"what_moved": "SPY rose 4.64 [D2]", "refs": 5}]}):
+            calls = iter(["REGIME: calm [D2]", json.dumps(bad)])
+            r = N.write(make_ctx(), lambda *a: next(calls), engine="local", model="m")
+            self.assertEqual(r["status"], "missing", bad)
+
+    def test_event_study_rows_without_statistics_do_not_break_the_brief(self):
+        block = copy.deepcopy(make_ctx()["chaos"])
+        block["event_study"]["rows"] = [{"series": "VIX", "window": "0..+5", "n": 5, "mean_pct": None, "base_mean_pct": None, "hit_rate": None, "grade": "none"}]
+        self.assertTrue(any("too few cases" in line and "n 5" in line for _label, line in N.chaos_rows(block)))
+
     def test_validate_keeps_good_issues_and_drops_bad_refs(self):
         note = copy.deepcopy(NOTE)
         note["issues"][0]["refs"] = ["D2", "S99"]
