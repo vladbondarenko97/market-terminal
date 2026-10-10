@@ -378,6 +378,41 @@ class T06ForecastLab(unittest.TestCase):
         self.assertEqual(W.exit_date(date(2026, 10, 6)), date(2026, 10, 13))             # 5 trading days, over a weekend
         self.assertEqual(W.pick_expiry(["2026-10-09", "2026-10-30", "2026-12-18"], date(2026, 10, 6)), "2026-10-30")
 
+    def test_alert_job_session_gate_half_days_and_fail_closed_inputs(self):
+        import sqlite3
+        from datetime import date, datetime
+        import main_pipeline
+        from core import edges as E, lake as L, positions as P, watch as W
+        at = lambda text: datetime.fromisoformat(text).replace(tzinfo=W.NEW_YORK)
+        # the whole session counts, not only the pipeline's run slots; an early close ends it at 13:00 ET
+        self.assertTrue(W.in_session(at("2026-10-06T11:00")) and W.in_session(at("2026-10-06T14:00")))
+        self.assertFalse(W.in_session(at("2026-10-06T16:05")) or W.in_session(at("2026-10-10T11:00")))     # after the close; Saturday
+        self.assertFalse(W.in_session(at("2026-11-27T14:00")))                                              # half day
+        self.assertTrue(W.in_entry_window(at("2026-10-06T15:40")) and W.in_entry_window(at("2026-11-27T12:40")))
+        self.assertFalse(W.in_entry_window(at("2026-11-27T15:40")) or W.in_entry_window(at("2026-10-06T12:40")))
+        self.assertEqual(W.session_day(at("2026-11-27T13:05")), date(2026, 11, 28))
+        # outside the session the job does nothing and does not raise; inside it, it gets as far as the database
+        with mock.patch.object(W, "in_session", return_value=False):
+            self.assertEqual(main_pipeline.signal_alerts(), 0)
+        with mock.patch.object(W, "in_session", return_value=True), mock.patch.object(main_pipeline, "_latest_run_id", return_value=None):
+            self.assertEqual(main_pipeline.signal_alerts(), 1)                                              # no run yet: says so, exit 1
+        # an unknown earnings date blocks the trade; it is never read as "no earnings"
+        with mock.patch.object(W, "_extras", return_value={"XYZ": {"earnings": True}}), \
+             mock.patch.object(W, "_earnings_on", side_effect=RuntimeError("yahoo down")):
+            self.assertIn("unavailable", W.fetch_blackout("XYZ"))
+        self.assertIsNone(W.fetch_blackout("SPY"))                                                          # funds have none
+        # the engine row is the latest run's own ticket, never an older run's
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        L.migrate(c)
+        c.execute("INSERT INTO v2_trade_signals (run_id, created_at, underlying, position_type) VALUES ('old', '2026-10-01', 'SPY', 'CALL')")
+        self.assertIsNone(P.run_ticket(c, "new"))
+        self.assertEqual(P.run_ticket(c, "old")["position_type"], "CALL")
+        # Yahoo failing on company info reads as unknown, not as "this is a fund"
+        closes = __import__("pandas").Series(range(100, 500), index=__import__("pandas").bdate_range("2024-01-01", periods=400), dtype=float)
+        self.assertIn("unavailable", E._earnings_drift("XYZ", closes, None)["now"])
+        self.assertIn("fund", E._earnings_drift("XYZ", closes, [])["now"])
+
     def test_scorecard_grades_after_target_date(self):
         import sqlite3
         import pandas as pd

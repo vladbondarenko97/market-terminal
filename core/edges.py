@@ -41,22 +41,18 @@ def _bars(symbol, day):
 
 @lru_cache(maxsize=64)
 def _earnings(symbol, day):
-    """Past earnings announcements as naive New York timestamps (oldest first), or [] for funds and failures."""
+    """Past earnings announcements as naive New York timestamps (oldest first)."""
     import yfinance as yf
-    try:
-        idx = yf.Ticker(symbol).get_earnings_dates(limit=100).index
-        return sorted(t.tz_convert(watch.NEW_YORK).tz_localize(None) for t in idx if t.date() < day)
-    except Exception:
-        return []
+    idx = yf.Ticker(symbol).get_earnings_dates(limit=100).index          # a failure raises, so it is not cached
+    return sorted(t.tz_convert(watch.NEW_YORK).tz_localize(None) for t in idx if t.date() < day)
 
 
 @lru_cache(maxsize=64)
 def _info(symbol, day):
     import yfinance as yf
-    try:
-        i = yf.Ticker(symbol).info or {}
-    except Exception:
-        i = {}
+    i = yf.Ticker(symbol).info or {}
+    if not i.get("quoteType"):
+        raise ValueError("no fund or company info")                     # raised, so an empty answer is not cached
     return {k: i.get(k) for k in ("shortName", "quoteType", "trailingPE", "forwardPE", "returnOnEquity", "beta", "profitMargins")}
 
 
@@ -70,19 +66,17 @@ def _vol_index(symbol, day):
 
 @lru_cache(maxsize=4)
 def _fomc_dates(day):
-    """Fed decision dates from the page the pipeline last stored (parsed by the pipeline's own parser), or []."""
+    """Fed decision dates from the page the pipeline last stored (parsed by the pipeline's own parser). Raises when no
+    page is stored yet, so "nothing" is not cached and shows up as soon as a run has captured it."""
     from core import lake, sources
+    conn = lake.connect(DB_PATH, readonly=True)
     try:
-        conn = lake.connect(DB_PATH, readonly=True)
-        try:
-            row = conn.execute("SELECT payload_id FROM v2_payloads WHERE kind = 'fomc_calendar' ORDER BY fetched_at DESC LIMIT 1").fetchone()
-            _, content = lake.load_payload(conn, row["payload_id"])
-        finally:
-            conn.close()
-        stored = type("Stored", (), {"fetch": lambda self, *a, **k: (content.decode(), None)})()
-        return [date.fromisoformat(d) for d in sources.fomc_calendar(stored)[0]]
-    except Exception:
-        return []
+        row = conn.execute("SELECT payload_id FROM v2_payloads WHERE kind = 'fomc_calendar' ORDER BY fetched_at DESC LIMIT 1").fetchone()
+        _, content = lake.load_payload(conn, row["payload_id"])
+    finally:
+        conn.close()
+    stored = type("Stored", (), {"fetch": lambda self, *a, **k: (content.decode(), None)})()
+    return [date.fromisoformat(d) for d in sources.fomc_calendar(stored)[0]]
 
 
 def _live(symbol):
@@ -150,6 +144,11 @@ def _reversal(sym, c, price):
 
 
 def _earnings_drift(sym, c, announcements):
+    if announcements is None:
+        return _edge("earnings", "Earnings", "Post-earnings drift", "short", "Bernard & Thomas 1989",
+                     "After a strong earnings reaction a stock tends to keep drifting the same way for weeks.",
+                     "earnings data unavailable right now", "not checked", False, None, "n/a",
+                     "Yahoo did not return this ticker's company info or earnings dates; try REFRESH", "Not checked")
     if not announcements:
         return _edge("earnings", "Earnings", "Post-earnings drift", "short", "Bernard & Thomas 1989",
                      "After a strong earnings reaction a stock tends to keep drifting the same way for weeks.",
@@ -317,10 +316,20 @@ def analyze(symbol):
         raise ValueError(f"{sym}: no price history found")
     if len(b) < 300:
         raise ValueError(f"{sym}: less than about a year of price history")
-    c, today, info = b["Close"], day, _info(sym, day)            # after the close everything reads as the next session
-    equity = info.get("quoteType") == "EQUITY"
-    edges = [_reversal(sym, c, price), _earnings_drift(sym, c, _earnings(sym, day) if equity else []), _turn_of_month(sym, c, today),
-             _pre_fed(sym, c, today, _fomc_dates(day)), _trend(sym, c, price), _momentum(sym, c), _vol_premium(sym, c, iv, day),
+    c, today = b["Close"], day                                   # after the close everything reads as the next session
+    while not watch.is_trading_day(today):                           # a weekend or holiday reads as the session that follows it
+        today += timedelta(days=1)
+
+    def soft(fetch, *args):                                          # optional inputs: a failure means "unknown", not "none"
+        try:
+            return fetch(*args)
+        except Exception:
+            return None
+    info = soft(_info, sym, day) or {}
+    kind = info.get("quoteType")
+    announcements = soft(_earnings, sym, day) if kind == "EQUITY" else None if kind is None else []
+    edges = [_reversal(sym, c, price), _earnings_drift(sym, c, announcements), _turn_of_month(sym, c, today),
+             _pre_fed(sym, c, today, soft(_fomc_dates, day) or []), _trend(sym, c, price), _momentum(sym, c), _vol_premium(sym, c, iv, day),
              _overnight(sym, b), _factors(sym, c, info)]
     v = _verdict(edges)
     v["summary"] = f"{sym}: " + "; ".join(

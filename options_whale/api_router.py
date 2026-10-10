@@ -1223,7 +1223,7 @@ def api_custom():
 
 @app.route('/', methods=['GET'])
 def serve_terminal():
-    """Serves the VladHQ Market Terminal UI."""
+    """Serves the Market Terminal UI."""
     return render_template('terminal.html')
     
 @app.route('/help', methods=['GET'])
@@ -2465,9 +2465,9 @@ def api_forecast():
             return jsonify({"status": "error", "message": (fc or {}).get("reason") or "no Forecast Lab data yet: run the pipeline",
                             "run": run}), 404
         score = _v2fc.scorecard(conn, _cached_daily_closes, ticker)
-        ticket = conn.execute("SELECT * FROM v2_trade_signals WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 1").fetchone()
+        ticket = _v2pos.run_ticket(conn, run["run_id"])
         quotes = {k: _cached_underlying(s) for k, s in (("SPY", "SPY"), ("SLV", "SLV"), ("SI_F", "SI=F"))}
-        signals = _v2fc.signal_watch(_v2fc.live_overlay(fc, {k: v for k, v in quotes.items() if v}), dict(ticket) if ticket else None)
+        signals = _v2fc.signal_watch(_v2fc.live_overlay(fc, {k: v for k, v in quotes.items() if v}), ticket)
     except sqlite3.OperationalError as exc:
         if _uninitialised(exc):
             return _not_initialised()

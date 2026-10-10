@@ -401,7 +401,7 @@ def brief(app):
         run, sig, macro = fc.get("run") or {}, fc.get("signals") or [], fc.get("macro_regime") or {}
         nxt = ((fc.get("data") or {}).get("calendar") or {}).get("next") or {}
         lines.append(f"Latest pipeline run: {run.get('generated_local')} ({run.get('trigger')}, run id {run.get('run_id')}). "
-                     f"SPY at that run: {(fc.get('data') or {}).get('spot') or 0:.2f}.")
+                     + (f"SPY at that run: {(fc.get('data') or {}).get('spot'):.2f}." if (fc.get('data') or {}).get('spot') else "SPY at that run: not recorded."))
         fired = [r for r in sig if r["fired"]]
         lines.append(f"Signal Watch (card 0): {len(fired)} of {len(sig)} fired." + ("" if fired else " Nothing fired."))
         lines += [f"- FIRED {r['asset']} {r['name']}: {r['action']}" for r in fired]
@@ -546,7 +546,7 @@ def run_local(app, conv, question, model, reasoning=None):
             body["reasoning_effort"] = effort
             body["chat_template_kwargs"] = {"enable_thinking": effort != "none"}
         try:
-            resp = requests.post(f"{LOCAL_URL}/chat/completions", json=body, stream=True, timeout=(10, 600),
+            resp = requests.post(f"{LOCAL_URL}/chat/completions", json=body, stream=True, timeout=(10, MAX_SECONDS),
                                  headers={"Authorization": f"Bearer {LOCAL_API_KEY}"})
         except requests.RequestException as e:
             yield {"type": "error", "message": f"Local model not reachable at {LOCAL_URL}: {type(e).__name__}"}

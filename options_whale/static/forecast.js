@@ -59,13 +59,13 @@ const fcFitLegend = (chart, size) => {
 async function loadForecast(ticker) {
     if (ticker) FC.ticker = ticker;
     ['SPY', 'SLV'].forEach(t => document.getElementById(`fcBtn${t}`)?.classList.toggle('active', t === FC.ticker));
+    loadScanner();                      // cards 12 and 13 have their own routes: they load even when /api/forecast fails
+    loadEdges();
     try {
         // fetchJson (app.js) returns the body of a 404 or 503 too, so its message reaches the cards
         const json = await fetchJson(`${API_BASE}/api/forecast?ticker=${FC.ticker}`);
         if (json.status !== 'success') throw new Error(json.message || 'load failed');
         FC.data = json;
-        loadScanner();
-        loadEdges();
         const r = json.run || {};
         document.getElementById('fcRunInfo').textContent = `${FC.ticker} · run ${r.run_id || '—'} · ${r.generated_local || ''}`
             + (json.source_errors && Object.keys(json.source_errors).length ? ` · ${Object.keys(json.source_errors).length} source issue(s)` : '');

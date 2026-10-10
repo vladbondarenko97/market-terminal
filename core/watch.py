@@ -15,7 +15,7 @@ import numpy as np
 from config import DATA_DIR
 from core import lake
 from core.forecast import _signal_row
-from core.market_calendar import NEW_YORK, is_trading_day
+from core.market_calendar import NEW_YORK, is_trading_day, session_close
 from core.positions import _mid
 
 RULE = "spy_dip"
@@ -32,14 +32,15 @@ MAX_DEBIT = 3.00          # budget: at most $300 per spread
 HOLD_DAYS = 5             # trading days until the exit alert
 HALF_WIDTH = 0.003        # long strike ~0.3% under spot, short strike ~0.3% over
 DTE_MIN, DTE_MAX, DTE_TARGET = 18, 35, 25
-ENTRY_FROM_ET = time(15, 30)
+ENTRY_MINUTES = 30        # the rule is judged in the last minutes of the session
+OPEN_ET = time(9, 30)     # the regular session's open (its close comes from market_calendar.session_close)
 
 
 def session_day(now=None):
     """The date of the session the live price belongs to: today until the 4 PM ET close, then the next day, so that
     after the close today's bar counts as finished and the triggers shown are the next session's."""
     now = (now or datetime.now(NEW_YORK)).astimezone(NEW_YORK)
-    return now.date() + timedelta(days=now.time() >= time(16, 0))
+    return now.date() + timedelta(days=now.time() >= session_close(now.date()))
 
 
 @lru_cache(maxsize=64)
@@ -58,11 +59,9 @@ def fetch_closes(symbol="SPY"):
 
 @lru_cache(maxsize=64)
 def _earnings_on(symbol, day):
+    """The next earnings date on or after `day`. Raises when Yahoo fails or lists none, so a failure is never cached."""
     import yfinance as yf
-    try:
-        return min(d for d in yf.Ticker(symbol).calendar.get("Earnings Date") or [] if d >= day)
-    except Exception:
-        return None
+    return min(d for d in yf.Ticker(symbol).calendar.get("Earnings Date") or [] if d >= day)
 
 
 def fetch_blackout(symbol, today=None):
@@ -70,8 +69,11 @@ def fetch_blackout(symbol, today=None):
     today = today or date.today()
     if not _extras().get(symbol, {}).get("earnings"):
         return None                                 # ETFs: no earnings to step around
-    nxt = _earnings_on(symbol, today)
-    return f"earnings {nxt:%b %-d} fall inside the {HOLD_DAYS}-day hold" if nxt and nxt <= exit_date(today) else None
+    try:
+        nxt = _earnings_on(symbol, today)
+    except Exception:
+        return "its earnings date is unavailable right now"       # unknown counts as blocked, never as clear
+    return f"earnings {nxt:%b %-d} fall inside the {HOLD_DAYS}-day hold" if nxt <= exit_date(today) else None
 
 
 def refresh():
@@ -123,9 +125,20 @@ def remove_symbol(symbol):
         _save(extras)
 
 
-def in_entry_window(now=None):
+def in_session(now=None):
+    """Inside the regular NYSE session (which ends at 13:00 ET on an early close)."""
     now = (now or datetime.now(NEW_YORK)).astimezone(NEW_YORK)
-    return is_trading_day(now.date()) and ENTRY_FROM_ET <= now.time() <= time(16, 0)
+    return is_trading_day(now.date()) and OPEN_ET <= now.time() <= session_close(now.date())
+
+
+def in_entry_window(now=None):
+    """The last ENTRY_MINUTES of the session, where the close-based rule is judged: 15:30-16:00 ET, or 12:30-13:00
+    on an early close."""
+    now = (now or datetime.now(NEW_YORK)).astimezone(NEW_YORK)
+    if not is_trading_day(now.date()):
+        return False
+    close = datetime.combine(now.date(), session_close(now.date()), NEW_YORK)
+    return close - timedelta(minutes=ENTRY_MINUTES) <= now <= close
 
 
 def exit_date(opened, hold=HOLD_DAYS):

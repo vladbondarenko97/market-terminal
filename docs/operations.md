@@ -710,7 +710,11 @@ main_pipeline.py run"). The full repository map is in [Architecture](architectur
   last 30 minutes of the session) the Edge Lab's tested edges. A row that went from waiting to FIRED since the last
   check is pushed to `NTFY_URL` and raised as a macOS banner; one alert per row per day. A fired SPY dip also opens a
   paper position (`v2_watch_positions`); five trading days later the same command sends the sell alert and closes
-  it. It exits at once outside the NYSE session. `--dry-run` prints the live states and sends nothing; `--test`
-  sends one sample alert (it pushes to the phone, so it is an operator command, not a check).
+  it. It exits at once outside the regular NYSE session (09:30 ET to the close, 13:00 ET on an early close); the
+  dip rule and the exits are judged in the session's last 30 minutes. Nothing is recorded (alert state, a position
+  opened or closed) until the push was delivered, so a failed push is sent again by the next check; one ticker or
+  one position failing does not stop the others. A ticker whose earnings date cannot be fetched counts as blocked.
+  The engine row is the latest run's own ticket, never an older run's. `--dry-run` prints the live states and sends
+  nothing; `--test` sends one sample alert (it pushes to the phone, so it is an operator command, not a check).
 - **launchd job `com.vlad.signalalerts`** runs it every 5 minutes (log `~/Library/Logs/signalalerts.log`).
   `./setup.sh --schedule` installs it with the pipeline schedule; `--remove-schedule` removes both.

@@ -137,6 +137,13 @@ def horizon_values(conn, r, closes):
     return out
 
 
+def run_ticket(conn, run_id):
+    """The ticket this run recorded, or None: a run that selected no contract has none, and a hidden one does not count.
+    Never falls back to an older run's ticket."""
+    row = conn.execute("SELECT * FROM v2_trade_signals WHERE run_id = ? AND deleted_at IS NULL", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def list_live(conn, underlying_quote, option_chain, daily_closes=None):
     """Tracked (not deleted) positions, newest first, with live prices and +1d/+1w/+2w values.
     underlying_quote(sym) -> float|None; option_chain(sym, exp) -> {"calls": df, "puts": df}|None;
