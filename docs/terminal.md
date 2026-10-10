@@ -30,23 +30,45 @@ a stand-in number.
 ## Layout
 
 ```
-header:   VLADHQ TERMINAL | REMOTE API status | host | clock
-sidebar:  Macro Triggers, Custom Whale Hunter     (phones: one bar that opens them)
-center:   tab bar (MACRO DIRECTION, TIME ARBITRAGE, FORECAST LAB)
+header:   ☰ | VLADHQ TERMINAL | REMOTE API status | host | clock
+drawer:   off canvas, opened by ☰: Macro Triggers, Custom Whale Hunter
+page:     tab bar (MACRO DIRECTION, TIME ARBITRAGE, FORECAST LAB)     full width
           active tab (panels)
           splitter
-          Console Engine v2.0                     (phones: replaces the active tab)
-mobile:   bottom bar (Panels, Console)
+          Console Engine v2.0
+phones:   the same page, with the console as a docked bar (see Mobile layout)
+          bottom bar (Panels, Console)
 ```
+
+There is no left column: the tab bar and the panels use the whole width of the window.
 
 ### Header
 
+- **☰** (aria label "Menu") at the left edge, before the logo, opens the [menu drawer](#menu-drawer). It is 40 px square.
 - **REMOTE API: ONLINE** (green dot) means `GET /help` answered. It is checked every 30 seconds. When the request
   fails the label becomes `OFFLINE (CHECK HOST)`; when the server answers with an error status it reads
   `ERROR (HTTP <status>)`.
 - The host name (upper case) and a clock. The clock shows the browser's local time.
 
-### Sidebar: Macro Triggers
+### Menu drawer
+
+The Macro Triggers and the Custom Whale Hunter form live in a drawer that slides in from the left over the page, on every
+screen width. It is not part of the page layout: closed, it takes no room (and is not reachable by Tab or a screen reader).
+
+- **Open** with **☰**. The drawer is `min(320px, 85vw)` wide and as tall as the window, scrolls on its own when the
+  content is taller than the window, and has a title row (**MENU**) with a **×** button. A dark backdrop covers the page
+  and the page behind does not scroll. The slide takes about 200 ms; with the operating system's "reduce motion" setting
+  there is no animation.
+- **Close** with ×, a tap or click on the backdrop, Esc, or by pressing any button inside it (an action closes it, also one
+  that is refused, such as a second RE-SCAN while one is followed). Focus moves to the × when it opens and back to ☰ when it
+  closes; Tab stays inside while it is open. `aria-expanded` on ☰ follows it.
+- **After an action:** on a phone the drawer closes and the console opens (OPEN, see [Mobile layout](#mobile-layout)), so
+  the messages of the action are on screen. On the wide layout the console is already on screen and the split stays as it
+  was (a minimized console stays minimized).
+- It is closed on every page load. Nothing about it is stored (an older `vladhq_sidebar_open` key is removed). The fields
+  keep their values while it is closed, and the Time Arbitrage tab still reads the Target Ticker.
+
+### Drawer: Macro Triggers
 
 | Control | What it does | Route |
 |---|---|---|
@@ -78,7 +100,7 @@ the server's data folder, where the launcher's output goes. After 45 minutes the
 be going; use `main_pipeline.py status` on the server). While it follows a run the button reads `RE-SCANNING...` and is
 disabled. Closing the page does not stop the run.
 
-### Sidebar: Custom Whale Hunter
+### Drawer: Custom Whale Hunter
 
 | Field | Default | Used |
 |---|---|---|
@@ -96,11 +118,19 @@ call and put premium totals.
   reply from a scan route is printed as an error line; anything else is plain text (shown as text, never interpreted as
   HTML). Load-time lines (the panels scanning on page load) are logged as `info`; a line you caused by pressing a button
   is logged as `cmd`.
-- **[Minimize]** / **[Expand]** collapses the console to its title bar. **Data Dump** prints `GET /dump`
-  (the newest tactical and volume XML). **Clear** empties the log.
-- Drag the thin bar above the console to resize the panel area (minimum 200 px for panels, 150 px for the console).
-  Desktop only.
-- The panel height and the minimized state persist in the browser (see [Panel controls](#panel-controls)).
+- The title row has **[Minimize]** / **[Expand]**, **[Maximize]** / **[Restore]**, **Data Dump** (prints `GET /dump`, the
+  newest tactical and volume XML) and **Clear** (empties the log).
+- **Wide layout (768 px and wider).** The panels sit above the console with a thin splitter between them.
+  **[Minimize]** / **[Expand]** collapses the console to its title bar; clicking the title row does the same. Drag the
+  splitter to resize the panel area (minimum 200 px for panels, 150 px for the console). The panel height and the
+  minimized state persist in the browser (see [Panel controls](#panel-controls)).
+- **[Maximize]** (both layouts) makes the console cover the whole window, over the header, the tabs and the bottom bar.
+  The title row then shows **[Restore]**; Esc does the same. Restoring returns to what it was before: the split, or the
+  collapsed title bar, or on a phone OPEN. Maximized is never stored: after a reload the page starts with the normal
+  split. While it covers the page, **[Minimize]** is hidden on the wide layout (there is no split to collapse).
+- The console is shown in three states on a phone, and as the split or maximized on the wide layout; see
+  [Mobile layout](#mobile-layout). Resizing the window (or turning a phone) across 768 px re-applies the right layout at
+  once: no docked bar on the wide layout, no splitter on a phone. A maximized console stays maximized across the change.
 
 ### Mobile layout
 
@@ -108,26 +138,33 @@ On phones (a viewport narrower than 768 px; 768 px and wider gets the wide layou
 classes) the page changes as follows. The wide layout is not affected by any of it. All the phone rules sit in one
 `@media (max-width: 767.98px)` block at the end of `styles.css`; `MOBILE_QUERY` in `app.js` holds the same number.
 
-- **Sidebar bar.** The Macro Triggers and the Custom Whale Hunter form sit behind a one-line bar, **MACRO TRIGGERS & WHALE
-  HUNTER**, which is closed by default so the active tab gets the screen (header, bar, tab bar and bottom bar take about
-  200 px). Tap the bar to open them over the page (the tab underneath does not move); tap it again, press Esc, or press
-  any button inside to close it. Pressing a button inside also switches to the console, so the messages of the trigger
-  you started (also a refusal, such as a second RE-SCAN while one is followed) are on screen. Open or closed is
-  remembered in this browser (`vladhq_sidebar_open`); if the browser blocks storage the state is just not remembered.
-  The fields keep their values while the bar is closed, and the Time Arbitrage tab still reads the Target Ticker.
-- **Panels / Console.** The bottom bar shows either **Panels** (the tab chosen in the tab bar) or **Console**. Console
-  replaces whichever tab is active (Macro Direction, Time Arbitrage or Forecast Lab) and fills the area under the tab bar;
-  **Panels** brings that tab back. Choosing a tab in the tab bar while the console shows leaves the console and shows
-  that tab. A command you start (a `cmd` line, such as pressing a scan button) switches to Console; messages written
-  while panels load, background refreshes and tab changes do not. Opening Console scrolls the log to the newest line.
-  There is no split on a phone, so **[Minimize]** is hidden. `switchMobileTab('panels' | 'console')` in `app.js` does the
-  switch (it does nothing on the wide layout).
+- **Menu.** The Macro Triggers and the Custom Whale Hunter form are in the [menu drawer](#menu-drawer), opened by **☰** in
+  the header. There is no bar above the tabs, so the active tab gets the screen (header, tab bar and bottom bar take about
+  200 px; the docked console bar below takes 36 px).
+- **Console states.** The console has three states on a phone. They are not stored; a phone always starts MINIMIZED.
+  - **MINIMIZED** (default; **Panels** is lit in the bottom bar). The tab bar and the active tab (Macro Direction, Time
+    Arbitrage or Forecast Lab) are shown. The console is a single docked bar, 36 px high, just above the bottom bar. It reads
+    **CONSOLE** and the newest log line, cut off with an ellipsis when it is too long, in the colour of its level (grey info,
+    green success, yellow warn, red error, blue cmd). Scan answers show as a count (`Whale hunt: 3 contracts`); **Clear**
+    sets it to `Console cleared`. Tapping the bar opens the console.
+  - **OPEN** (**Console** is lit). Opened by the bottom bar, the docked bar, or a `cmd` line (a command you start, such as
+    pressing a scan button). The console fills everything between the header and the bottom bar. **The tab bar and all tab
+    content are hidden**; they are only in the Panels view. Opening scrolls the log to the newest line.
+  - **MAXIMIZED.** **[Maximize]** in the console's title row. The console covers the whole screen, over the header and the
+    bottom bar. **[Restore]** or Esc goes back to OPEN.
+  - The title row on a phone shows **[Minimize]** (back to MINIMIZED / Panels), **[Maximize]** or **[Restore]**,
+    **Data Dump** and **Clear**, each at least 32 px tall and wide. The words "Engine v2.0" are left out of the title to
+    make room. Only the buttons act; the title row is not clickable on a phone.
+  - Choosing **Panels** in the bottom bar, or any tab (`switchTab()`), goes back to MINIMIZED (also from MAXIMIZED). Messages
+    written while panels load, background refreshes and tab changes do not open the console. `switchMobileTab('panels' |
+    'console')` in `app.js` does the switch (MINIMIZED / OPEN; it does nothing on the wide layout). Data Dump, a `cmd`
+    line, does not leave MAXIMIZED.
 - **Panel dragging** is off.
-- **Text fields** (text, number, date, menus, the Copy dialog) are 16 px. Safari on iPhone zooms the page in when a
-  field smaller than that gets focus; zooming by pinch is not disabled.
+- **Text fields** (text, number, date, menus, the Copy dialog, the drawer's Whale Hunter form) are 16 px. Safari on iPhone
+  zooms the page in when a field smaller than that gets focus; zooming by pinch is not disabled.
 - **Touch targets.** The small controls (panel zoom **-** / **+**, REFRESH, COPY, [MAX], SCAN, **?**, the card buttons,
-  chart toggles, scenario buttons, the War Room sliders) get about 32 px of height and width. Panel title bars wrap their
-  controls onto a second line when they do not fit.
+  chart toggles, scenario buttons, the War Room sliders, the console's title-row buttons) get about 32 px of height and
+  width; ☰ and the drawer's buttons are 40 px. Panel title bars wrap their controls onto a second line when they do not fit.
 - **Tab bar.** The three labels use a smaller type size and letter spacing so each stays on one line down to 320 px.
 - **Forecast Lab card 11.** When the chart is narrower than 640 px the legend goes below it, so the series names are not
   cut off, also in full screen. On the wide layout it stays on the right.
@@ -136,6 +173,8 @@ classes) the page changes as follows. The wide layout is not affected by any of 
 - **Capacity Constraint Oscillator.** With no reading the dial shows a short label (NO READING) and the needle fades; the
   full reason is under the gauge. This is so on every screen size.
 - The page height follows the visible screen (`100dvh`), so the browser's own toolbar does not cover the bottom bar.
+- A phone turned sideways is usually 768 px or wider, so it gets the wide layout: the split, the splitter and no bottom
+  bar. Turning it back restores the phone state it had (OPEN stays OPEN).
 
 
 ## Macro Direction tab
@@ -198,7 +237,7 @@ least 20 recorded scores). The formula is in [API](api.md#macro-and-vmri) and `c
 ## Time Arbitrage tab
 
 Nine options-analytics panels. All but the last two come from one live route, `GET /api/time_arbitrage?ticker=...`, for
-the Target Ticker in the sidebar (SPY if empty). It loads when the tab opens and **every 60 seconds while the tab is
+the Target Ticker in the menu drawer (SPY if empty). It loads when the tab opens and **every 60 seconds while the tab is
 open**; leaving the tab stops the polling. Each call makes several live yfinance requests. Panels 1 to 9 each have a
 **?** button that opens a short help dialog.
 
@@ -294,7 +333,7 @@ Other behavior:
 | REFRESH, SCAN | Panels 1, 2, 11, 12, 15 (REFRESH); 6, 7, 10 (SCAN) | Reload that panel. SCAN reads the ticker box next to it. |
 | **?** | Time Arbitrage panels | Opens a help dialog. The Macro Direction panels have no help button. |
 
-Keyboard: Esc closes the War Room guide, closes the Forecast Lab help dialog, leaves Forecast Lab full screen and, on a phone, closes the sidebar bar.
+Keyboard: Esc closes the menu drawer (first), restores a maximized console, closes the War Room guide, closes the Forecast Lab help dialog and leaves Forecast Lab full screen.
 Enter in the Option Explorer's Ticker box loads the chain. There are no other shortcuts.
 
 Browser storage (`localStorage`, per browser and per origin):
@@ -303,8 +342,7 @@ Browser storage (`localStorage`, per browser and per origin):
 |---|---|
 | `vladhq_zoom_panel1` ... `vladhq_zoom_panel15` | Zoom level of each Macro Direction panel. |
 | `vladhq_panel_height` | Height of the panel area, in pixels (default 550). |
-| `vladhq_console_min` | `1` when the console is minimized. |
-| `vladhq_sidebar_open` | `1` when the sidebar bar is open on a phone (closed by default). |
+| `vladhq_console_min` | `1` when the console is minimized on the wide layout. Phones and the maximized state are not stored. |
 | `optionsWatchlist` | The Institutional Wishlist. |
 
 ### Refresh timing

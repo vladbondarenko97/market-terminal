@@ -333,16 +333,6 @@ body.resizing-active #v-resizer {
     .group:focus-within .group-hover\:block {
         display: block !important;
     }
-
-    /* Mobile Tab System */
-    .mobile-tab-hidden {
-        display: none !important;
-    }
-}
-
-/* The sidebar bar only exists on phones */
-@media (min-width: 768px) {
-    .sidebar-toggle { display: none !important; }
 }
 
 /* --- TAB NAVIGATION SYSTEM --- */
@@ -455,6 +445,77 @@ body.resizing-active #v-resizer {
 #consoleSection.console-minimized { padding-bottom: 6px; }
 #consoleSection.console-minimized > .glass-panel { height: auto; }
 
+/* ============================ Menu drawer (every screen width) ============================
+   Off canvas on the left: the Macro Triggers and the Custom Whale Hunter form. It is position:fixed, so it takes no room in the page.
+   While closed it is visibility:hidden (not focusable, not announced, not measured); app.js adds body.drawer-open. */
+:root { --console-dock-h: 36px; }
+.menu-btn {
+    flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; color: #a1a1aa; border: 1px solid #27272a; border-radius: 4px; cursor: pointer;
+    font-size: 20px; line-height: 1; transition: color .15s, border-color .15s;
+}
+.menu-btn:hover, .menu-btn[aria-expanded="true"] { color: #fff; border-color: #52525b; }
+.menu-btn:focus-visible, .drawer-close:focus-visible, .console-dock:focus-visible { outline: 2px solid #3b82f6; outline-offset: -2px; }
+.drawer-backdrop {
+    position: fixed; inset: 0; z-index: 8000; background: rgba(0, 0, 0, .72);
+    opacity: 0; visibility: hidden; pointer-events: none; touch-action: none;
+    transition: opacity .2s ease, visibility 0s linear .2s;
+}
+.side-drawer {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 8001;
+    width: min(320px, 85vw); display: flex; flex-direction: column;
+    background: #000; border-right: 1px solid #27272a; box-shadow: 12px 0 32px rgba(0, 0, 0, .85);
+    transform: translateX(-100%); visibility: hidden; outline: none;
+    transition: transform .2s ease, visibility 0s linear .2s;
+}
+.drawer-head {
+    flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    height: 48px; padding: 0 8px 0 16px; border-bottom: 1px solid #27272a; background: rgba(24, 24, 27, .5);
+}
+.drawer-title { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; color: #a1a1aa; }
+.drawer-close {
+    width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; border: 0; color: #71717a; font-size: 26px; line-height: 1; cursor: pointer;
+}
+.drawer-close:hover { color: #fff; }
+.drawer-body {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+    padding: 16px; display: flex; flex-direction: column; gap: 24px;
+}
+.drawer-body button { min-height: 40px; }
+body.drawer-open { overflow: hidden; }
+body.drawer-open .drawer-backdrop { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity .2s ease, visibility 0s; }
+body.drawer-open .side-drawer { transform: none; visibility: visible; transition: transform .2s ease, visibility 0s; }
+@media (prefers-reduced-motion: reduce) {
+    .drawer-backdrop, .side-drawer, body.drawer-open .drawer-backdrop, body.drawer-open .side-drawer { transition: none; }
+}
+
+/* ============================ Console: maximized (every screen width) ============================
+   body.console-maximized covers the whole viewport, over the header and the bottom bar, below the dialogs (9000 and up) and above the drawer.
+   It is never stored: a reload starts with the normal split (or, on a phone, the docked bar). */
+body.console-maximized #consoleSection {
+    position: fixed; inset: 0; z-index: 8500; display: block !important; padding: 0; background: #050505;
+    flex: none !important; min-height: 0 !important; transition: none !important;
+}
+body.console-maximized #consoleSection > .glass-panel { height: 100% !important; border: 0; border-radius: 0; }
+@media (min-width: 768px) {
+    body.console-maximized #btnMinConsole { display: none; }                  /* there is no split to minimize while it covers the page */
+}
+
+/* ============================ Console dock: the minimized console on a phone ============================
+   Hidden everywhere except in the phone block at the end of this file. */
+.console-dock { display: none; }
+.console-dock-label { flex: 0 0 auto; font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #71717a; }
+.console-dock-line {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11px; color: #a1a1aa;
+}
+.console-dock-line[data-level="success"] { color: #22c55e; }
+.console-dock-line[data-level="error"] { color: #ef4444; }
+.console-dock-line[data-level="warn"] { color: #eab308; }
+.console-dock-line[data-level="cmd"] { color: #60a5fa; }
+.console-dock-chev { flex: 0 0 auto; font-size: 12px; color: #71717a; }
+
 /* ============================ Forecast Lab: full screen + FAQ ============================ */
 .fc-actions { display: flex; gap: 6px; align-items: center; }
 .fc-icon { width: 20px; height: 20px; border-radius: 999px; border: 1px solid #3f3f46; color: #a1a1aa; font-size: 10px; font-weight: 800;
@@ -482,37 +543,36 @@ body.fc-lock { overflow: hidden; }
    Everything here is inside the phone media query, so the wide layout is untouched. It comes last in the file so that it wins over
    the base rules above (tab bar, forecast cards) that have the same specificity. */
 @media (max-width: 767.98px) {
-    :root { --sidebar-bar-h: 40px; }
-
     /* 100vh on iOS Safari includes the area behind the browser toolbar and would push the bottom bar under it */
     body.h-screen { height: 100vh; height: 100dvh; }
 
-    /* --- Sidebar: a one-line bar that opens the triggers and the Whale Hunter form over the page (closed by default) --- */
-    #sidebar { padding: 0; gap: 0; max-height: none; overflow: visible; box-shadow: none; }
-    .sidebar-toggle {
-        display: flex; align-items: center; justify-content: space-between; gap: 8px;
-        width: 100%; height: var(--sidebar-bar-h); padding: 0 16px;
-        background: #000; color: #a1a1aa; border: 0; cursor: pointer; text-align: left;
-        font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
-    }
-    .sidebar-toggle-sub { color: #52525b; font-weight: 400; }
-    .sidebar-chevron { font-size: 14px; line-height: 1; transition: transform .2s; }
-    #sidebar.sidebar-open .sidebar-toggle { color: #fff; }
-    #sidebar.sidebar-open .sidebar-chevron { transform: rotate(180deg); }
-    .sidebar-body { display: none; }
-    #sidebar.sidebar-open .sidebar-body {
-        display: flex; flex-direction: column; gap: 16px;
-        position: absolute; top: var(--sidebar-bar-h); left: 0; right: 0;       /* over the tab, not pushing it down: <main> is the positioned box */
-        max-height: calc(100% - var(--sidebar-bar-h)); overflow-y: auto; overscroll-behavior: contain;
-        padding: 16px; background: #000; border-bottom: 1px solid #27272a;
-        box-shadow: 0 18px 24px -8px rgba(0, 0, 0, .9); z-index: 60;
-    }
-    #sidebarBody > section:first-child > h3 { display: none; }                 /* the bar already says "Macro Triggers" */
+    /* --- Header: the menu button takes 48 px of the first row, so the logo is a little smaller, the side padding is 8 px and the API status
+           stays on one line (a long status such as OFFLINE (CHECK HOST) is cut off with an ellipsis instead of making the header taller) --- */
+    header.app-header { padding-left: 8px; padding-right: 8px; }
+    header.app-header .brand { font-size: 16px; flex: 0 0 auto; }
+    header.app-header .api-status { min-width: 0; white-space: nowrap; }
+    header.app-header .api-status #apiStatus { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    header.app-header #statusDot { flex: none; }
 
-    /* --- Console replaces whichever tab is active (the bar below the tabs switches; the tab bar stays) --- */
+    /* --- Console: three states (app.js sets body.mobile-console-view and body.console-maximized) ---
+       MINIMIZED (default): the tab bar and the active tab, and the docked bar (#consoleDock) above the bottom bar. The console itself is hidden.
+       OPEN: the console fills the area between the header and the bottom bar; the tab bar and every tab are hidden (they come back with Panels).
+       MAXIMIZED: the console covers the whole screen (the .console-maximized rules above; they also apply on the wide layout). */
+    body.mobile-console-view .tab-bar,
     body.mobile-console-view .tab-content { display: none !important; }
-    #consoleSection { padding-top: 8px; }
-    #btnMinConsole { display: none; }                                          /* there is no split to minimize on a phone */
+    body:not(.mobile-console-view) #consoleSection { display: none; }
+    .console-dock {
+        display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+        width: 100%; height: var(--console-dock-h); padding: 0 12px;
+        background: #09090b; border: 0; border-top: 1px solid #27272a; cursor: pointer; text-align: left; color: #a1a1aa;
+    }
+    body.mobile-console-view .console-dock { display: none; }
+    #consoleSection { padding: 8px; }
+    body.console-maximized #consoleSection { padding: 0; }
+    #consoleTitleRow { padding-left: 8px; padding-right: 4px; flex-wrap: wrap; column-gap: 8px; cursor: default; }
+    #consoleTitleRow:hover { background: rgba(24, 24, 27, .5); }
+    #consoleTitleRow .console-title-ext { display: none; }                      /* "Console Engine v2.0" is "Console" here: the buttons need the room */
+    #consoleTitleRow .console-actions { gap: 0; margin-left: auto; }
 
     /* --- Tab bar: three labels on one line down to 320 px --- */
     .tab-bar { height: 2.75rem; padding: 0 4px; gap: 0; }
@@ -548,6 +608,7 @@ body.fc-lock { overflow: hidden; }
     .btn-preset { padding-left: 12px; padding-right: 12px; }
     .arb-toggle, .slv-toggle { padding-left: 14px; padding-right: 14px; }
     #consoleSection button { min-height: 32px; padding: 0 8px; }
+    .console-dock { min-height: 32px; }
     /* text boxes and menus */
     input:not([type="range"]), select { min-height: 32px; }
     /* sliders: a 4 px bar is hard to hit; the track keeps its look (only its content box is painted), the touch area grows */

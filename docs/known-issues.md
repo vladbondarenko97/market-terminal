@@ -10,7 +10,7 @@ Last checked against the code: October 2026.
 
 | Issue | Where | Effect |
 |---|---|---|
-| Phones held sideways get the desktop layout | `options_whale/templates/terminal.html`, `options_whale/static/styles.css` | The phone layout (collapsible triggers, bottom Panels/Console bar) applies below 768 px wide. A phone in landscape is usually wider, so it shows the desktop layout, where the panels get about 200 px of height above the console. Use the phone upright. |
+| Phones held sideways get the desktop layout | `options_whale/static/app.js` (`MOBILE_QUERY`), `options_whale/static/styles.css` | The phone layout (docked console bar, bottom Panels/Console bar) applies below 768 px wide. A phone in landscape is usually wider, so it shows the desktop layout, where the panels get about 200 px of height above the console. Use the phone upright, or press the console's [Minimize] (more room for panels) or [Maximize] (console only). |
 | AlphaFlow stores fixed placeholder columns | `alphaflow/engine.py` `run_historical_scan()` | Every sweep row gets `term` "Mid Term", `entry` "NEXT OPEN", `max_risk` 500 and an `expiration` of scan date + 44 days. They are not computed from the trade. The AlphaFlow docs page says so; the email appendix prints them. |
 
 ## Deliberate design decisions

@@ -59,6 +59,7 @@ function xmlErrorText(text) {
 function log(content, type = 'info') {
     // On a phone only a command line the user started brings the console forward; load-time and background messages do not
     if (type === 'cmd' && typeof switchMobileTab === 'function') switchMobileTab('console');
+    updateConsoleDock(content, type);
     const consoleLog = document.getElementById('consoleLog');
     const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
     
@@ -207,6 +208,26 @@ function log(content, type = 'info') {
 
     consoleLog.appendChild(entry);
     consoleLog.scrollTop = consoleLog.scrollHeight;
+}
+
+// One line for the docked console bar (phones): the newest log line, truncated by CSS, in its level colour. The XML answers of the scans
+// are shown as a count, not as markup. The text is set with textContent, so nothing in it is interpreted as HTML.
+function consoleDockText(content) {
+    const s = String(content ?? '');
+    if (s.includes('<whale_hunt')) { const n = (s.match(/<contract\b/g) || []).length; return `Whale hunt: ${n} contract${n === 1 ? '' : 's'}`; }
+    if (s.includes('<physical_arbitrage')) { const n = (s.match(/<listing\b/g) || []).length; return `Silver Eagles: ${n} listing${n === 1 ? '' : 's'}`; }
+    return s.replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+function updateConsoleDock(content, type) {
+    const line = document.getElementById('consoleDockLine');
+    if (!line) return;
+    line.textContent = consoleDockText(content);
+    line.dataset.level = type || 'info';
+}
+function clearConsole() {
+    const el = document.getElementById('consoleLog');
+    if (el) el.innerHTML = '';
+    updateConsoleDock('Console cleared', 'info');
 }
 
 // Prints the answer of a scan route. The scans answer XML (<whale_hunt> or <physical_arbitrage>); a failure is
@@ -927,9 +948,15 @@ async function followRun(beforeId) {
 // ==========================================
 // --- LAYOUT ENGINE: panels / console split (single owner) ---
 // ==========================================
-// Expanded: the active tab gets a fixed height (user-draggable), the console fills the rest.
+// Wide layout (768 px and up). Expanded: the active tab gets a fixed height (user-draggable), the console fills the rest.
 // Minimized: the tab fills everything, the console shrinks to its title bar. Applies to every .tab-content.
+// Both layouts also have MAXIMIZED: the console covers the whole viewport (body.console-maximized). That is never stored.
+// Phone layout (below 768 px): MINIMIZED = the tab bar, the active tab and a docked console bar; OPEN = the console fills the area
+// between the header and the bottom bar and the tab bar and tabs are hidden; MAXIMIZED = the console covers everything. Not stored either:
+// a phone always starts MINIMIZED. The state is applied by applyConsoleChrome() (body classes, button labels, bottom bar).
 let isConsoleMinimized = localStorage.getItem('vladhq_console_min') === '1';
+let consoleMaximized = false;        // both layouts
+let phoneConsoleOpen = false;        // phone layout: false = MINIMIZED (docked bar), true = OPEN
 let savedTopHeight = parseFloat(localStorage.getItem('vladhq_panel_height')) || 550;
 const CONSOLE_MIN_OPEN = 150;   // smallest console height when expanded
 const PANELS_MIN = 200;         // smallest panel area height
@@ -951,11 +978,21 @@ function applyLayout() {
     const consoleSection = document.getElementById('consoleSection');
     const consoleBody = document.getElementById('consoleBody');
     const resizer = document.getElementById('v-resizer');
-    const minBtn = document.getElementById('btnMinConsole');
     if (!consoleSection) return;
-    if (isMobileLayout()) {                     // mobile uses the bottom tab bar instead of a split
-        tabContents().forEach(t => { t.style.height = ''; t.style.flex = ''; });
-        consoleSection.style.flex = ''; consoleSection.style.height = '';
+    if (isMobileLayout() && consoleMaximized) phoneConsoleOpen = true;     // what a phone returns to on [Restore]
+    applyConsoleChrome();
+    if (isMobileLayout()) {                     // a phone has the docked bar and the bottom bar instead of a split
+        tabContents().forEach(t => { t.style.height = ''; t.style.flex = ''; t.style.minHeight = ''; });
+        consoleSection.style.flex = ''; consoleSection.style.height = ''; consoleSection.style.minHeight = '';
+        consoleSection.classList.remove('console-minimized');
+        consoleBody?.classList.remove('hidden');
+        resizer?.classList.add('hidden');       // the splitter belongs to the wide layout (the wide branch below sets it again)
+        resizer?.classList.remove('md:flex');
+        return;
+    }
+    if (consoleMaximized) {                     // the console covers the page; the split underneath is recomputed when it is restored
+        consoleBody?.classList.remove('hidden');
+        consoleSection.classList.remove('console-minimized');
         return;
     }
     if (isConsoleMinimized) {
@@ -966,7 +1003,6 @@ function applyLayout() {
         consoleSection.style.flex = '0 0 auto';
         consoleSection.style.minHeight = '0';
         consoleSection.classList.add('console-minimized');
-        if (minBtn) minBtn.innerText = '[Expand]';
     } else {
         const h = clampTopHeight(savedTopHeight);
         tabContents().forEach(t => { t.style.height = `${h}px`; t.style.flex = 'none'; t.style.minHeight = ''; });
@@ -976,7 +1012,6 @@ function applyLayout() {
         consoleSection.style.flex = '1 1 0%';
         consoleSection.style.minHeight = `${CONSOLE_MIN_OPEN - 40}px`;
         consoleSection.classList.remove('console-minimized');
-        if (minBtn) minBtn.innerText = '[Minimize]';
     }
     if (typeof drawBellCurve === 'function' && document.getElementById('warVmriScore')) {
         drawBellCurve(parseFloat(document.getElementById('warVmriScore').innerText || 0));
@@ -1032,79 +1067,146 @@ document.addEventListener('DOMContentLoaded', () => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(applyLayout, 80);
     });
+    // Crossing 768 px (a phone turned sideways, a window dragged narrower) re-applies the layout at once: no docked bar on the wide
+    // layout, no split on a phone. A maximized console stays maximized; its [Restore] button and Esc work in both layouts.
+    const phoneMq = window.matchMedia && window.matchMedia(MOBILE_QUERY);
+    if (phoneMq) {
+        if (phoneMq.addEventListener) phoneMq.addEventListener('change', applyLayout);
+        else if (phoneMq.addListener) phoneMq.addListener(applyLayout);      // Safari before 14
+    }
 });
 
-// --- MOBILE: SIDEBAR BAR ---
-// On a phone the Macro Triggers and the Whale Hunter form sit behind a one-line bar (closed by default) so the active tab gets the
-// screen. The open/closed state is remembered per browser. On wider screens the bar does not exist and none of this has an effect.
-const SIDEBAR_KEY = 'vladhq_sidebar_open';
-
-function applySidebarOpen(open) {
-    const side = document.getElementById('sidebar');
-    if (!side) return;
-    side.classList.toggle('sidebar-open', open);
-    document.getElementById('sidebarToggle')?.setAttribute('aria-expanded', open ? 'true' : 'false');
+// --- CONSOLE STATES ---
+// What the state looks like is in styles.css (body.mobile-console-view, body.console-maximized, #consoleDock) and in docs/terminal.md.
+function consoleStateName() {
+    if (consoleMaximized) return 'maximized';
+    if (isMobileLayout()) return phoneConsoleOpen ? 'open' : 'minimized';
+    return isConsoleMinimized ? 'collapsed' : 'split';
 }
 
-function setSidebarOpen(open) {
-    applySidebarOpen(open);
-    try { localStorage.setItem(SIDEBAR_KEY, open ? '1' : '0'); } catch (e) { /* storage blocked: the state just is not remembered */ }
-}
+// Puts the current state on the page: body classes, the labels of the title-row buttons and which bottom-bar button is lit.
+function applyConsoleChrome() {
+    const phone = isMobileLayout();
+    const body = document.body;
+    body.classList.toggle('mobile-console-view', phone && (phoneConsoleOpen || consoleMaximized));
+    body.classList.toggle('console-maximized', consoleMaximized);
+    body.dataset.consoleState = consoleStateName();
 
-function sidebarIsOpen() { return !!document.getElementById('sidebar')?.classList.contains('sidebar-open'); }
-function toggleSidebar() { setSidebarOpen(!sidebarIsOpen()); }
-function collapseSidebar() { if (sidebarIsOpen()) setSidebarOpen(false); }
+    const minBtn = document.getElementById('btnMinConsole');
+    const maxBtn = document.getElementById('btnMaxConsole');
+    if (minBtn) minBtn.innerText = (!phone && isConsoleMinimized) ? '[Expand]' : '[Minimize]';
+    if (maxBtn) {
+        maxBtn.innerText = consoleMaximized ? '[Restore]' : '[Maximize]';
+        maxBtn.setAttribute('aria-pressed', consoleMaximized ? 'true' : 'false');
+    }
 
-(function restoreSidebar() {
-    let open = false;
-    try { open = localStorage.getItem(SIDEBAR_KEY) === '1'; } catch (e) { /* default: closed */ }
-    applySidebarOpen(open);
-})();
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && isMobileLayout()) collapseSidebar(); });
-// Pressing any trigger in the open sidebar (also one that is refused, such as a second re-scan, which only logs an info line) shows
-// the console, where its messages are
-document.getElementById('sidebarBody')?.addEventListener('click', e => { if (e.target.closest('button')) switchMobileTab('console'); });
-
-// --- MOBILE TAB NAVIGATION ---
-// The bottom bar has two views: Panels (the tab picked in the tab bar) and Console, which replaces whichever tab is active.
-// Choosing a tab in the tab bar always returns to Panels. Either switch also closes the sidebar bar, which would otherwise
-// cover the console.
-function switchMobileTab(tab) {
-    if (!isMobileLayout()) return;
-
-    const consoleView = tab === 'console';
-    const consoleSection = document.getElementById('consoleSection');
-    const tabPanels = document.getElementById('tabPanels');
-    const tabConsole = document.getElementById('tabConsole');
+    const consoleView = phone && (phoneConsoleOpen || consoleMaximized);
     const on = ['text-white', 'border-blue-500', 'bg-zinc-900/50'];
     const off = ['text-zinc-500', 'border-transparent'];
-
-    document.body.classList.toggle('mobile-console-view', consoleView);     // styles.css hides every .tab-content with this
-    consoleSection?.classList.toggle('mobile-tab-hidden', !consoleView);
-    [[tabConsole, consoleView], [tabPanels, !consoleView]].forEach(([btn, active]) => {
+    [[document.getElementById('tabConsole'), consoleView], [document.getElementById('tabPanels'), !consoleView]].forEach(([btn, active]) => {
         if (!btn) return;
         btn.classList.remove(...(active ? off : on));
         btn.classList.add(...(active ? on : off));
         btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
-    collapseSidebar();
-
-    if (consoleView) {
-        if (isConsoleMinimized) toggleConsole();
-        const logEl = document.getElementById('consoleLog');
-        if (logEl) logEl.scrollTop = logEl.scrollHeight;                    // lines written while it was hidden: show the newest
-    }
 }
 
-function toggleConsole() {
-    isConsoleMinimized = !isConsoleMinimized;
-    localStorage.setItem('vladhq_console_min', isConsoleMinimized ? '1' : '0');
+function scrollConsoleToNewest() {
+    const logEl = document.getElementById('consoleLog');
+    if (logEl) logEl.scrollTop = logEl.scrollHeight;                         // lines written while it was hidden: show the newest
+}
+
+// Phone: MINIMIZED <-> OPEN. switchMobileTab() is the entry point used by the bottom bar, the docked bar, log() and switchTab():
+// 'console' opens the console (a maximized console stays maximized), 'panels' goes back to MINIMIZED (also leaves MAXIMIZED).
+// It does nothing on the wide layout, which has the split.
+function switchMobileTab(tab) {
+    if (!isMobileLayout()) return;
+    if (tab === 'console') {
+        phoneConsoleOpen = true;
+    } else {
+        phoneConsoleOpen = false;
+        consoleMaximized = false;
+    }
     applyLayout();
-    if (!isConsoleMinimized) {
-        const logEl = document.getElementById('consoleLog');
-        if (logEl) logEl.scrollTop = logEl.scrollHeight;
-    }
+    if (phoneConsoleOpen) scrollConsoleToNewest();
 }
+
+// [Minimize] / [Expand]. Wide layout: the split, remembered in this browser (vladhq_console_min). Phone: back to MINIMIZED (Panels).
+function toggleConsole() {
+    if (isMobileLayout()) { switchMobileTab('panels'); return; }
+    if (consoleMaximized) return;                                          // there is no split to minimize while it covers the page
+    isConsoleMinimized = !isConsoleMinimized;
+    try { localStorage.setItem('vladhq_console_min', isConsoleMinimized ? '1' : '0'); } catch (e) { /* storage blocked: not remembered */ }
+    applyLayout();
+    if (!isConsoleMinimized) scrollConsoleToNewest();
+}
+
+// [Maximize] / [Restore], both layouts. Not remembered. Restoring goes back to OPEN on a phone, and to the split (or the title bar,
+// as it was) on the wide layout.
+function setConsoleMaximized(on) {
+    on = !!on;
+    if (on === consoleMaximized) return;
+    consoleMaximized = on;
+    applyLayout();
+    scrollConsoleToNewest();
+}
+function toggleConsoleMaximized() { setConsoleMaximized(!consoleMaximized); }
+
+// The title row of the console: on the wide layout a click on it minimizes or expands, as it always did; on a phone only the buttons act.
+function onConsoleTitleClick() { if (!isMobileLayout()) toggleConsole(); }
+
+// --- MENU DRAWER (every screen width) ---
+// The Macro Triggers and the Custom Whale Hunter form live in #sideDrawer, off canvas on the left. #menuBtn opens it. It closes with the
+// x, a tap on the backdrop, Esc, or any button pressed inside it. Focus moves into it when it opens and back to #menuBtn when it
+// closes. It is always closed when the page loads: nothing about it is stored.
+const drawerIsOpen = () => document.body.classList.contains('drawer-open');
+
+function openDrawer() {
+    if (drawerIsOpen()) return;
+    document.body.classList.add('drawer-open');                            // styles.css: slides the drawer in, shows the backdrop, locks the page
+    document.getElementById('menuBtn')?.setAttribute('aria-expanded', 'true');
+    document.getElementById('drawerClose')?.focus({ preventScroll: true });
+}
+
+function closeDrawer() {
+    if (!drawerIsOpen()) return;
+    document.body.classList.remove('drawer-open');
+    const btn = document.getElementById('menuBtn');
+    btn?.setAttribute('aria-expanded', 'false');
+    btn?.focus({ preventScroll: true });
+}
+
+function toggleDrawer() { if (drawerIsOpen()) closeDrawer(); else openDrawer(); }
+
+try { localStorage.removeItem('vladhq_sidebar_open'); } catch (e) { /* the old phone bar remembered its state under this key; the drawer does not */ }
+
+// Pressing any action in the drawer (also one that is refused, such as a second re-scan, which only logs an info line) closes it. On a phone
+// it then shows the console, where the messages of that action are; on the wide layout the console is already on screen.
+document.getElementById('drawerBody')?.addEventListener('click', e => {
+    if (!e.target.closest('button')) return;
+    closeDrawer();
+    if (isMobileLayout()) switchMobileTab('console');
+});
+
+// Esc: closes the drawer first; otherwise restores a maximized console. (The other Esc handlers act on their own dialogs.)
+document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (drawerIsOpen()) { closeDrawer(); return; }
+    if (consoleMaximized) setConsoleMaximized(false);
+});
+
+// Tab stays inside the open drawer (it is modal)
+document.addEventListener('keydown', e => {
+    if (e.key !== 'Tab' || !drawerIsOpen()) return;
+    const drawer = document.getElementById('sideDrawer');
+    const items = [...drawer.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+        .filter(el => el.getClientRects().length > 0);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (!drawer.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 
 // Fetches the live XML dump and extracts the Paper:Physical ratio
 async function syncComexModule() {

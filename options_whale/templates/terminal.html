@@ -13,91 +13,27 @@
 
 <body class="h-screen flex flex-col overflow-hidden relative">
 
-    <header
-        class="min-h-[3rem] py-2 md:py-0 border-b border-zinc-800 flex flex-wrap items-center justify-between px-3 md:px-6 bg-black gap-2 md:gap-0">
-        <div class="flex items-center justify-between md:justify-start gap-2 md:gap-4 w-full md:w-auto">
-            <span class="font-bold tracking-tighter text-lg md:text-xl text-white">VLAD<span
-                    class="text-green-500">HQ</span> TERMINAL</span>
-            <div class="flex items-center gap-1.5 md:gap-2 text-[9px] md:text-[10px] uppercase text-zinc-500">
-                <div id="statusDot" class="w-2 h-2 bg-red-500 rounded-full status-pulse"></div>
-                REMOTE API: <span id="apiStatus">CONNECTING...</span>
+    <header class="app-header min-h-[3rem] py-2 md:py-0 border-b border-zinc-800 flex items-center px-3 md:px-6 bg-black gap-2 md:gap-3">
+        <!-- Opens the side drawer (Macro Triggers and Custom Whale Hunter), on every screen width. app.js: openDrawer / closeDrawer -->
+        <button id="menuBtn" type="button" onclick="toggleDrawer()" aria-label="Menu" aria-expanded="false" aria-controls="sideDrawer"
+            class="menu-btn"><span aria-hidden="true">&#9776;</span></button>
+        <div class="flex flex-wrap items-center justify-between flex-1 min-w-0 gap-2 md:gap-0">
+            <div class="flex items-center justify-between md:justify-start gap-2 md:gap-4 w-full md:w-auto">
+                <span class="brand font-bold tracking-tighter text-lg md:text-xl text-white">VLAD<span
+                        class="text-green-500">HQ</span> TERMINAL</span>
+                <div class="api-status flex items-center gap-1.5 md:gap-2 text-[9px] md:text-[10px] uppercase text-zinc-500">
+                    <div id="statusDot" class="w-2 h-2 bg-red-500 rounded-full status-pulse"></div>
+                    REMOTE API: <span id="apiStatus">CONNECTING...</span>
+                </div>
             </div>
-        </div>
-        <div
-            class="text-[9px] md:text-[10px] text-zinc-500 uppercase tracking-widest w-full md:w-auto text-center md:text-right flex justify-center md:justify-end gap-2">
-            <span id="hostLabel"></span><script>document.getElementById("hostLabel").textContent = location.host.toUpperCase();</script> <span>|</span> <span id="clock" class="text-zinc-300">00:00:00</span>
+            <div
+                class="text-[9px] md:text-[10px] text-zinc-500 uppercase tracking-widest w-full md:w-auto text-center md:text-right flex justify-center md:justify-end gap-2">
+                <span id="hostLabel"></span><script>document.getElementById("hostLabel").textContent = location.host.toUpperCase();</script> <span>|</span> <span id="clock" class="text-zinc-300">00:00:00</span>
+            </div>
         </div>
     </header>
 
-    <main class="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        <aside id="sidebar"
-            class="w-full md:w-80 border-b md:border-b-0 md:border-r border-zinc-800 p-4 md:p-6 flex flex-col gap-4 md:gap-6 overflow-y-auto bg-black max-h-[35vh] md:max-h-none shrink-0 md:shrink z-50 shadow-[0_10px_20px_-10px_rgba(0,0,0,0.8)] md:shadow-none">
-            <!-- Phones only: this bar opens and closes the triggers and the Whale Hunter form (closed by default).
-                 On wider screens the bar is hidden and #sidebarBody is display:contents, so the sidebar looks as before. -->
-            <button id="sidebarToggle" type="button" onclick="toggleSidebar()" aria-expanded="false" aria-controls="sidebarBody"
-                class="sidebar-toggle md:hidden">
-                <span>Macro Triggers <span class="sidebar-toggle-sub">&amp; Whale Hunter</span></span>
-                <span class="sidebar-chevron" aria-hidden="true">&#9662;</span>
-            </button>
-            <div id="sidebarBody" class="sidebar-body md:contents">
-            <section>
-                <h3 class="text-xs font-bold text-zinc-500 uppercase mb-4 tracking-widest">Macro Triggers</h3>
-                <div class="flex flex-col gap-2">
-                    <button onclick="rescanAll()" id="btnRescan"
-                        class="btn-action w-full py-2 text-xs font-bold text-red-500 border-red-500"><span
-                            id="rescanBtnText">RE-SCAN ALL DATA</span></button>
-                    <button onclick="triggerPhysicalArbScan()"
-                        class="btn-action w-full py-2 text-xs font-bold text-blue-400 border-blue-500">SCAN SILVER
-                        EAGLES</button>
-                    <button onclick="dumpAllData()" id="btnDumpAll"
-                        class="btn-action w-full py-2 text-xs font-bold text-purple-400 border-purple-500 relative overflow-hidden group">
-                        <span id="dumpBtnText">⚡ DUMP ALL DATA</span>
-                        <div id="dumpProgress" class="absolute inset-0 bg-purple-500/20 w-0 transition-all duration-300"
-                            style="width: 0%"></div>
-                    </button>
-                    <div class="grid grid-cols-2 gap-2">
-                        <button onclick="runPredefined('morning')" class="btn-action py-2 text-[10px] font-bold">8:31 AM
-                            FLOW</button>
-                        <button onclick="runPredefined('evening')" class="btn-action py-2 text-[10px] font-bold">2:00 PM
-                            FLOW</button>
-                    </div>
-                </div>
-            </section>
-
-            <section class="glass-panel p-4">
-                <h3 class="text-xs font-bold text-zinc-400 uppercase mb-4 border-b border-zinc-800 pb-2">Custom Whale
-                    Hunter</h3>
-                <div class="flex flex-col gap-3">
-                    <div>
-                        <label class="text-[9px] uppercase text-zinc-600 block mb-1">Target Ticker</label>
-                        <input id="scanTicker" type="text" placeholder="TSLA"
-                            class="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 text-sm text-green-400 focus:border-green-500 outline-none">
-                    </div>
-                    <div class="grid grid-cols-2 gap-2">
-                        <div>
-                            <label class="text-[9px] uppercase text-zinc-600 block mb-1">Min Vol/OI</label>
-                            <input id="scanVol" type="number" step="0.1" value="1.5"
-                                class="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 text-xs">
-                        </div>
-                        <div>
-                            <label class="text-[9px] uppercase text-zinc-600 block mb-1">Max DTE</label>
-                            <input id="scanDTE" type="number" value="14"
-                                class="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 text-xs">
-                        </div>
-                    </div>
-                    <div>
-                        <label class="text-[9px] uppercase text-zinc-600 block mb-1">Min Premium ($)</label>
-                        <input id="scanPremium" type="number" value="100000" step="50000"
-                            class="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 text-xs">
-                    </div>
-                    <button onclick="runCustomScan()"
-                        class="bg-green-600 text-black font-bold py-2 text-xs mt-2 hover:bg-white transition-all">INJECT
-                        PARAMETERS</button>
-                </div>
-            </section>
-            </div>
-        </aside>
-
+    <main class="flex-1 flex flex-col overflow-hidden relative">
         <div class="flex-1 flex flex-col overflow-hidden bg-[#020202] center-display-column">
 
             <div id="modalBackdrop" class="fixed inset-0 bg-black/90 backdrop-blur-md z-[9000] hidden transition-all">
@@ -1531,19 +1467,20 @@
             </div>
 
             <div id="consoleSection"
-                class="flex-1 p-4 pt-0 min-h-[40px] transition-all duration-300 overflow-hidden mobile-tab-hidden">
+                class="flex-1 p-4 pt-0 min-h-[40px] transition-all duration-300 overflow-hidden">
                 <div class="h-full glass-panel flex flex-col border border-zinc-800">
-                    <div onclick="toggleConsole()"
-                        class="bg-zinc-900/50 px-4 py-2 flex justify-between items-center border-b border-zinc-800 cursor-pointer hover:bg-zinc-900 transition-colors">
-                        <span class="text-[10px] text-zinc-400 font-bold tracking-widest uppercase">Console Engine
-                            v2.0</span>
-                        <div class="flex gap-4">
+                    <div id="consoleTitleRow" onclick="onConsoleTitleClick()"
+                        class="console-title-row bg-zinc-900/50 px-4 py-2 flex justify-between items-center border-b border-zinc-800 cursor-pointer hover:bg-zinc-900 transition-colors">
+                        <span class="text-[10px] text-zinc-400 font-bold tracking-widest uppercase">Console<span
+                                class="console-title-ext"> Engine v2.0</span></span>
+                        <div class="console-actions flex gap-4">
                             <button id="btnMinConsole" onclick="event.stopPropagation(); toggleConsole();"
                                 class="text-[9px] text-zinc-500 hover:text-blue-400 uppercase font-bold">[Minimize]</button>
+                            <button id="btnMaxConsole" onclick="event.stopPropagation(); toggleConsoleMaximized();" aria-pressed="false"
+                                class="text-[9px] text-zinc-500 hover:text-blue-400 uppercase font-bold">[Maximize]</button>
                             <button onclick="event.stopPropagation(); triggerAction('/dump')"
                                 class="text-[9px] text-zinc-500 hover:text-white uppercase">Data Dump</button>
-                            <button
-                                onclick="event.stopPropagation(); document.getElementById('consoleLog').innerHTML = ''"
+                            <button onclick="event.stopPropagation(); clearConsole()"
                                 class="text-[9px] text-zinc-500 hover:text-white uppercase">Clear</button>
                         </div>
                     </div>
@@ -1555,8 +1492,83 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Phones only (hidden by styles.css on wider screens and whenever the console is open): the minimized console, a one-line
+                 bar above the bottom bar with the latest log line in its level colour. Tapping it opens the console. -->
+            <button id="consoleDock" type="button" onclick="switchMobileTab('console')" class="console-dock" title="Open the console">
+                <span class="console-dock-label">Console</span>
+                <span id="consoleDockLine" class="console-dock-line" data-level="info">System authenticated. Ready to hunt.</span>
+                <span class="console-dock-chev" aria-hidden="true">&#9652;</span>
+            </button>
         </div>
     </main>
+
+    <!-- Side drawer: the Macro Triggers and the Custom Whale Hunter form. Off canvas (visibility:hidden while closed), slides in from the left on
+         every screen width; opened by #menuBtn, closed by the x, the backdrop, Esc or pressing any button inside. Not part of the page flow. -->
+    <div id="drawerBackdrop" class="drawer-backdrop" onclick="closeDrawer()" aria-hidden="true"></div>
+    <div id="sideDrawer" class="side-drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" tabindex="-1">
+        <div class="drawer-head">
+            <h2 id="drawerTitle" class="drawer-title">Menu</h2>
+            <button id="drawerClose" type="button" onclick="closeDrawer()" aria-label="Close menu" class="drawer-close"><span aria-hidden="true">&times;</span></button>
+        </div>
+        <div id="drawerBody" class="drawer-body">
+            <section>
+                <h3 class="text-xs font-bold text-zinc-500 uppercase mb-4 tracking-widest">Macro Triggers</h3>
+                <div class="flex flex-col gap-2">
+                    <button onclick="rescanAll()" id="btnRescan"
+                        class="btn-action w-full py-2 text-xs font-bold text-red-500 border-red-500"><span
+                            id="rescanBtnText">RE-SCAN ALL DATA</span></button>
+                    <button onclick="triggerPhysicalArbScan()"
+                        class="btn-action w-full py-2 text-xs font-bold text-blue-400 border-blue-500">SCAN SILVER
+                        EAGLES</button>
+                    <button onclick="dumpAllData()" id="btnDumpAll"
+                        class="btn-action w-full py-2 text-xs font-bold text-purple-400 border-purple-500 relative overflow-hidden group">
+                        <span id="dumpBtnText">⚡ DUMP ALL DATA</span>
+                        <div id="dumpProgress" class="absolute inset-0 bg-purple-500/20 w-0 transition-all duration-300"
+                            style="width: 0%"></div>
+                    </button>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="runPredefined('morning')" class="btn-action py-2 text-[10px] font-bold">8:31 AM
+                            FLOW</button>
+                        <button onclick="runPredefined('evening')" class="btn-action py-2 text-[10px] font-bold">2:00 PM
+                            FLOW</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="glass-panel p-4">
+                <h3 class="text-xs font-bold text-zinc-400 uppercase mb-4 border-b border-zinc-800 pb-2">Custom Whale
+                    Hunter</h3>
+                <div class="flex flex-col gap-3">
+                    <div>
+                        <label class="text-[9px] uppercase text-zinc-600 block mb-1">Target Ticker</label>
+                        <input id="scanTicker" type="text" placeholder="TSLA"
+                            class="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 text-sm text-green-400 focus:border-green-500 outline-none">
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-[9px] uppercase text-zinc-600 block mb-1">Min Vol/OI</label>
+                            <input id="scanVol" type="number" step="0.1" value="1.5"
+                                class="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 text-xs">
+                        </div>
+                        <div>
+                            <label class="text-[9px] uppercase text-zinc-600 block mb-1">Max DTE</label>
+                            <input id="scanDTE" type="number" value="14"
+                                class="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 text-xs">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-[9px] uppercase text-zinc-600 block mb-1">Min Premium ($)</label>
+                        <input id="scanPremium" type="number" value="100000" step="50000"
+                            class="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 text-xs">
+                    </div>
+                    <button onclick="runCustomScan()"
+                        class="bg-green-600 text-black font-bold py-2 text-xs mt-2 hover:bg-white transition-all">INJECT
+                        PARAMETERS</button>
+                </div>
+            </section>
+        </div>
+    </div>
 
     <!-- Copy Data Modal: at body level, so it shows on every tab (a hidden tab is display:none and would hide it) -->
     <div id="copyDataModal" class="fixed inset-0 z-[10000] hidden flex items-center justify-center p-4">
