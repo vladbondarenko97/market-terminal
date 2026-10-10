@@ -30,7 +30,7 @@ Both run on one Mac. Data lives in its own folder, never in git (`CME_Data/`, se
    │            deduplicated per run, concurrency-limited per provider, logged,
    │            raw response stored (v2_payloads, SHA-256 dedup)
    │            models are computed here too                                         core/metrics.py, core/forecast.py,
-   │                                                                                 core/refining.py
+   │                                                                                 core/refining.py, core/chaos.py
    ├─ capture   lake.record_observations(): typed rows in v2_observations           core/lake.py
    ├─ commit    lake.commit_snapshot(): one immutable JSON document (v2_snapshots)
    │            then the snapshot is re-loaded; everything after reads only it
@@ -92,6 +92,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/metrics.py` | VMRI, GEX and walls, zero gamma, max pain, block flow, execution engine, model features |
 | `core/forecast.py` | Forecast Lab models (cards 1–9), forecast logging and grading |
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
+| `core/chaos.py` | Chaos / Peace index: twelve stress z-scores, levers and the midterm studies (card 14), pure functions |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
 | `core/news.py` | Headline clustering (title normalisation, Jaccard de-duplication, recency windows, priority bucketing); pure functions |
 | `core/news_feeds.json` | The RSS feed list (`name`, `category`, `url`, `enabled`); `NEWS_FEEDS_FILE` replaces it |
@@ -173,7 +174,7 @@ Thin wrappers kept so old entry points still work. Each reads the latest snapsho
 | [Configuration](configuration.md) | Every `.env` setting, data folder, ports |
 | [Data](data.md) | SQLite tables, snapshot contents, daily files, ledgers |
 | [Terminal](terminal.md) | The web UI, tab by tab |
-| [Forecast Lab](forecast-lab.md) | The eleven model cards and how to add one |
+| [Forecast Lab](forecast-lab.md) | The twelve model cards and how to add one |
 | [API](api.md) | Every HTTP route |
 | [Value changes](value-changes.md) | Changes to how values are computed; model versions |
 | [Known issues](known-issues.md) | Verified bugs and gaps |

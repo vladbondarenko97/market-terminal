@@ -483,6 +483,20 @@ def refining_xml(parent, rf):
         _el(re_, "ulsd_managed_money", date=u["latest_date"], net=(u["net"], "int"), cot_index=u["cot_index"], read=u["read"])
 
 
+def chaos_line(ctx):
+    """One line for the brief and the push. A missing or failed block prints its reason, not a number. Old snapshots have no block."""
+    c = ctx.get("chaos")
+    if not c:
+        return "Chaos/Peace: not in this snapshot"
+    if c.get("score") is None:
+        return f"Chaos/Peace: {c.get('status')} ({str(c.get('reason'))[:160]})"
+    top = ", ".join(f"{d['label'].split(' (')[0]} {d['z']:+.1f}z" for d in c.get("drivers") or [])
+    n = g(c, "election", "trading_days_to")
+    when = "" if n is None else f"; midterm in {n} trading days" if n >= 0 else f"; {-n} trading days after the midterm"
+    return (f"Chaos/Peace: {c['score']:+.0f} {c['regime']} ({c['components_used']} of {c['components_total']} components)"
+            + (f"; top: {top}" if top else "") + when + ("; REGIME CHANGED" if c.get("regime_changed") else ""))
+
+
 def ntfy_summary(ctx):
     """Lock-screen summary for the single daily push: (title, message, priority 1-5, tags). Plain text (phones do not
     render Markdown); ranked by what is actionable; well under ntfy's 4,096-byte message limit."""
@@ -503,6 +517,7 @@ def ntfy_summary(ctx):
     lines.append(head + (f" · VIX {vix:.1f} {term}" if vix is not None else ""))
     if tier.startswith(("ELEVATED", "SYSTEMIC")):
         prio = max(prio, 5 if tier.startswith("SYSTEMIC") else 4)
+    lines.append(chaos_line(ctx))
     # 2. execution engine
     score = e.get("total_score")
     tk = e.get("ticket")
@@ -944,6 +959,7 @@ def market_brief_text(ctx):
 🚨 VLAD MACRO RISK INDEX (VMRI)
   - Score: {f2(vm.get('score'), na='UNAVAILABLE')}
   - Threat Level: {vm.get('tier')}{'' if vm.get('score') is not None else ' — ' + str(vm.get('reason'))}
+  - {chaos_line(ctx)}
 
 ⏰ CATALYST CALENDAR
   - Status: {cal.get('catalyst_status')}

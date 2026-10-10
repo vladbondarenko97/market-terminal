@@ -280,14 +280,14 @@ Things to know:
 
 ## Forecast Lab tab
 
-Eleven model cards (full reference: [Forecast Lab](forecast-lab.md)). Controls above the cards:
+Twelve model cards, 1 to 11 and 14 (full reference: [Forecast Lab](forecast-lab.md)). Controls above the cards:
 
 - **SPY** / **SLV** choose the ticker for the per-ticker cards. **REFRESH** reloads.
 - The status line reads `TICKER · run <run id> · <time>` and adds `· N source issue(s)` when the run could not fetch some inputs.
 - The data loads every time the tab is opened and on each button press. There is no automatic refresh.
 - Each card has **?** (help), **⛶** (full screen) and **COPY**. Esc closes help or leaves full screen.
 - A card whose data is missing or failed shows `Unavailable: <reason>`. That includes cards 4, 9 and 10 when the pipeline
-  recorded an error for their block, and card 11 when the whole refining block failed. If `/api/forecast` itself fails
+  recorded an error for their block, card 11 when the whole refining block failed, and card 14 when the chaos block is missing or failed (it prints the reason). If `/api/forecast` itself fails
   (for example `503` before the first run), every card shows the server's message.
 
 ## Engine Positions
@@ -368,8 +368,14 @@ Browser storage (`localStorage`, per browser and per origin):
 Three cards are plain rules on stored runs and live Yahoo quotes: no model output. Every row is graded on history
 and only a row with tested evidence can say "Buy"; hover any cell for what it means and where it comes from.
 
+- **14 · Chaos / Peace** (`core/chaos.py`, in `/api/forecast` and `/api/chaos`): score from -100 to +100 with regime, components
+  "x of 12", trading days to or after the 2026-11-03 midterm, the three largest z-scores, a 60-day score line, the components table
+  (missing ones show their reason), the lever panel (labelled as outside the score), the midterm event-study table (with n and
+  grade) and the lever-study table. Evidence is thin by construction. Nothing on it is computed in the browser.
 - **0 · Signal Watch** (`core/forecast.py: signal_watch`): the triggers the model cards compute (fair value, momentum
-  flip, positioning, option pricing, dealer gamma, macro, engine ticket), fired or waiting, with the action.
+  flip, positioning, option pricing, dealer gamma, macro, engine ticket), fired or waiting, with the action. The
+  "Chaos/Peace regime" row (from card 14) fires on the run where the regime differs from the previous trading day's; its action
+  text only states the change, and the usual once-a-day phone alert applies.
 - **12 · Day Scanner** (`core/watch.py`, `/api/scanner`): the dip-in-an-uptrend rule (2-day RSI under 10 or 5, above
   the 200-day average) on a saved watchlist (`+ ADD`, stored in `scanner_watchlist.json`). SPY trades as a call spread
   of at most $300 and opens a paper position (`v2_watch_positions`) that a sell alert closes 5 trading days later.

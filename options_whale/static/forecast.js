@@ -1,6 +1,6 @@
 // ==========================================================================================
 // FORECAST LAB — signal watch, day scanner and edge lab (fc0, fc12, fc13: /api/forecast signals, /api/scanner, /api/edges) plus
-// eleven model cards, fc1..fc11 (data: /api/forecast, from the committed v2 snapshot; card 11 also /api/eia_history)
+// twelve model cards, fc1..fc11 and fc14 (data: /api/forecast, from the committed v2 snapshot; card 11 also /api/eia_history)
 // ==========================================================================================
 const FC = { ticker: 'SPY', data: null, charts: {}, h1: '1m' };
 const FC_COL = { blue: '#3987e5', orange: '#d95926', aqua: '#199e70', yellow: '#c98500', violet: '#9085e9',
@@ -70,11 +70,11 @@ async function loadForecast(ticker) {
         document.getElementById('fcRunInfo').textContent = `${FC.ticker} · run ${r.run_id || '—'} · ${r.generated_local || ''}`
             + (json.source_errors && Object.keys(json.source_errors).length ? ` · ${Object.keys(json.source_errors).length} source issue(s)` : '');
         [renderSignals, renderImplied, renderVolForecast, renderTrend, renderPositioning, renderFairValue, renderMacro,
-         renderCalendar, renderFlows, renderScorecard, renderDiesel, renderInventories].forEach(fn => {
+         renderCalendar, renderFlows, renderScorecard, renderDiesel, renderInventories, renderChaos].forEach(fn => {
             try { fn(json); } catch (e) { console.error(fn.name, e); }
         });
     } catch (e) {
-        for (let i = 0; i <= 11; i++) {
+        for (const i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14]) {      // 12 and 13 have their own routes and messages
             const b = document.getElementById(`fc${i}`);
             if (b) b.innerHTML = `<div class="fc-neg">Forecast Lab unavailable: ${fcEsc(e.message)}</div>`;
         }
@@ -85,7 +85,7 @@ function copyForecastCard(id) {
     const d = FC.data || {};
     const map = {
         fc0: d.signals, fc12: FC.scanner, fc13: FC.edges, fc1: d.data?.implied, fc2: d.data?.vol_forecast, fc3: d.data?.trend, fc4: d.positioning, fc5: d.silver_fair_value,
-        fc6: d.macro_regime, fc7: d.data?.calendar, fc8: d.data?.flows, fc9: d.scorecard, fc10: d.refining, fc11: d.refining?.inventories,
+        fc6: d.macro_regime, fc7: d.data?.calendar, fc8: d.data?.flows, fc9: d.scorecard, fc10: d.refining, fc11: d.refining?.inventories, fc14: d.chaos,
     };
     const title = document.querySelector(`#${id}`)?.closest('.rainbow-inner')?.querySelector('.fc-title')?.textContent || id;
     const payload = JSON.stringify({ ticker: FC.ticker, run: d.run?.run_id, card: title, data: map[id] ?? null }, null, 2);
@@ -717,6 +717,60 @@ function renderInventories(j) {
 }
 
 // ---------------------------------------------------------------- full screen
+// ---------------------------------------------------------------- 14. Chaos / Peace (ctx["chaos"]: stored, nothing live)
+const CH_COL = { peace: '#199e70', neutral: '#a1a1aa', stress: '#c98500', chaos: '#d95926' };
+function renderChaos(j) {
+    const c = j.chaos, el = document.getElementById('fc14');
+    if (!c) { el.innerHTML = missing({ reason: 'no chaos data in this run yet (runs after the next pipeline run)' }); return; }
+    const miss = fcFailed(c);
+    const e = c.election || {}, n = e.trading_days_to;
+    const mid = n === undefined || n === null ? '—' : n >= 0 ? `${n} trading days to the midterm` : `${-n} trading days after the midterm`;
+    const comps = Object.values(c.components || {});
+    const compRows = Object.entries(c.components || {}).map(([k, x]) => x.status === 'fresh'
+        ? `<tr><td style="text-align:left">${fcEsc(x.label)}</td><td>${fcNum(x.value, 3)}</td><td class="${fcCls(x.z)}">${fcNum(x.z, 2)}</td><td>${fcEsc(x.as_of)}</td></tr>`
+        : `<tr><td style="text-align:left">${fcEsc(x.label)}</td><td colspan="3" class="fc-muted" style="text-align:left">missing: ${fcEsc(x.reason)}</td></tr>`).join('');
+    const lv = c.levers || {};
+    const lvRows = (lv.rows || []).map(x => x.status === 'fresh'
+        ? `<tr><td style="text-align:left">${fcEsc(x.label)}</td><td>${fcNum(x.level, 1)} <span class="fc-muted">${fcEsc(x.unit)}</span></td><td class="${fcCls(x.change_20d)}">${fcNum(x.change_20d, 1)}</td><td>${fcEsc(x.as_of)}</td></tr>`
+        : `<tr><td style="text-align:left">${fcEsc(x.label)}</td><td colspan="3" class="fc-muted" style="text-align:left">missing: ${fcEsc(x.reason)}</td></tr>`).join('');
+    const es = c.event_study || {};
+    const esRows = (es.rows || []).map(x => `<tr><td style="text-align:left">${fcEsc(x.series)}</td><td>${fcEsc(x.window)}</td><td>${x.n}</td><td>${fcPct(x.mean_pct, 2)}</td><td>${fcPct(x.base_mean_pct, 2)}</td>
+        <td>${x.hit_rate == null ? '—' : fcPctF(x.hit_rate, 0)} / ${x.base_hit_rate == null ? '—' : fcPctF(x.base_hit_rate, 0)}</td><td>${fcNum(x.t, 2)}</td><td>${fcEsc(x.grade)}</td></tr>`).join('');
+    const ls = c.lever_study || {};
+    const lsRows = (ls.rows || []).map(x => x.status === 'fresh'
+        ? `<tr title="${fcEsc(x.definition)}"><td style="text-align:left">${fcEsc(x.lever)}</td><td>${x.n} / ${x.n_base}</td><td>${fcPct(x.mean_pct, 1)}</td><td>${fcPct(x.base_mean_pct, 1)}</td><td>${fcNum(x.t, 2)}</td><td>${fcEsc(x.grade)}</td></tr>`
+        : `<tr><td style="text-align:left">${fcEsc(x.lever)}</td><td colspan="5" class="fc-muted" style="text-align:left">missing: ${fcEsc(x.reason)}</td></tr>`).join('');
+    const head = miss ? `<div class="fc-kpis">${kpi('Chaos / Peace', '—', fcEsc(c.reason || c.status))}${kpi('Components', `0 of ${c.components_total ?? 12}`)}${kpi('Midterm', fcEsc(mid))}</div>`
+        : `<div class="fc-kpis">
+            ${kpi('Score', `<span style="color:${CH_COL[c.regime] || 'inherit'}">${fcNum(c.score, 0)}</span>`, `${fcEsc(c.regime)} · mean z ${fcNum(c.mean_z, 2)} · as of ${fcEsc(c.as_of)}`)}
+            ${kpi('Components', `${c.components_used} of ${c.components_total}`, Object.keys(c.components_missing || {}).length ? fcEsc(Object.keys(c.components_missing).length + ' missing, listed below') : 'all present')}
+            ${kpi('Midterm', fcEsc(mid), `election ${fcEsc(e.date)} · ${e.tracking ? 'tracking' : 'not tracking'} until ${fcEsc(e.track_until)}`)}
+            ${c.prev ? kpi('Previous day', fcNum(c.prev.score, 0), `${fcEsc(c.prev.regime)}${c.regime_changed ? ' · REGIME CHANGED' : ''}`, c.regime_changed ? 'fc-neg' : '') : ''}
+            ${(c.drivers || []).map(d => kpi(fcEsc(d.label), `${d.z > 0 ? '+' : ''}${fcNum(d.z, 1)}z`, `value ${fcNum(d.value, 3)} · largest moves`, fcCls(d.z))).join('')}
+        </div>
+        ${(c.history || []).length > 1 ? '<div class="fc-chart"><canvas id="fc14Chart"></canvas></div>' : ''}`;
+    el.innerHTML = `${head}
+        <div class="fc-note">${fcEsc(c.model || '')}</div>
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            <div><div class="fc-sub">COMPONENTS (${comps.filter(x => x.status === 'fresh').length} used) · z = distance from its own 3-year average</div>
+                <table class="fc-table"><tr><th style="text-align:left">Reading</th><th>Value</th><th>z</th><th>As of</th></tr>${compRows}</table></div>
+            <div><div class="fc-sub">LEVERS · outside the score · change over 4 weeks</div>
+                <table class="fc-table"><tr><th style="text-align:left">Lever</th><th>Level</th><th>4w change</th><th>As of</th></tr>${lvRows || '<tr><td colspan="4" class="fc-muted">none</td></tr>'}</table>
+                <div class="fc-note">${fcEsc(lv.note || '')}</div></div>
+        </div>
+        <div class="fc-sub" style="margin-top:2px">MIDTERM ELECTION WINDOWS · day 0 = first trading day on or after election day · mean return, other windows, up-rate (midterm / other), t</div>
+        ${esRows ? `<table class="fc-table"><tr><th style="text-align:left">Series</th><th>Window</th><th>n</th><th>Mean</th><th>Other windows</th><th>Up-rate</th><th>t</th><th>Grade</th></tr>${esRows}</table>`
+                 : missing(es)}
+        <div class="fc-note">${fcEsc(es.note || '')}</div>
+        <div class="fc-sub" style="margin-top:2px">LEVERS BEFORE ELECTIONS · 60 days to election day, election years vs the same dates in odd years (n = years) · hover for the definition</div>
+        ${lsRows ? `<table class="fc-table"><tr><th style="text-align:left">Lever</th><th>n / odd</th><th>Mean</th><th>Odd years</th><th>t</th><th>Grade</th></tr>${lsRows}</table>` : missing(ls)}
+        <div class="fc-note">${fcEsc(ls.note || '')} ${Object.keys(c.source_errors || {}).length ? '⚠ source issues: ' + fcEsc(Object.keys(c.source_errors).join(', ')) : ''}</div>`;
+    const h = c.history || [];
+    if (!miss && h.length > 1) fcChart('fc14Chart', { type: 'line', data: { labels: h.map(x => x[0]), datasets: [
+        { label: 'Chaos / Peace score', data: h.map(x => x[1]), borderColor: FC_COL.blue, pointRadius: 0, borderWidth: 2 }] },
+        options: { scales: { x: axis({ ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 6 } }), y: axis({ suggestedMin: -100, suggestedMax: 100 }) } } });
+}
+
 let FC_FULL = null;
 function toggleForecastFullscreen(id) {
     const back = document.getElementById('fcBackdrop');
@@ -740,7 +794,7 @@ function openForecastFaq(id) {
     const f = FC_FAQ[id];
     if (!f) return;
     document.getElementById('fcFaqTitle').textContent = f.title;
-    const sec = (h, items) => `<h4>${h}</h4><ul>${items.map(x => `<li>${x}</li>`).join('')}</ul>`;
+    const sec = (h, items) => items ? `<h4>${h}</h4><ul>${items.map(x => `<li>${x}</li>`).join('')}</ul>` : '';
     document.getElementById('fcFaqBody').innerHTML = `<p>${f.what}</p>` + sec('How to read it', f.read) + sec('How to trade with it', f.trade)
         + sec('How hedge funds & quant desks use it', f.funds) + sec('Caveats', f.caveats);
     document.getElementById('fcFaqModal').classList.remove('hidden');
@@ -754,6 +808,16 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', e => { if (e.target && e.target.id === 'fcFaqModal') closeForecastFaq(); });
 
 const FC_FAQ = {
+    fc14: { title: '14 · Chaos / Peace — FAQ',
+        what: 'One number for how stressed the market looks today compared with its own last three years. Twelve readings (volatility levels and their term structure, credit spreads, bond volatility, realised volatility, drawdown, policy uncertainty, equity put/call and short-sale share) are each turned into a z-score, averaged and scaled to -100 (peace) .. +100 (chaos). It describes what moved; it does not say why and it does not forecast.',
+        read: ['<b>Score and regime</b>: 50 × the mean z-score. Fixed cut-offs, not fitted to any outcome: up to -30 peace, -30..30 neutral, 30..60 stress, above 60 chaos.',
+               '<b>Components x of 12</b>: a reading with under 3 years of history, or no observation in the last 10 days, is left out and listed with its reason. The score always says how many it used. Equity put/call and SPY short-sale share start from the day they were first stored, so they are listed as missing until 3 years have accumulated.',
+               '<b>z</b>: how many standard deviations the latest value is from its own 3-year average, limited to ±3. Positive = more stress for every reading.',
+               '<b>Levers</b>: liquidity, reserves, the Strategic Petroleum Reserve and Treasury issuance and buybacks. They sit beside the score and are not part of it.',
+               '<b>Midterm tables</b>: how the S&amp;P 500 and the VIX behaved in windows around past midterm elections compared with all other windows of the same length. Only about 19 midterms exist (9 for the VIX), so the best grade is "thin". The lever table compares the 60 days before November elections in election years with the same dates in odd years.'],
+        caveats: ['The thresholds are conventions, not calibrated. A high score is a description of the readings, not a prediction.',
+                  'The policy-uncertainty series is noisy and is published every day including weekends; it enters as a 7-day mean.',
+                  'Election-window statistics come from few years, overlap each other and say nothing about why prices moved.'] },
     fc13: { title: '13 · Edge lab — FAQ',
         what: 'Runs the published edges (short-term reversal, post-earnings drift, turn of the month, trend, 12-month momentum, volatility premium, overnight vs intraday) against any ticker\'s own price history. For each one it says whether it is active now and whether it actually worked on that ticker. QUERY analyses any symbol without saving it; + TRACK adds it to the matrix.',
         read: ['<b>Matrix glyphs</b>: ▲ active and bullish, ▼ active and bearish, ● active with no direction, · inactive, – cannot be tested. Green/red/amber = the edge is active and measured on this ticker; grey = it is on but has no measured edge.',

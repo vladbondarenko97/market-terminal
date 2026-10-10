@@ -1417,6 +1417,10 @@ def api_help():
       <description>Weekly EIA stock and days-of-supply history behind Forecast Lab card 11, built from files the pipeline captured.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/chaos" format="json" source="stored">
+      <description>The Chaos / Peace block (Forecast Lab card 14) of the latest committed snapshot: score, regime, components, levers, election studies. 503 until a pipeline run has created the database; 404 when the snapshot has no chaos block.</description>
+      <parameters />
+    </endpoint>
   </group>
 
   <group name="Rule cards and console">
@@ -2423,9 +2427,9 @@ def _latest_forecast(conn):
     hit = data_cache.get(key)
     if hit is None:
         ctx = _v2lake.load_snapshot(conn, row["run_id"])
-        hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining")}
+        hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining"), "chaos": ctx.get("chaos")}
         data_cache.set(key, hit)
-    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"))
+    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"), chaos=hit.get("chaos"))
 
 
 @app.route('/api/forecast', methods=['GET'])
@@ -2456,8 +2460,28 @@ def api_forecast():
                     "data": fc.get(ticker), "consensus": (fc.get("consensus") or {}).get(ticker),
                     "positioning": fc.get("positioning"), "silver_fair_value": fc.get("silver_fair_value"),
                     "macro_regime": fc.get("macro_regime"), "source_errors": fc.get("source_errors"),
-                    "refining": fc.get("_refining"),
+                    "refining": fc.get("_refining"), "chaos": fc.get("chaos"),
                     "scorecard": score, "signals": signals})
+
+
+@app.route('/api/chaos', methods=['GET'])
+@guarded("Chaos")
+def api_chaos():
+    """The latest committed snapshot's Chaos / Peace block (Forecast Lab card 14)."""
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        run, fc = _latest_forecast(conn)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    if not run or not fc or not fc.get("chaos"):
+        return json_error("no Chaos / Peace data yet: run the pipeline", 404)
+    return jsonify({"status": "success", "run": run, "as_of": fc["chaos"].get("as_of"), "data": fc["chaos"]})
 
 
 _EIA_HISTORY_CACHE = {}
