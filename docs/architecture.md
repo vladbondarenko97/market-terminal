@@ -37,13 +37,18 @@ Both run on one Mac. Data lives in its own folder, never in git (`CME_Data/`, se
    │
    ├─ export    live runs only: append legacy ledgers (CSV + SQLite),               main_pipeline.export_ledgers()
    │            record the engine ticket, log gradable forecasts                     core/positions.py, core/forecast.py
+   ├─ narrative live runs with ASSISTANT_LOCAL_URL set: the local model writes the      core/narrative.py
+   │            Briefing (memo, note), a validator drops what the brief does not
+   │            support; stored as payloads + CME_Data/analyst_notes/; never in the snapshot
    ├─ render    HTML dashboard, XML, report text, CSV, charts, email.eml            core/render.py, visualize_volume.py
-   │            into CME_Data/<Mon-DD-YY>/
+   │            into CME_Data/<Mon-DD-YY>/ (the Briefing goes into the email only)
    └─ deliver   SMTP email, ntfy push, report + database upload                     send_email.py, upload_data.py
 ```
 
 The terminal reads the snapshot (`v2_latest_snapshot`), the SQLite tables and the CSV ledgers. See
 [API](api.md) for which routes read stored data and which call providers live.
+
+OpenBB is not used. Revisit it only if the Claude Code analyst keeps asking for data the console routes lack.
 
 ## Design rules
 
@@ -92,6 +97,8 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/metrics.py` | VMRI, GEX and walls, zero gamma, max pain, block flow, execution engine, model features |
 | `core/forecast.py` | Forecast Lab models (cards 1–9), forecast logging and grading |
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
+| `core/narrative.py` | The Briefing (analyst note): the brief built from a snapshot, the shared prompts, the validator (numbers, ids, causal and advice wording), the local and Claude Code drivers, the shapers the console reuses |
+| `options_whale/analyst_bin/mtq` | Read-only command the Claude Code analyst may run: one stored console source in-process, from an allowlist (`MTQ_SOURCES`) |
 | `core/chaos.py` | Chaos / Peace index: twelve stress z-scores, levers and the midterm studies (card 14), pure functions |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
 | `core/news.py` | Headline clustering (title normalisation, Jaccard de-duplication, recency windows, priority bucketing); pure functions |

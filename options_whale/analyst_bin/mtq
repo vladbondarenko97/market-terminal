@@ -1,0 +1,26 @@
+#!/bin/sh
+"exec" "${MTQ_PYTHON:-python3}" "$0" "$@"
+"""mtq <source> [query] [path] [last]: read one STORED terminal source, in-process, GET only (no server needed).
+
+The Claude Code analyst may run only this command. It reads the data folder named by PORTFOLIO_DATA_DIR.
+"""
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(ROOT), str(ROOT / "options_whale")]
+
+
+def main(argv):
+    from core.narrative import MTQ_SOURCES
+    if not argv or argv[0] not in MTQ_SOURCES:
+        print(f"error: source must be one of: {', '.join(MTQ_SOURCES)}", file=sys.stderr)
+        return 2
+    import api_router
+    import assistant
+    print(assistant.fetch_source(api_router.app, argv[0], *argv[1:4]))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

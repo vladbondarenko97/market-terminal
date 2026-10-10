@@ -388,6 +388,12 @@ exits outside the NYSE session. `--dry-run` prints the live states, `--test` sen
 
 ## Ask the terminal (console engine v3)
 
+Two sources came with the Briefing: `chaos` (the Chaos / Peace block as labelled rows: score, regime, previous day, the
+components used and missing, drivers, lever rows, the midterm event study with n and grade, the 60-day record) and
+`macro_news`, now dated rows (`when` in Chicago time, `source`, `official`, `sentiment`, `title`, `link`, newest first)
+with the run time and feed coverage. The brief carries one Chaos / Peace line. Both shapers are in `core/narrative.py`
+and are shared with the Briefing.
+
 The console answers questions typed in words with a model on this machine. `options_whale/assistant.py` holds
 everything server-side; v3 restored the October 3 version (branch `ai-terminal`, never merged), dropped the Claude
 Code engine and added the routing below.
@@ -397,7 +403,7 @@ Code engine and added the routing below.
   waiting Signal Watch rows, macro regime and the next CPI / Fed / OPEX dates, and what the brief leaves out. It has
   no clock and no live readings, so it only changes when the data does and a server with a prompt cache reads it
   once per run. The question carries the time. `GET /api/assistant/data?source=brief` shows it.
-- **Then routing.** For anything the brief does not show, the model calls `fetch_source` for one to three of the 25
+- **Then routing.** For anything the brief does not show, the model calls `fetch_source` for one to three of the 26
   read-only GET sources in `SOURCES` (Flask test client, unlisted parameters dropped). Large results come back as an
   outline that the model opens with `path=` and `last=`. Positions, Signal Watch, the Day Scanner, the Edge Lab,
   gamma and the VMRI history are pre-shaped (`SHAPERS`): plain contract names, local times, trades apart from cash

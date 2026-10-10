@@ -230,7 +230,7 @@ Places that read `.env` without importing `config`, and why:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ASSISTANT_LOCAL_URL` | `http://127.0.0.1:11434/v1` | OpenAI-compatible model server (Ollama, oMLX, LM Studio, llama.cpp) |
+| `ASSISTANT_LOCAL_URL` | `http://127.0.0.1:11434/v1` for the console | OpenAI-compatible model server (Ollama, oMLX, LM Studio, llama.cpp). **Unset or blank also turns off the pipeline's Briefing stage** (`narrative` is `skipped`; the console still falls back to the default); the stage runs only when you set it |
 | `ASSISTANT_LOCAL_MODEL` | `qwen3.6:35b-a3b` | Model that answers; the console's menu lists the server's other models |
 | `ASSISTANT_LOCAL_API_KEY` | `local` | Bearer token for the server, if it wants one |
 | `ASSISTANT_LOCAL_REASONING` | `auto` | `auto`, `none`, `low`, `medium`, `high`. `auto`: none to route or answer from the brief, low over fetched data |

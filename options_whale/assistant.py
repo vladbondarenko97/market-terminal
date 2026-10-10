@@ -21,12 +21,13 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 
 import requests
 from flask import Response, jsonify, request, stream_with_context
 
 from config import optional_env
+from core import narrative
 
 LOCAL_URL = optional_env("ASSISTANT_LOCAL_URL", default="http://127.0.0.1:11434/v1").rstrip("/")
 # Default for an Ollama setup (fastest of the Ollama models measured on an M4 Pro). A machine that runs another server,
@@ -69,7 +70,11 @@ SOURCES = OrderedDict([
     ("vmri_report", ("/vmri", (), "Latest VMRI breakdown with formula documentation.")),
     ("run_status", ("/api/run_status", (), "State of the pipeline run: stage, state (running, completed, interrupted), start and finish times, error.")),
     ("macro_calendar", ("/api/macro_calendar", (), "Upcoming economic events (CPI, FOMC, payrolls) with forecasts.")),
-    ("macro_news", ("/api/macro_news", (), "Recent macro headlines with sentiment scores.")),
+    ("macro_news", ("/api/macro_news", (), "Recent headlines of the latest run as dated rows, newest first: when (Chicago), source, official (yes/no), "
+        "sentiment score, title, link; plus how many feeds answered and the run time. Says what was published, never why markets moved.")),
+    ("chaos", ("/api/chaos", (), "Chaos / Peace index (card 14) of the latest run as labelled rows: score, regime, previous day, components "
+        "used and missing, the three largest drivers, liquidity and Treasury-supply lever rows with level and 4-week change, the midterm event "
+        "study (n and evidence grade), the stored 60-day record high and low, trading days to the midterm.")),
     ("macro_ledger", ("/api/macro_ledger_full", ("limit",), "Macro ledger rows per run: VMRI, DXY, yields, OAS, VIX, crude, gold, ratios. limit=N rows.")),
     ("institutional_history", ("/api/institutional_history", ("ticker", "limit"), "Per-run dark-pool and GEX history for SPY or SLV. limit=N rows.")),
     ("arbitrage_history", ("/api/arbitrage_history", ("limit",), "Physical silver vs spot premium history (eBay Silver Eagles). limit=N rows.")),
@@ -302,7 +307,24 @@ def _shape_vmri_history(obj, _params):
                                 for k in cols if k != "driver" and (have := [r for r in rows if isinstance(r.get(k), (int, float))])}}
 
 
-SHAPERS = {"vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+def _shape_chaos(obj, _params):
+    return {"as_of": obj.get("as_of"), "rows": [line for _label, line in narrative.chaos_rows(obj.get("data"))]}
+
+
+def _shape_news(obj, _params):
+    """The XML articles become dated rows through the same shaper the Briefing uses."""
+    root = obj.get("macro_news") or {}
+    arts = root.get("article") or []
+    arts = [arts] if isinstance(arts, dict) else arts
+    clusters = [{"published_at": datetime.strptime(a["published"], "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc).isoformat(),
+                 "title": a.get("title"), "official": a.get("official") == "true", "sentiment": a.get("sentiment"),
+                 "sources": [{"name": a.get("source"), "url": a.get("link")}]} for a in arts]
+    return {"run_time": root.get("as_of"), "status": root.get("status"),
+            "coverage": f"feeds answered {root.get('feeds_answered')} of {root.get('feeds_enabled')}",
+            "rows": [{k: r[k] for k in ("when", "source", "official", "sentiment", "title", "link")} for r in narrative.news_rows(clusters)]}
+
+
+SHAPERS = {"chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool
@@ -425,6 +447,10 @@ def brief(app):
         lines.append("Waiting: " + "; ".join(f"{r['asset']} {r['name']}" for r in sig if not r["fired"]))      # live readings: signal_watch
         lines.append(f"Macro: regime {macro.get('regime')}, 12-month recession odds {macro.get('recession_prob_12m', 0):.0%}, 10-year real yield "
                      f"{macro.get('real_yield_10y')}%, high-yield spread {macro.get('hy_oas')}%.")
+        ch = fc.get("chaos") or {}
+        if ch.get("score") is not None:
+            n = (ch.get("election") or {}).get("trading_days_to")
+            lines.append(f"Chaos / Peace (card 14): {ch['score']:+.1f}, regime {ch['regime']}" + (f", {n} trading days to the midterm" if n is not None else "") + ".")
         day = lambda d: datetime.fromisoformat(d).strftime("%A %B %-d, %Y") if d else "not known"
         lines += ["Next scheduled events:", f"- CPI inflation report: {day(nxt.get('cpi'))}", f"- Fed (FOMC) rate decision: {day(nxt.get('fomc'))}",
                   f"- Monthly options expiry (OPEX): {day(nxt.get('opex'))}"]

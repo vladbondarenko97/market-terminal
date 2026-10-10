@@ -94,6 +94,7 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 `fund_info`, `eia_weekly`, `refinery_capacity`, `tceq_rss`, `tceq_event`, `cboe_daily_stats`, `finra_short_volume`, `treasury_auctions`,
 `treasury_buybacks`, `rss_xml` (one raw RSS or Atom feed); CME `volume_workbook`,
 `inventory_workbook`, `*_workbook_invalid` and `*_rejected`; run output `daily_market_report` and `email_mime`;
+analyst note (source `narrative`) `narrative_prompt`, `narrative_json`, `narrative_text` (an analyst note is a payload and a run artifact, never part of a snapshot);
 imported files `ledger_csv`, the daily file name, `spy_wicks_1m`, `deployment_simulation`. The eBay OAuth token is
 never stored (kind `auth`). The FINRA daily file is 535 KB, so its capture keeps only the header line and the requested symbol's line, with coverage `{"rows_in_file": n, "kept": [symbol]}`; every other capture is the whole response. The `ohlcv` capture with `period=max` for ^GSPC and ^VIX (Chaos / Peace event study) is reused for 30 days.
 
@@ -147,6 +148,8 @@ CME_Data/
 ├── daily_volume_YYYYMMDD.xlsx        archived CME volume workbooks
 ├── silver_stocks_YYYY-MM-DD.xls      archived COMEX inventory workbooks
 ├── _rejected_downloads/              downloads that failed validation
+├── analyst_notes/                    <date>_<HHMM>_<engine>_<run id>.md: the Briefing of each run, one file per note (never in git)
+├── analyst_sandbox/                  empty working folder of the Claude Code analyst (`narrative --engine claude`)
 ├── backups/                          portfolio-<UTC time>.db copies made before import-history
 ├── macro_master_ledger.csv  ...      the five ledger CSVs
 └── Sep-29-26/                        one folder per Chicago day (see Daily folder)

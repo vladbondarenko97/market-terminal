@@ -39,7 +39,12 @@ def alphaflow_appendix():
     return text
 
 
-def build_email(ctx, report_text, manifest, daily_dir):
+def compose_plain(report_text, briefing=None):
+    """The plain-text body: the report, with the Briefing above it when there is one."""
+    return f"{briefing}\n\n{'=' * 60}\n\n{report_text}" if briefing else report_text
+
+
+def build_email(ctx, report_text, manifest, daily_dir, briefing=None):
     run = ctx["run"]
     msg = EmailMessage()
     msg["Subject"] = f"📈 Daily Market Report & Options Brief | {run['run_folder']}"
@@ -48,7 +53,7 @@ def build_email(ctx, report_text, manifest, daily_dir):
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = f"<{run['run_id']}@portfolio-dashboard.local>"
     msg["X-Run-ID"] = run["run_id"]
-    msg.set_content(report_text)
+    msg.set_content(compose_plain(report_text, briefing))
 
     body = [f"""<html><head><style>
       body {{ font-family: monospace; color: #333; }}
@@ -58,7 +63,7 @@ def build_email(ctx, report_text, manifest, daily_dir):
       img {{ max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; }}
       h3 {{ font-family: sans-serif; border-bottom: 2px solid #ddd; padding-bottom: 5px; }}
       .na {{ color: #888; }}
-    </style></head><body><pre>{html.escape(report_text)}</pre><hr><h2>Market Charts</h2>"""]
+    </style></head><body>{f"<pre>{html.escape(briefing)}</pre><hr>" if briefing else ""}<pre>{html.escape(report_text)}</pre><hr><h2>Market Charts</h2>"""]
     attach = []
     for fam in EMAIL_PAIRS:
         entries = [c for c in manifest if c["family"] == fam]
@@ -164,7 +169,7 @@ def ntfy_push(items):
     return out
 
 
-def ntfy_brief(ctx, report_text, dashboard_url=None, report_url=None):
+def ntfy_brief(ctx, report_text, dashboard_url=None, report_url=None, narrative=None):
     """The one daily push: ranked summary on the lock screen + the full report (same text as the email) as a dated
     .txt attachment + a Dashboard button. ntfy.sh keeps attachments for 3 hours; the email keeps the permanent copy."""
     import requests
@@ -173,7 +178,7 @@ def ntfy_brief(ctx, report_text, dashboard_url=None, report_url=None):
     if not NTFY_URL:
         return {"status": "skipped", "error": "NTFY_URL not configured"}
     try:
-        title, message, prio, tags = render.ntfy_summary(ctx)
+        title, message, prio, tags = render.ntfy_summary(ctx, narrative)
     except Exception as e:
         return {"status": "failed", "error": lake.redact(f"summary: {e}")[:200]}
     fname = report_filename(ctx)

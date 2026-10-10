@@ -497,14 +497,15 @@ def chaos_line(ctx):
             + (f"; top: {top}" if top else "") + when + ("; REGIME CHANGED" if c.get("regime_changed") else ""))
 
 
-def ntfy_summary(ctx):
+def ntfy_summary(ctx, narrative=None):
     """Lock-screen summary for the single daily push: (title, message, priority 1-5, tags). Plain text (phones do not
     render Markdown); ranked by what is actionable; well under ntfy's 4,096-byte message limit."""
     from zoneinfo import ZoneInfo
     run = ctx["run"]
     t = datetime.fromisoformat(run["generated_at"]).astimezone(ZoneInfo("America/Chicago"))
     P, vm, e, fc = ctx["prices"], ctx["vmri"], ctx["execution"], ctx.get("forecast") or {}
-    lines, prio, tags = [], 3, []
+    from core import narrative as _nar
+    lines, prio, tags = [x[:160] for x in _nar.push_lines(narrative)], 3, []     # the Briefing's tagline and focus lines lead
 
     def price(k):
         v = g(P, k, "value")
