@@ -171,7 +171,7 @@ flags, so `python main_pipeline.py --no-deliver` is an argument error (exit 2); 
 | `status` | none | Prints the last 10 runs, then the contents of `.v2_run_status.json`. A run row or a status file that says `running` while nothing holds the run lock is shown as `interrupted`. Opens the database read-only, so it needs a database that a run or import has already created. | 0; 1 no database | no |
 | `import-history` | `--no-backup` | Copies `portfolio.db` to `backups/` first (see [Backups and rollback](#backups-and-rollback)), then imports old files and tables into the lake. Idempotent. | 0; 1 the backup failed (nothing imported); 75 busy | yes |
 | `backfill-positions` | none | Records an engine ticket (a `v2_trade_signals` row) for every committed live run that has none (see [Engine positions](#engine-positions)). Idempotent. | 0; 1 no database; 75 busy | yes |
-| `narrative` | `--engine local\|claude` (local), `--model NAME` (local: `ASSISTANT_LOCAL_MODEL`; claude: `sonnet` or `haiku`, default `sonnet`), `--run RUN_ID` (latest), `--budget-usd X` (claude only, per call, default 0.25) | Writes the Briefing (analyst note) for a saved run, validates it, stores it and prints it with the kept and dropped counts (see [Briefing](#briefing-analyst-note)). Never delivers anything and never changes the snapshot. `--engine claude` is the only way Claude Code runs. | 0 done (also when the note came back `missing`); 1 no database, no run, or `ASSISTANT_LOCAL_URL` unset for the local engine; 2 bad model name | no |
+| `narrative` | `--engine local\|claude` (local), `--model NAME` (local: `ASSISTANT_LOCAL_MODEL`; claude: `sonnet` or `haiku`, default `sonnet`), `--run RUN_ID` (latest), `--budget-usd X` (claude only, per call, default 0.50) | Writes the Briefing (analyst note) for a saved run, validates it, stores it and prints it with the kept and dropped counts (see [Briefing](#briefing-analyst-note)). Never delivers anything and never changes the snapshot. `--engine claude` is the only way Claude Code runs. | 0 done (also when the note came back `missing`); 1 no database, no run, or `ASSISTANT_LOCAL_URL` unset for the local engine; 2 bad model name | no |
 | `ntfy-test` | none | Sends the latest run's phone brief (summary plus report attachment) to `NTFY_URL`. Does not upload. Prints the result. | 0 sent (also `sent_without_attachment`); 2 not sent (`skipped`, `failed` or `outcome_unknown`); 1 no database, no run or no saved report | no |
 
 ### `run` flags
@@ -561,8 +561,11 @@ moved or who moved it, and it recommends nothing.
 - **On demand**: `python main_pipeline.py narrative [--engine local|claude] [--model NAME] [--run RUN_ID]`. The Claude Code
   engine runs `claude -p` in an empty folder (`analyst_sandbox/` in the data folder) with the same prompts, one
   allowed tool (`Bash(mtq *)`, the read-only `options_whale/analyst_bin/mtq` command for stored console sources) and a
-  spend cap per call. It uses your Claude Code login (no API key) and spends Claude plan quota; run it by hand, a
-  pipeline run never starts it. The figures it looks up count as inputs for the validator; the tool output is stored in
+  spend cap per call. Claude Code lets read-only shell commands such as `ls` and `cat` through an allowlist by itself, so
+  the runner also installs its own check on every tool call (`mtq --guard`, a PreToolUse hook): anything that is not one
+  plain `mtq <source> ...` call is blocked, and your own Claude Code settings and plugins are not loaded
+  (`--setting-sources project`). It uses your Claude Code login (no API key) and spends Claude plan quota (a Haiku note
+  measured about $0.15 and 3.5 minutes on 2026-10-10); run it by hand, a pipeline run never starts it. The figures it looks up count as inputs for the validator; the tool output is stored in
   `narrative_prompt`. A local and a Claude note for the same run coexist.
 - **Where it is stored**: three payloads per note (`narrative_prompt`, `narrative_json`, `narrative_text`, see
   [Data](data.md)), listed in the run's `artifacts_json`, and a dated file `analyst_notes/<date>_<HHMM>_<engine>_<run id>.md`

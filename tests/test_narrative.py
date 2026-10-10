@@ -118,6 +118,8 @@ class Validator(unittest.TestCase):
         self.assertIn("unknown id S99", self.check("A headline [S99]"))
         self.assertIn("invalid citation", self.check("A reading [NARRATIVES 1]"))
         self.assertIsNone(self.check("A reading [D2][S1]"))
+        self.assertIsNone(self.check("Two readings [D2, S1]"))                    # several ids in one bracket (Claude writes this)
+        self.assertIn("unknown id S99", self.check("A reading [D2, S99]"))
 
     def test_causal_and_advice_wording(self):
         for bad in ("SPY fell because VIX rose", "Gold rose due to the dollar", "VIX fell as the dollar edged up", "Driven by oil, SPY rose",
@@ -209,8 +211,12 @@ class Claude(unittest.TestCase):
         self.assertEqual(a[a.index("--allowedTools") + 1], "Bash(mtq *)")
         self.assertEqual(a[a.index("--tools") + 1], "Bash")
         self.assertEqual(a.count("Bash"), 1)
-        dis = a[a.index("--disallowedTools") + 1:a.index("--permission-mode")]
+        dis = a[a.index("--disallowedTools") + 1:a.index("--setting-sources")]
         self.assertEqual(dis, ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"])
+        self.assertEqual(a[a.index("--setting-sources") + 1], "project")          # the operator's settings and plugins stay out
+        hook = json.loads(a[a.index("--settings") + 1])["hooks"]["PreToolUse"][0]
+        self.assertEqual(hook["matcher"], "")                                    # every tool call goes through the guard
+        self.assertTrue(hook["hooks"][0]["command"].endswith('mtq" --guard'))
         for flag, value in (("--permission-mode", "dontAsk"), ("--max-turns", "8"), ("--max-budget-usd", "0.1"), ("--effort", "low"),
                             ("--model", "haiku"), ("--system-prompt-snapshot", "off"), ("--output-format", "stream-json")):
             self.assertEqual(a[a.index(flag) + 1], value)
@@ -276,6 +282,25 @@ class Mtq(unittest.TestCase):
         self.assertTrue(p.stdout.strip())
 
 
+    def test_guard_rejects_bash_and_every_other_tool(self):
+        """Claude Code runs read-only commands such as `ls` despite an allowlist, so the runner's own hook decides."""
+        for cmd in ("ls -la", "cat ../.env", "mtq chaos; echo x > y", "mtq chaos | head", "mtq chaos && ls", "mtq $(ls)", "mtq `ls`",
+                    "mtq chaos > out.txt", "mtq darkpool", "mtq", "python3 -c 1", "mtq 'chaos'", "mtq chaos\nls", "mtq a b c d e f"):
+            self.assertFalse(N.bash_allowed(cmd), cmd)
+        for cmd in ("mtq chaos", "mtq forecast ticker=SPY data.trend", "mtq eia_history path=series.0 last=5", " mtq run_status "):
+            self.assertTrue(N.bash_allowed(cmd), cmd)
+
+        def guard(call):
+            return subprocess.run([str(N.BIN_DIR / "mtq"), "--guard"], input=json.dumps(call), capture_output=True, text=True,
+                                  env={**os.environ, "MTQ_PYTHON": sys.executable}, timeout=60)
+        self.assertEqual(guard({"tool_name": "Bash", "tool_input": {"command": "mtq chaos"}}).returncode, 0)
+        for call in ({"tool_name": "Bash", "tool_input": {"command": "ls"}}, {"tool_name": "Write", "tool_input": {"file_path": "x"}},
+                     {"tool_name": "Read", "tool_input": {"file_path": "/etc/hosts"}}, {}):
+            p = guard(call)
+            self.assertEqual(p.returncode, 2, call)
+            self.assertIn("blocked", p.stderr)
+
+
 class Console(unittest.TestCase):
     def test_chaos_and_news_shapers(self):
         import assistant as A
@@ -289,9 +314,8 @@ class Console(unittest.TestCase):
                               "article": [{"published": "2026-10-09 15:30 UTC", "title": "T1", "link": "https://e/1", "sentiment": "0.1", "source": "wire", "official": "false"},
                                           {"published": "2026-10-09 16:00 UTC", "title": "T2", "link": "https://e/2", "sentiment": "0.0", "source": "fed_press", "official": "true"}]}}
         news = A._shape_news(xml, {})
-        self.assertEqual([r["title"] for r in news["rows"]], ["T2", "T1"])         # newest first
-        self.assertEqual(news["rows"][0]["when"], "2026-10-09 11:00")             # Chicago time
-        self.assertTrue(news["rows"][0]["official"])
+        self.assertEqual(news["official_sources"], ["2026-10-09 11:00 fed_press (sentiment 0.0): T2"])      # Chicago time, its own list
+        self.assertEqual(news["other_sources"], ["2026-10-09 10:30 wire (sentiment 0.1): T1"])
         self.assertEqual(news["coverage"], "feeds answered 15 of 15")
 
 

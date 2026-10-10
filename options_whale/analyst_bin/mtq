@@ -11,7 +11,23 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "options_whale")]
 
 
+def guard():
+    """PreToolUse hook of the Claude Code analyst: exit 2 (blocked, with the reason) for any tool call that is not one plain mtq call."""
+    import json
+    from core.narrative import bash_allowed
+    try:
+        call = json.load(sys.stdin)
+    except ValueError:
+        call = {}
+    if call.get("tool_name") == "Bash" and bash_allowed((call.get("tool_input") or {}).get("command")):
+        return 0
+    print("blocked: the only command allowed is `mtq <source> [query] [path] [last]` with plain arguments", file=sys.stderr)
+    return 2
+
+
 def main(argv):
+    if argv == ["--guard"]:
+        return guard()
     from core.narrative import MTQ_SOURCES
     if not argv or argv[0] not in MTQ_SOURCES:
         print(f"error: source must be one of: {', '.join(MTQ_SOURCES)}", file=sys.stderr)

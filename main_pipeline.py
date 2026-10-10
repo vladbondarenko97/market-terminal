@@ -884,7 +884,7 @@ def main(argv=None):
                     help="local = the ASSISTANT_LOCAL_URL model (default); claude = Claude Code on demand (needs its login, no API key)")
     nv.add_argument("--model", help="local: model name (default ASSISTANT_LOCAL_MODEL); claude: sonnet (default) or haiku")
     nv.add_argument("--run", help="run id (default: the latest committed snapshot)")
-    nv.add_argument("--budget-usd", type=float, help="claude only: spend cap per call (default 0.25)")
+    nv.add_argument("--budget-usd", type=float, help="claude only: spend cap per call (default 0.50)")
     rs = sub.add_parser("resend", help="send a saved run's email.eml again (explicit; never automatic)")
     rs.add_argument("--run", help="run id to resend (default: the latest committed snapshot)")
     c = sub.add_parser("catalog", help="print the variable catalog + lineage (Markdown) for a run")

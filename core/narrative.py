@@ -21,7 +21,7 @@ CT = ZoneInfo("America/Chicago")
 NARRATIVE_VERSION = "narrative_v1"
 BIN_DIR = Path(__file__).resolve().parents[1] / "options_whale" / "analyst_bin"
 CLAUDE_MODELS = ("sonnet", "haiku")
-CLAUDE_BUDGET_USD = 0.25          # per call (two calls per note)
+CLAUDE_BUDGET_USD = 0.50          # cap per call (two calls per note); a Haiku note measured about $0.15 in total
 
 # Stored sources the Claude analyst may read through `mtq`. Every one reads the database or a ledger. /api/forecast also
 # grades past forecasts with free daily closes (Stored + Live in docs/api.md); no listed route costs money.
@@ -62,7 +62,8 @@ change would alter this view; a reading, not advice. "tagline": one short senten
 cites ids in square brackets like [D3] or [S2] and nothing else in brackets; "refs" lists the ids used."""
 
 CLI_NOTE = """You can look up more stored readings with the Bash tool, only through the read-only command `mtq <source> \
-[query] [path] [last]`, for example `mtq chaos` or `mtq forecast ticker=SPY data.trend`. Sources: """ + ", ".join(MTQ_SOURCES) + \
+[query] [path] [last]`, for example `mtq chaos` or `mtq forecast ticker=SPY data.trend`; one command per call, plain \
+arguments only (no quotes, pipes or other shell syntax). Sources: """ + ", ".join(MTQ_SOURCES) + \
     """. Numbers you copy from a lookup are allowed; cite the BRIEF ids as before. Do not run anything else."""
 
 
@@ -274,8 +275,9 @@ def check_bullet(text, inp):
     for m in _CITED.finditer(text):
         if m.group(1) not in inp["refs"]:
             return f"unknown id {m.group(1)}"
-    for m in _BRACKET.finditer(text):
-        if m.group(1) not in inp["refs"]:
+    for m in _BRACKET.finditer(text):               # [D3] or [D3, S2]; anything else in brackets is not a citation
+        ids = [x for x in re.split(r"[,;\s]+", m.group(1)) if x]
+        if not ids or any(i not in inp["refs"] for i in ids):
             return f"invalid citation [{m.group(1)}]"
     words = re.findall(r"[\w'.-]+", _ID.sub(" ", text).lower())
     for i, w in enumerate(words):                   # "X fell as Y rose" is a cause in disguise
@@ -422,7 +424,8 @@ def push_lines(result):
     if not result or result.get("status") != "fresh":
         return []
     n = result["note"]
-    return ([n["tagline"]] if n.get("tagline") else []) + [f"- {x}" for x in n.get("focus") or []]
+    plain = lambda x: re.sub(r"\s*\[[SD]\d+\]", "", x)          # ids resolve in the email; on a lock screen they are noise
+    return ([plain(n["tagline"])] if n.get("tagline") else []) + [f"- {plain(x)}" for x in n.get("focus") or []]
 
 
 # ============================================================ drivers
@@ -451,13 +454,26 @@ def chat_local(system, user, max_tokens, timeout):
     return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
 
 
-def claude_args(system, prompt, model="sonnet", budget_usd=CLAUDE_BUDGET_USD):
+_MTQ_COMMAND = re.compile(r"mtq( [A-Za-z0-9_=.,:-]+){1,4}")
+
+
+def bash_allowed(command):
+    """True only for one plain `mtq` call: a listed source and up to three simple arguments, no shell syntax of any kind.
+    Claude Code lets read-only commands such as `ls` and `cat` through an allowlist on its own, so the runner checks every
+    tool call itself with this (a PreToolUse hook: `mtq --guard`)."""
+    command = str(command or "").strip()
+    return bool(_MTQ_COMMAND.fullmatch(command)) and command.split()[1] in MTQ_SOURCES
+
+
+def claude_args(system, prompt, model="sonnet", budget_usd=CLAUDE_BUDGET_USD, python="python3"):
     """The whole `claude` command line. Pure, so a test can assert on it."""
     if model not in CLAUDE_MODELS:
         raise DriverError(f"--model must be one of {', '.join(CLAUDE_MODELS)}")
+    guard = {"hooks": {"PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": f'"{python}" "{BIN_DIR / "mtq"}" --guard'}]}]}}
     return ["claude", "-p", prompt, "--system-prompt", system + "\n\n" + CLI_NOTE, "--model", model, "--effort", "low",
             "--tools", "Bash", "--allowedTools", "Bash(mtq *)",
             "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch",
+            "--setting-sources", "project", "--settings", json.dumps(guard),      # the operator's own settings and plugins stay out
             "--permission-mode", "dontAsk", "--max-turns", "8", "--max-budget-usd", str(budget_usd),
             "--strict-mcp-config", "--disable-slash-commands", "--system-prompt-snapshot", "off",
             "--output-format", "stream-json", "--verbose"]
@@ -503,7 +519,7 @@ class ClaudeChat:
         sandbox = config.DATA_DIR / "analyst_sandbox"          # empty: no CLAUDE.md, no .mcp.json
         sandbox.mkdir(parents=True, exist_ok=True)
         try:
-            p = subprocess.run(claude_args(system, user, self.model, self.budget_usd), cwd=sandbox, capture_output=True, text=True,
+            p = subprocess.run(claude_args(system, user, self.model, self.budget_usd, sys.executable), cwd=sandbox, capture_output=True, text=True,
                                env=claude_env(os.environ, config.DATA_DIR, sys.executable), timeout=max(timeout, 1), stdin=subprocess.DEVNULL)
         except FileNotFoundError:
             raise DriverError("the claude CLI is not installed (not found on PATH)")

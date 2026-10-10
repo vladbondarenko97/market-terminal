@@ -1293,7 +1293,7 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/macro_news" format="xml" source="stored">
-      <description>Up to 30 de-duplicated headlines from the newest snapshot's news section (RSS feeds collected by the pipeline), newest first, each with a VADER sentiment score, its feed names and an official flag; the root carries the run time and how many feeds answered.</description>
+      <description>Up to 30 de-duplicated headlines from the newest snapshot's news section (RSS feeds collected by the pipeline), newest first and always including the newest 10 from official sources, each with a VADER sentiment score, its feed names and an official flag; the root carries the run time and how many feeds answered.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/macro_ledger_full" format="json" source="stored">
@@ -1712,7 +1712,10 @@ def api_macro_news():
     cov = news.get("coverage") or {}
     root = ET.Element("macro_news", timestamp=news.get("as_of") or "", as_of=news.get("as_of") or "", status=news["status"],
                       feeds_answered=str(cov.get("answered")), feeds_enabled=str(cov.get("enabled")), source="stored")
-    for c in news["clusters"][:30]:
+    official = [c for c in news["clusters"] if c.get("official")][:10]        # never crowded out by a busy wire day
+    shown = sorted(official + [c for c in news["clusters"] if not c.get("official")][:30 - len(official)],
+                   key=lambda c: c["published_at"], reverse=True)
+    for c in shown:
         pub = datetime.fromisoformat(c["published_at"]).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         ET.SubElement(root, "article", published=pub, title=c["title"], link=c["sources"][0]["url"], sentiment=str(c["sentiment"]),
                       source=",".join(dict.fromkeys(u["name"] for u in c["sources"])), official=str(bool(c.get("official"))).lower())

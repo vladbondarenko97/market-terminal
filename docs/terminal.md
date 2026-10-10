@@ -198,7 +198,7 @@ Fifteen panels in a three-column grid (two on medium screens, one on phones). Na
 | 9 | SLV INSTITUTIONAL FLOW | Sentiment, VWAP, Call Wall, Put Wall. Chart toggles: Sentiment, Block Vol, GEX Walls. | `/api/institutional_history?ticker=SLV&limit=100` | stored (`equities_darkpool_gex_ledger`) |
 | 10 | SLV DEALER MAP (GEX) | Same as panel 6 for SLV. SCAN button. | `/api/gex?ticker=SLV` | live |
 | 11 | CATALYST CALENDAR | Upcoming macro events with date, time, impact, forecast and previous. REFRESH. | `/api/macro_calendar` | stored (`upcoming_macro_events` in the newest `tactical_ruling.txt`) |
-| 12 | MACRO NEWS FEED | Up to 30 de-duplicated headlines from the latest run, each tagged BULLISH, NEUTRAL or BEARISH from a sentiment score (beyond plus or minus 0.05), with the feeds that carried it. A line above them shows how many feeds answered, the run time and the status. REFRESH. | `/api/macro_news` | stored (`news` in the latest snapshot) |
+| 12 | MACRO NEWS FEED | Up to 30 de-duplicated headlines from the latest run (the newest 10 from official sources always included), each tagged BULLISH, NEUTRAL or BEARISH from a sentiment score (beyond plus or minus 0.05), with the feeds that carried it. A line above them shows how many feeds answered, the run time and the status. REFRESH. | `/api/macro_news` | stored (`news` in the latest snapshot) |
 | 13 | FED LIQUIDITY PLUMBING | Reverse Repo ($B) and Fed Balance Sheet ($B), with a chart. | `/api/macro_ledger_full?limit=200` | stored |
 | 14 | SHANGHAI-COMEX ARB | SHFE Silver, COMEX Silver, Premium, with a chart. | `/api/macro_ledger_full?limit=200` | stored |
 | 15 | ENGINE POSITIONS | Execution-engine tickets and how they moved. See [Engine Positions](#engine-positions). | `/api/positions` | stored and live |
@@ -395,8 +395,8 @@ exits outside the NYSE session. `--dry-run` prints the live states, `--test` sen
 
 Two sources came with the Briefing: `chaos` (the Chaos / Peace block as labelled rows: score, regime, previous day, the
 components used and missing, drivers, lever rows, the midterm event study with n and grade, the 60-day record) and
-`macro_news`, now dated rows (`when` in Chicago time, `source`, `official`, `sentiment`, `title`, `link`, newest first)
-with the run time and feed coverage. The brief carries one Chaos / Peace line. Both shapers are in `core/narrative.py`
+`macro_news`, now dated lines (Chicago time, feed, sentiment, title; newest first) in two lists, `official_sources` and
+`other_sources`, with the run time and feed coverage. The brief carries one Chaos / Peace line. Both shapers are in `core/narrative.py`
 and are shared with the Briefing.
 
 The console answers questions typed in words with a model on this machine. `options_whale/assistant.py` holds
@@ -428,6 +428,10 @@ Code engine and added the routing below.
 - **Measured here (M4 Pro, 48 GB, 2026-10-09), 17 graded questions** (5 answerable from the brief, 5 needing one
   lookup, 7 multi-step): Ollama `qwen3.6:35b-a3b` with reasoning off 14-15/17, median 5-8 s; reasoning low 17/17,
   median 20 s. The old default `qwen3.8:27b-mlx` on Ollama read prompts at about 90 tokens/s: 96 s for the
-  engine-position question. oMLX has not been graded yet: it was busy with an agent run during testing.
+  engine-position question.
+- **Graded again 2026-10-10 with `scripts/console_eval.py`** (now 22 questions: the 17 above plus 4 on Chaos / Peace and 1
+  on the stored headlines), on a copy of the data, oMLX `Qwen3.5-9B-MLX-8bit` with reasoning off: 16/17 on the original
+  questions both before and after cards 14 and the news section were added (the same multi-step silver question fails),
+  5/5 on the new ones, median about 15 s. Run it against a running terminal: `--base http://127.0.0.1:<port>`.
 - **Conversations** live in server memory (the last 40; 8 turns each) and are lost on restart. "New chat" starts one.
 - The server has no login. Anyone who can reach the port can ask questions. Keep the port on a private network.

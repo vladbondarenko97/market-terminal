@@ -70,8 +70,9 @@ SOURCES = OrderedDict([
     ("vmri_report", ("/vmri", (), "Latest VMRI breakdown with formula documentation.")),
     ("run_status", ("/api/run_status", (), "State of the pipeline run: stage, state (running, completed, interrupted), start and finish times, error.")),
     ("macro_calendar", ("/api/macro_calendar", (), "Upcoming economic events (CPI, FOMC, payrolls) with forecasts.")),
-    ("macro_news", ("/api/macro_news", (), "Recent headlines of the latest run as dated rows, newest first: when (Chicago), source, official (yes/no), "
-        "sentiment score, title, link; plus how many feeds answered and the run time. Says what was published, never why markets moved.")),
+    ("macro_news", ("/api/macro_news", (), "Recent headlines of the latest run as dated lines, newest first, in two lists: official_sources (Fed, BEA, SEC, EIA) and "
+        "other_sources; each line has the time (Chicago), the feed, a sentiment score and the title. Plus how many feeds answered and the "
+        "run time. Says what was published, never why markets moved.")),
     ("chaos", ("/api/chaos", (), "Chaos / Peace index (card 14) of the latest run as labelled rows: score, regime, previous day, components "
         "used and missing, the three largest drivers, liquidity and Treasury-supply lever rows with level and 4-week change, the midterm event "
         "study (n and evidence grade), the stored 60-day record high and low, trading days to the midterm.")),
@@ -319,9 +320,12 @@ def _shape_news(obj, _params):
     clusters = [{"published_at": datetime.strptime(a["published"], "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc).isoformat(),
                  "title": a.get("title"), "official": a.get("official") == "true", "sentiment": a.get("sentiment"),
                  "sources": [{"name": a.get("source"), "url": a.get("link")}]} for a in arts]
+    rows = narrative.news_rows(clusters)
+    line = lambda r: f"{r['when']} {r['source']} (sentiment {r['sentiment']}): {r['title']}"       # one short line each, so all of them fit
     return {"run_time": root.get("as_of"), "status": root.get("status"),
             "coverage": f"feeds answered {root.get('feeds_answered')} of {root.get('feeds_enabled')}",
-            "rows": [{k: r[k] for k in ("when", "source", "official", "sentiment", "title", "link")} for r in narrative.news_rows(clusters)]}
+            "official_sources": [line(r) for r in rows if r["official"]] or "no headline from an official source (Fed, BEA, SEC, EIA) in this run",
+            "other_sources": [line(r) for r in rows if not r["official"]]}
 
 
 SHAPERS = {"chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
