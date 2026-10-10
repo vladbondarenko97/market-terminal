@@ -295,8 +295,11 @@ def _shape_vmri_history(obj, _params):
     rows = [{"date": d[:10], **{k: v[i] for k, v in cols.items() if v and i < len(v)}} for i, d in enumerate(labels)]
     weekly = {datetime.strptime(r["date"], "%Y-%m-%d").strftime("%G-%V"): r for r in rows}
     return {"note": f"The record starts {rows[0]['date']}: there is no VMRI reading before that date, so say so if asked about "
-                    "an earlier one. One row per week (its last reading), oldest first; the last row is the latest reading.",
-            "first_reading": rows[0], "rows": list(weekly.values())}
+                    "an earlier one. One row per week (its last reading), oldest first; the last row is the latest reading. Highs and lows "
+                    "over every reading are in record_low_high: use those, not the weekly rows, for an extreme.",
+            "first_reading": rows[0], "rows": list(weekly.values()),
+            "record_low_high": {k: [{"value": r[k], "date": r["date"]} for r in (min(have, key=lambda r: r[k]), max(have, key=lambda r: r[k]))]
+                                for k in cols if k != "driver" and (have := [r for r in rows if isinstance(r.get(k), (int, float))])}}
 
 
 SHAPERS = {"vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
@@ -462,6 +465,12 @@ Never recompute a source's formula yourself.
 - Copy contract symbols, tickers and numbers exactly as the data gives them.
 - Every number you state must come from the BRIEF or from a result you fetched in this conversation. Never use a \
 number from memory and never invent one. If the data does not contain what is needed, say so plainly.
+- Name each figure the way its source does. An option's implied volatility (atm_iv, live_iv) is not the VIX: the \
+VIX comes only from war_room or vmri_history. A gap between two volatilities is in volatility points (9.9% minus \
+5.6% is 4.3 points), never basis points.
+- The data shows what happened, not who caused it. Never name a cause or an actor (the Fed, dealers, a \
+government, institutions) unless a fetched source measures it. Asked whether someone is causing something that no \
+source measures, say first that the terminal cannot show that, then report what the data does show.
 - All times are the user's local time. "Engine positions" means the tickets the execution engine issued. Asked about \
 them, lead with the newest ticket: time, contract, entry mid, score and bias, size. Then list the earlier ones, newest first.
 - Sources are read-only. You cannot trade, start a run, browse the web or read files.

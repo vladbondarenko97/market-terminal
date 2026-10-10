@@ -636,6 +636,7 @@ class T10Assistant(unittest.TestCase):
         self.assertIn("starts 2026-03-19", out["note"])
         self.assertEqual(out["first_reading"], {"date": "2026-03-19", "vmri": 250.0, "driver": "a", "vix": 24.0})
         self.assertEqual([(r["date"], r["vmri"]) for r in out["rows"]], [("2026-03-20", 240.0), ("2026-03-27", 220.0)])
+        self.assertEqual(out["record_low_high"]["vix"], [{"value": 21.0, "date": "2026-03-27"}, {"value": 24.0, "date": "2026-03-19"}])
         self.assertEqual(A._clean_answer("<tool_call>\n<function=fetch_source>\n</function>\n</tool_call>"), "")
         self.assertEqual(A._clean_answer("VMRI fell.\n<tool_call><function=calc>"), "VMRI fell.")
 
