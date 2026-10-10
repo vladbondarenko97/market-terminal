@@ -81,6 +81,11 @@ class SgeRowRule(unittest.TestCase):
             {"date": "2026-10-02", "cny_per_kg": 95.0, "session": "morning"},
             {"date": "2026-10-03", "cny_per_kg": 96.0, "session": "morning"}])
 
+    def test_an_unreadable_row_is_skipped_and_the_rest_kept(self):
+        df = pd.DataFrame({"交易时间": ["2026-10-01", "not a date", "2026-10-03"],
+                           "晚盘价": [100.0, 101.0, "-"], "早盘价": [90.0, 91.0, 96.0]})
+        self.assertEqual(sources.sge_fixes(df), [{"date": "2026-10-01", "cny_per_kg": 100.0, "session": "evening"}])
+
 
 class ShanghaiRoute(ApiCase):
     def test_no_database(self):

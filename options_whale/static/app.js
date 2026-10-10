@@ -1623,7 +1623,9 @@ function arbRenderBook(book) {
         ppSet('arbBookRun', '');
         return;
     }
-    ppSet('arbBookTitle', `Dealer book · ${book.count ?? book.listings.length} listings · ${book.in_stock ?? DASH} in stock`);
+    const short = isNum(book.prev_count) && book.count < book.prev_count;     // a listing that did not answer can move the cheapest price
+    ppSet('arbBookTitle', `Dealer book · ${book.count ?? book.listings.length} listings${short ? ` (${book.prev_count} in the previous run)` : ''} · ${book.in_stock ?? DASH} in stock`);
+    document.getElementById('arbBookTitle').className = short ? 'text-amber-400' : '';
     ppSet('arbBookRun', `run ${arbWhen(book.run_at)}`);
     const table = document.createElement('table');
     const head = table.createTHead().insertRow();
@@ -1641,7 +1643,7 @@ function arbRenderBook(book) {
             first.appendChild(a);
         } else first.textContent = name;
         const sold = v => (isNum(v) ? (v > 0 ? `+${v}` : String(v)) : DASH);
-        const out = l.status && l.status !== 'IN_STOCK';
+        const out = l.status === 'OUT_OF_STOCK';
         const cells = [fmt(l.total_cost, 2, '$'), arbSigned(toNum(l.premium_pct), 2, '%'),
             out ? String(l.status).toLowerCase().replace(/_/g, ' ') : (l.available_qty ?? DASH), sold(toNum(l.sold_prev)), sold(toNum(l.sold_7d))];
         cells.forEach((text, j) => {
@@ -2198,7 +2200,7 @@ function slvSessions(d) {
     const out = []; let prev = null;
     (d.labels || []).forEach((lab, i) => {
         const key = { sess: at('dp_session', i), total: toNum(at('dp_total_vol', i)), vwap: toNum(at('dp_vwap', i)) };
-        if (key.total === null) { prev = null; return; }
+        if (key.total === null) return;
         const buy = toNum(at('dp_bull_vol', i)), sell = toNum(at('dp_bear_vol', i));
         const e = { label: key.sess || String(lab).slice(0, 10), buy, sell, above: toNum(at('dp_above_vwap_vol', i)), below: toNum(at('dp_below_vwap_vol', i)),
             total: key.total, method: at('dp_method', i), bias: at('dp_sentiment', i) };
@@ -2763,7 +2765,8 @@ function shRender(data) {
     let text, color = 'text-zinc-600';
     if (ok) {
         const h = st.history;
-        text = `${h ? `${h.n} fixes since ${formatDate(h.first_label)} · ` : ''}each fix against the SI=F and USD/CNY close of the same date, which are set hours apart, so one-day swings are noisy · 13% VAT stripped is an assumption · run ${arbWhen(data.run_at)}`;
+        const held = data.dated.series && data.dated.series.dates ? data.dated.series.dates.length : null;
+        text = `${h ? `${h.n} fixes since ${formatDate(h.first_label)}${held && held < h.n ? ` (the chart holds the last ${held})` : ''} · ` : ''}each fix against the SI=F and USD/CNY close of the same date, which are set hours apart, so one-day swings are noisy · 13% VAT stripped is an assumption · run ${arbWhen(data.run_at)}`;
     } else if (r.src) {
         const n = shDaysBefore(r.date, data.run_at);
         text = `Stored reading: the newest Shanghai fix against this run's COMEX quote, ${n === null ? '' : n + ' days apart, '}so not a same-day spread. 13% VAT stripped is an assumption.`;

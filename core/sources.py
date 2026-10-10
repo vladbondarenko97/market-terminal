@@ -302,10 +302,7 @@ def sge_silver_benchmark(s):
         return df
     df, pid = s.fetch("akshare", {"fn": "spot_silver_benchmark_sge"}, call, kind="sge_benchmark", fmt="csv",
                       capture=lambda d: (d.to_csv(index=False).encode(), None, {"rows": len(d)}))
-    try:
-        fixes = sge_fixes(df)
-    except (ValueError, TypeError):     # an unreadable old row must not cost the latest reading
-        fixes = []
+    fixes = sge_fixes(df)
     latest = df.iloc[-1]
     price, session = _sge_row_price(latest)
     return {"value": price, "session": session, "date": str(latest[df.columns[0]]),
@@ -322,12 +319,16 @@ def _sge_row_price(row):
 
 
 def sge_fixes(df):
-    """Every row of the benchmark frame as {"date", "cny_per_kg", "session"} (a row with no price is skipped)."""
+    """Every row of the benchmark frame as {"date", "cny_per_kg", "session"} (a row with no price or no readable date is skipped)."""
     out = []
     for _, row in df.iterrows():
-        price, session = _sge_row_price(row)
-        if price is not None:
-            out.append({"date": str(pd.Timestamp(row[df.columns[0]]).date()), "cny_per_kg": price, "session": session})
+        try:
+            price, session = _sge_row_price(row)
+            date = str(pd.Timestamp(row[df.columns[0]]).date())
+        except (ValueError, TypeError):     # one unreadable row is skipped; it must not cost the rest of the history
+            continue
+        if price is not None and date != "NaT":
+            out.append({"date": date, "cny_per_kg": price, "session": session})
     return out
 
 

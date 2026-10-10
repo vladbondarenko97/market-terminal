@@ -1081,11 +1081,14 @@ class ArbitrageHistory(ApiCase):
         runs = [eagle_run("2026-10-01T12:00:00+00:00", a=100, b=50, c=None, d=10),
                 eagle_run("2026-10-03T12:00:00+00:00", a=110, b=40, c=5, d=20),       # b went down, c had no count
                 eagle_run("2026-10-09T12:00:00+00:00", a=130, c=9, d=25, e=3)]        # b gone, e new
+        runs[-1]["listings"]["e"]["status"] = "LIMITED_STOCK"                         # still for sale
+        runs[-1]["listings"]["d"]["status"] = "OUT_OF_STOCK"
         book, flow = api_router.build_eagle_book(runs)
         by_id = {l["item_id"]: l for l in book["listings"]}
         self.assertEqual({k: (v["sold_prev"], v["sold_7d"]) for k, v in by_id.items()},
                          {"a": (20, 30), "c": (4, None), "d": (5, 15), "e": (None, None)})
-        self.assertEqual((book["count"], book["in_stock"], book["cheapest_pct"]), (4, 4, 10.0))
+        self.assertEqual((book["count"], book["in_stock"], book["cheapest_pct"]), (4, 3, 10.0))
+        self.assertEqual(book["prev_count"], 4)                                       # the run before had a, b, c, d
         self.assertEqual(flow["units_prev"], 29)
         # the 7-day reference is the 10-01 run (8 days back; the 10-03 run is only 6 days back)
         self.assertEqual(flow["rate_7d"]["ref_run_at"], "2026-10-01 07:00")

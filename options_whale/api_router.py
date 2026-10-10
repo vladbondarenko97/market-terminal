@@ -414,7 +414,8 @@ def build_eagle_book(runs):
     listings.sort(key=lambda l: (l["total_cost"] is None, l["total_cost"] or 0))
     premiums = [l["premium_pct"] for l in listings if l["premium_pct"] is not None]
     book = {"run_at": stamp(newest), "count": len(listings),
-            "in_stock": sum(l["status"] == "IN_STOCK" for l in listings),
+            "in_stock": sum(l["status"] in ("IN_STOCK", "LIMITED_STOCK") for l in listings),
+            "prev_count": len(prev["listings"]) if prev else None,
             "cheapest_pct": min(premiums) if premiums else None,
             "median_pct": _rnd(np.median(premiums)) if premiums else None, "listings": listings}
     if prev is None:
@@ -447,7 +448,9 @@ def _load_eagle_runs(conn):
         """SELECT o.run_id, o.entity, o.observed_at, o.value_json FROM v2_observations o
            JOIN v2_runs r ON r.run_id = o.run_id
            WHERE o.metric_id = 'ebay.listing' AND r.mode = 'live'
-             AND r.status IN ('committed', 'completed', 'completed_with_warnings')""").fetchall()
+             AND r.status IN ('committed', 'completed', 'completed_with_warnings')
+             AND o.observed_at >= (SELECT datetime(MAX(observed_at), '-37 days') FROM v2_observations
+                                   WHERE metric_id = 'ebay.listing')""").fetchall()
     runs = {}
     for r in rows:
         try:
@@ -2123,7 +2126,8 @@ def api_macro_news():
 # ==========================================
 
 def _utc_to_local_label(stamp):
-    """A stored UTC timestamp as the ledger's 'YYYY-MM-DD HH:MM' in the configured local zone (None if unparseable)."""
+    """A stored UTC timestamp as the ledger's 'YYYY-MM-DD HH:MM' in the configured local zone (None if unparseable).
+    Must produce the same string as the `stamp` in core/render.py `ledger_rows()`: rows are matched to runs by it."""
     try:
         moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
     except ValueError:
