@@ -628,6 +628,17 @@ class T10Assistant(unittest.TestCase):
         self.assertNotIn("now", sent[0]["messages"][1]["content"].lower())                  # the clock is not in the cached prefix
         self.assertIn("(Asked ", sent[0]["messages"][-1]["content"])
 
+    def test_vmri_history_is_dated_rows_and_a_written_out_tool_call_is_not_an_answer(self):
+        import assistant as A
+        labels = ["2026-03-19 18:28", "2026-03-20 08:31", "2026-03-27 08:31", "2026-03-27 14:45"]
+        out = A._shape_vmri_history({"labels": labels, "scores": [250.0, 240.0, 230.0, 220.0], "primary_driver": list("abcd"),
+                                     "context": {"vix": [24.0, 23.0, 22.0, 21.0]}}, {})
+        self.assertIn("starts 2026-03-19", out["note"])
+        self.assertEqual(out["first_reading"], {"date": "2026-03-19", "vmri": 250.0, "driver": "a", "vix": 24.0})
+        self.assertEqual([(r["date"], r["vmri"]) for r in out["rows"]], [("2026-03-20", 240.0), ("2026-03-27", 220.0)])
+        self.assertEqual(A._clean_answer("<tool_call>\n<function=fetch_source>\n</function>\n</tool_call>"), "")
+        self.assertEqual(A._clean_answer("VMRI fell.\n<tool_call><function=calc>"), "VMRI fell.")
+
     def test_calc_is_arithmetic_only(self):
         sys.path.insert(0, str(ROOT / "options_whale"))
         import assistant as A

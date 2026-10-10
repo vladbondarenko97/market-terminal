@@ -393,15 +393,17 @@ Code engine and added the routing below.
   once per run. The question carries the time. `GET /api/assistant/data?source=brief` shows it.
 - **Then routing.** For anything the brief does not show, the model calls `fetch_source` for one to three of the 25
   read-only GET sources in `SOURCES` (Flask test client, unlisted parameters dropped). Large results come back as an
-  outline that the model opens with `path=` and `last=`. Positions, Signal Watch, the Day Scanner, the Edge Lab and
-  gamma are pre-shaped (`SHAPERS`): plain contract names, local times, trades apart from cash tickets, gamma
-  distances already worked out. `calc` does the arithmetic. `/run` and the eBay scrape are not sources.
+  outline that the model opens with `path=` and `last=`. Positions, Signal Watch, the Day Scanner, the Edge Lab,
+  gamma and the VMRI history are pre-shaped (`SHAPERS`): plain contract names, local times, trades apart from cash
+  tickets, gamma distances already worked out, the VMRI history as one dated row per week with the date the record
+  starts. `calc` does the arithmetic. `/run` and the eBay scrape are not sources.
 - **Reasoning.** `ASSISTANT_LOCAL_REASONING=auto` (default): no deliberate reasoning to answer from the brief or to
   pick sources, brief reasoning once data has been fetched. Sent both as `reasoning_effort` and as the chat
   template's `enable_thinking`, so oMLX and vLLM-style servers really switch it off.
 - **Limits.** 8 rounds and 16 distinct calls per question (a repeated call is refused), 2,000 tokens per model call,
   `ASSISTANT_MAX_SECONDS` (default 150) per question, `ASSISTANT_MAX_CHARS` (default 12,000) per source. An empty
-  reply (a model server short of memory can send one) is asked again once.
+  reply (a model server short of memory can send one) is asked again once. After the last round the model is told
+  no lookups are left, and a tool call written out as text is never shown as the answer.
 - **Servers.** Default Ollama at `http://127.0.0.1:11434/v1` with `qwen3.6:35b-a3b`; the brief is built when
   the page opens. Keeping a model loaded is the model server's job (its idle timeout), not the console's. This Mac
   points `.env` at oMLX on port 8000 (`Qwen3.5-9B-MLX-8bit`, reasoning off, `ASSISTANT_MAX_CHARS=8000`). Do not keep a large Ollama model loaded next to oMLX: together they exceed the GPU's

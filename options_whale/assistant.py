@@ -15,6 +15,7 @@ import ast
 import json
 import math
 import operator
+import re
 import threading
 import time
 import uuid
@@ -63,7 +64,8 @@ SOURCES = OrderedDict([
         "VMRI macro risk score: live DXY, 10Y yield, HY OAS, VIX, the score, its tier, formula factors and recorded "
         "history stats. Add shifts to run a what-if (dxy_shift in points, tnx_shift and oas_shift in percentage points, "
         "vix_shift_pct in percent).")),
-    ("vmri_history", ("/api/vmri_history", (), "Recorded VMRI scores over time with DXY, VIX, yields and moving averages.")),
+    ("vmri_history", ("/api/vmri_history", (), "Recorded VMRI score week by week with its driver, DXY, VIX, 10-year yield, credit spread (oas), gold and the "
+        "gold/silver ratio (gsr). Says when the record starts. Use it for then-versus-now comparisons.")),
     ("vmri_report", ("/vmri", (), "Latest VMRI breakdown with formula documentation.")),
     ("run_status", ("/api/run_status", (), "State of the pipeline run: stage, state (running, completed, interrupted), start and finish times, error.")),
     ("macro_calendar", ("/api/macro_calendar", (), "Upcoming economic events (CPI, FOMC, payrolls) with forecasts.")),
@@ -284,7 +286,20 @@ def _shape_gex(obj, _params):
     return out
 
 
-SHAPERS = {"gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+def _shape_vmri_history(obj, _params):
+    """Parallel arrays become dated rows, one per week (its last reading), so then-versus-now is one lookup."""
+    labels = obj.get("labels") or []
+    if not labels:
+        return obj
+    cols = {"vmri": obj.get("scores"), "driver": obj.get("primary_driver"), **(obj.get("context") or {})}
+    rows = [{"date": d[:10], **{k: v[i] for k, v in cols.items() if v and i < len(v)}} for i, d in enumerate(labels)]
+    weekly = {datetime.strptime(r["date"], "%Y-%m-%d").strftime("%G-%V"): r for r in rows}
+    return {"note": f"The record starts {rows[0]['date']}: there is no VMRI reading before that date, so say so if asked about "
+                    "an earlier one. One row per week (its last reading), oldest first; the last row is the latest reading.",
+            "first_reading": rows[0], "rows": list(weekly.values())}
+
+
+SHAPERS = {"vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool
@@ -499,10 +514,10 @@ def _conversation(cid):
 
 
 def _clean_answer(text):
-    """Some local models leak reasoning into the answer; keep what follows the last closing think tag."""
+    """Some local models leak reasoning or a written-out tool call into the answer; neither is an answer."""
     if "</think>" in text:
         text = text.rsplit("</think>", 1)[1]
-    return text.replace("<think>", "").strip()
+    return re.sub(r"<tool_call>.*?(</tool_call>|$)", "", text.replace("<think>", ""), flags=re.S).strip()
 
 
 # ---------------------------------------------------------------- the engine
@@ -520,6 +535,8 @@ def run_local(app, conv, question, model, reasoning=None):
                 "stream_options": {"include_usage": True}}
         if _round < MAX_ROUNDS:
             body["tools"] = LOCAL_TOOLS
+        elif messages[-1]["role"] == "tool":               # out of rounds: say so, or the model writes one more call as text
+            messages.append({"role": "user", "content": "No lookups are left. Answer now in plain words from the results above."})
         effort = reasoning if reasoning in ("auto", "none", "low", "medium", "high") else LOCAL_REASONING
         if effort == "auto":
             effort = "none" if _round == 0 else "low"
