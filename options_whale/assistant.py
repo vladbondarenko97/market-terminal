@@ -86,8 +86,8 @@ SOURCES = OrderedDict([
         "prices, evidence, and the live-watch paper positions (SPY call spreads) with their value and exit date.")),
     ("edge_lab", ("/api/edges", ("symbol",),
         "Card 13, Edge Lab: published edges (reversal, earnings drift, turn of month, pre-Fed, trend, momentum, volatility "
-        "premium, overnight, factors) tested on a ticker's own history. No parameter: the tracked tickers in brief. "
-        "symbol=XYZ: the full table for any ticker.")),
+        "premium, overnight, factors) tested on a ticker's own history. It works for ANY ticker, tracked or not: when the "
+        "question names a ticker, always pass query symbol=XYZ to get its full table. Without a symbol it only lists the tracked tickers.")),
     ("options_scan_morning", ("/api/morning", ("ticker",), "Options flow scan for a ticker, morning preset. Slow (10-30 s): only when asked for an options scan.")),
     ("options_scan_evening", ("/api/evening", ("ticker",), "Options flow scan for a ticker, evening preset. Slow (10-30 s).")),
     ("options_whale_hunt", ("/api/custom", ("ticker", "min_vol_oi", "max_dte"),
@@ -266,7 +266,8 @@ def _shape_edges(obj, params):
     if obj.get("query"):
         return table(obj["query"], True)
     return {"as_of": obj.get("as_of"), "tracked": obj.get("symbols"),
-            "note": "tracked tickers show only edges that are active or have tested evidence; call again with symbol=XYZ for the full table",
+            "note": "This is only the tracked list. Any other ticker can be analysed too: call edge_lab again with query symbol=XYZ. "
+                    "Never answer that a ticker is unsupported or untracked without doing that first.",
             "tickers": [table(a, False) for a in obj.get("tracked") or []]}
 
 
@@ -440,6 +441,9 @@ part with `path` (dotted keys) and ask for more history with `last`.
 - Use `calc` for every calculation and every comparison of two levels (compute the difference, then say which is \
 higher); do not do arithmetic in your head.
 - If a tool returns an error, fix the call and try again before answering.
+- For a what-if on the VMRI, call war_room with the shift parameters and report its result; never recompute a \
+source's formula yourself.
+- Copy contract symbols, tickers and numbers exactly as the data gives them.
 - Every number you state must come from the BRIEF or from a result you fetched in this conversation. Never use a \
 number from memory and never invent one. If the data does not contain what is needed, say so plainly.
 - All times are the user's local time. "Engine positions" means the tickets the execution engine issued. Asked about \
