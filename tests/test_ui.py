@@ -211,7 +211,7 @@ class TerminalDrawer(unittest.TestCase):
         self.assertIn("toggleDrawer()", attrs.get("onclick", ""))
         self.assertIn("header", page.ancestor_tags_of_id["menuBtn"])
         header = html[html.index("<header"):]
-        self.assertLess(header.index('id="menuBtn"'), header.index("VLAD<span"))   # before the logo
+        self.assertLess(header.index('id="menuBtn"'), header.index(">MARKET</span> TERMINAL"))   # before the logo
         self.assertRegex(css_rule(css_text(), ".menu-btn") or "", r"width:\s*40px[^}]*height:\s*40px")
         self.assertNotIn("open", page.classes_of_id["sideDrawer"])
 

@@ -115,6 +115,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `options_whale/templates/terminal.html` | Terminal page |
 | `options_whale/static/app.js` | Macro, Time Arbitrage, War Room, Engine Positions UI |
 | `options_whale/static/forecast.js` | Forecast Lab UI |
+| `options_whale/static/favicon.svg`, `favicon-32.png`, `apple-touch-icon.png` | The terminal's icon (SVG, a PNG fallback, the iPhone home-screen icon) |
 | `options_whale/static/styles.css` | Styles |
 | `ebay.py` | eBay Browse API lookup of Silver Eagle listings; run as a subprocess by `/api/silver_eagle_prices` (also appends a ledger row) |
 | `menubar/optionswhale.10s.sh` | SwiftBar plugin: server status, start, stop, restart. Keep only plugins in this folder. |

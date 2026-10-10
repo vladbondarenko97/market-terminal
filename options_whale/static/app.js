@@ -2868,7 +2868,7 @@ async function dumpAllData() {
     
     const clean = {
         _meta: {
-            system: "VladHQ OptionsWhale Terminal",
+            system: "Market Terminal",
             dump_timestamp: new Date().toISOString(),
             purpose: "LATEST system state snapshot for LLM analysis. All values are the most recent readings from live infrastructure.",
             sources_succeeded: successCount,

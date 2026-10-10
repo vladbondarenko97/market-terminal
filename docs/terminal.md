@@ -30,7 +30,7 @@ a stand-in number.
 ## Layout
 
 ```
-header:   ☰ | VLADHQ TERMINAL | REMOTE API status | host | clock
+header:   ☰ | MARKET TERMINAL | REMOTE API status | host | clock
 drawer:   off canvas, opened by ☰: Macro Triggers, Custom Whale Hunter
 page:     tab bar (MACRO DIRECTION, TIME ARBITRAGE, FORECAST LAB)     full width
           active tab (panels)
