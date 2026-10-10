@@ -948,13 +948,13 @@ async function followRun(beforeId) {
 // ==========================================
 // --- LAYOUT ENGINE: panels / console split (single owner) ---
 // ==========================================
-// Wide layout (768 px and up). Expanded: the active tab gets a fixed height (user-draggable), the console fills the rest.
+// Wide layout (768 px and up). It starts minimized. Expanded: the active tab gets a fixed height (user-draggable), the console fills the rest.
 // Minimized: the tab fills everything, the console shrinks to its title bar. Applies to every .tab-content.
 // Both layouts also have MAXIMIZED: the console covers the whole viewport (body.console-maximized). That is never stored.
 // Phone layout (below 768 px): MINIMIZED = the tab bar, the active tab and a docked console bar; OPEN = the console fills the area
 // between the header and the bottom bar and the tab bar and tabs are hidden; MAXIMIZED = the console covers everything. Not stored either:
 // a phone always starts MINIMIZED. The state is applied by applyConsoleChrome() (body classes, button labels, bottom bar).
-let isConsoleMinimized = localStorage.getItem('vladhq_console_min') === '1';
+let isConsoleMinimized = localStorage.getItem('vladhq_console_min') !== '0';     // minimized unless this browser expanded it
 let consoleMaximized = false;        // both layouts
 let phoneConsoleOpen = false;        // phone layout: false = MINIMIZED (docked bar), true = OPEN
 let savedTopHeight = parseFloat(localStorage.getItem('vladhq_panel_height')) || 550;
@@ -1208,76 +1208,152 @@ document.addEventListener('keydown', e => {
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
-// Fetches the live XML dump and extracts the Paper:Physical ratio
+// COMEX Paper:Physical card. ppState keeps the last XML reading and ledger statistics for the COPY button.
+let ppState = { xml: null, stats: null };
+let ppHistoryChartInstance = null;
+const PP_TIER = { // text colour of the number, text colour of the tier, marker colour (the zone colours)
+    NOMINAL: ['text-white', 'text-green-500', '#16a34a'], ELEVATED: ['text-yellow-500', 'text-yellow-500', '#ca8a04'],
+    HIGH: ['text-orange-500', 'text-orange-500', '#ea580c'], CRITICAL: ['text-red-500', 'text-red-500', '#dc2626'],
+};
+const ppDate = iso => { const [, m, d] = String(iso).slice(0, 10).split('-').map(Number); return m ? `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${d}` : DASH; };
+const ppPct = v => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%`;
+const ppSet = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+
+// Pure statistics of the ledger columns. A ratio or open interest that is null or not above 0 is a gap, not a reading.
+function ppHistoryStats(labels, ratios, ois) {
+    const ok = v => Number.isFinite(v) && v > 0;
+    const rows = [];
+    labels.forEach((label, i) => { if (ok(ratios[i])) rows.push({ label, t: new Date(label.replace(' ', 'T')).getTime(), ratio: ratios[i], oi: ok(ois[i]) ? ois[i] : null }); });
+    const n = rows.length;
+    if (!n) return null;
+    const sorted = rows.map(r => r.ratio).sort((a, b) => a - b);
+    const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+    const last = rows[n - 1];
+    const stats = { n, low: sorted[0], high: sorted[n - 1], median, firstLabel: rows[0].label, excluded: labels.length - n,
+        latest: { ratio: last.ratio, label: last.label }, percentile: null, d30: null };
+    if (n >= 20) {
+        const below = sorted.filter(v => v < last.ratio).length / n * 100, above = sorted.filter(v => v > last.ratio).length / n * 100;
+        stats.percentile = last.ratio < median ? { side: 'below', pct: Math.round(above) } : { side: 'above', pct: Math.round(below) };
+    }
+    const ref = rows.filter(r => r.t <= last.t - 30 * 864e5).pop();
+    if (ref) {
+        stats.d30 = { label: ref.label, ratio: ref.ratio, ratio_chg_pct: (last.ratio / ref.ratio - 1) * 100, oi_chg_pct: null, registered_chg_pct: null };
+        if (last.oi && ref.oi) { // registered = open interest × 5,000 ÷ ratio
+            stats.d30.oi_chg_pct = (last.oi / ref.oi - 1) * 100;
+            stats.d30.registered_chg_pct = ((last.oi / last.ratio) / (ref.oi / ref.ratio) - 1) * 100;
+        }
+    }
+    return stats;
+}
+
+// Re-reads the XML dump (headline numbers) and the ledger (history); each fails on its own
 async function syncComexModule() {
     try {
-        const res = await fetch(`${API_BASE}/api/dump`);
-        const xmlText = await res.text();
-        
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-        
-        // Find the node in the XML
-        const ratioNode = xmlDoc.querySelector("comex_default_risk leverage_ratio");
-        
-        if (ratioNode) {
-            // The XML outputs "7.17:1", so we split by ':' to grab just the number
-            const ratioStr = ratioNode.textContent.split(':')[0]; 
-            const ratio = parseFloat(ratioStr);
-            
-            // Push the live data to the UI (a ratio that did not parse is left out, not drawn as NaN)
-            if (Number.isFinite(ratio)) updateComexRatioUI(ratio);
+        const xmlText = await (await fetch(`${API_BASE}/api/dump`)).text();
+        if (xmlErrorText(xmlText)) throw new Error(xmlErrorText(xmlText));
+        const doc = new DOMParser().parseFromString(xmlText, "text/xml");
+        const node = doc.querySelector("paper_physical");
+        const a = name => node ? toNum(node.getAttribute(name)) : null;
+        const s = name => (node && node.getAttribute(name)) || null;
+        updateComexRatioUI({
+            tier: s('tier'), ratio: a('ratio'), si_open_interest: a('si_open_interest'), paper_claims_oz: a('paper_claims_oz'),
+            registered_oz: a('registered_oz'), oi_trade_date: s('oi_trade_date'), inventory_report_date: s('inventory_report_date'),
+            run: doc.documentElement.getAttribute('source_folder'),
+        });
+    } catch (e) {
+        console.error("Failed to sync COMEX module:", e);
+    }
+    let stats = null, note = '';
+    try {
+        const json = await fetchJson(`${API_BASE}/api/macro_ledger_full?limit=500`);
+        if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
+        const d = json.data;
+        stats = ppHistoryStats(d.labels || [], d.paper_physical_ratio || [], d.silver_oi || []);
+        note = stats ? '' : 'No ratio recorded yet.';
+        if (stats) ppDrawHistory(d.labels, d.paper_physical_ratio, stats);
+    } catch (e) {
+        note = `Could not load the recorded history: ${e.message}`;
+    }
+    ppState.stats = stats;
+    if (!stats && ppHistoryChartInstance) { ppHistoryChartInstance.destroy(); ppHistoryChartInstance = null; }
+    ppSet('ppHistTitle', stats ? `Recorded ratio · since ${ppDate(stats.firstLabel)}` : 'Recorded ratio');
+    ppSet('ppHistCount', stats ? `${stats.n} readings` : '');
+    const range = document.getElementById('ppRange');
+    if (range) {
+        range.classList.toggle('hidden', !stats);
+        if (stats) {
+            range.style.left = `${Math.min(stats.low, 50) / 50 * 100}%`;
+            range.style.width = `${(Math.min(stats.high, 50) - Math.min(stats.low, 50)) / 50 * 100}%`;
+            range.title = `Recorded range ${stats.low.toFixed(2)} to ${stats.high.toFixed(2)}`;
         }
-    } catch (e) { 
-        console.error("Failed to sync COMEX module:", e); 
+    }
+    if (stats) {
+        const d30 = stats.d30;
+        note = `Low ${stats.low.toFixed(2)} · median ${stats.median.toFixed(2)} · high ${stats.high.toFixed(2)}.`
+            + (d30 && d30.oi_chg_pct !== null ? ` 30 days: open interest ${ppPct(d30.oi_chg_pct)}, registered stock ${ppPct(d30.registered_chg_pct)} (implied).` : '')
+            + (stats.excluded ? ` ${stats.excluded} runs recorded no ratio.` : '');
+    }
+    ppSet('ppHistNote', note);
+    const p30 = document.getElementById('pp30d'), pPct = document.getElementById('ppPercentile');
+    if (p30) {
+        const d30 = stats && stats.d30;
+        p30.innerHTML = d30 ? `30d ago <span class="text-zinc-200 font-bold">${d30.ratio.toFixed(2)}</span> <span class="${d30.ratio_chg_pct > 0 ? 'text-red-400' : 'text-green-400'}">(${ppPct(d30.ratio_chg_pct)})</span>` : '';
+        const pc = stats && stats.percentile;
+        pPct.innerHTML = pc ? `${pc.side} <span class="text-zinc-200 font-bold">${pc.pct}%</span> of readings` : '';
     }
 }
 
-// Updates the COMEX Paper:Physical Module UI based on the current ratio
-function updateComexRatioUI(ratio) {
+function ppDrawHistory(labels, ratios, stats) {
+    const canvas = document.getElementById('ppHistoryChart');
+    if (!canvas) return;
+    if (ppHistoryChartInstance) ppHistoryChartInstance.destroy();
+    const data = ratios.map(v => (Number.isFinite(v) && v > 0 ? v : null));
+    const lastIdx = labels.lastIndexOf(stats.latest.label);
+    ppHistoryChartInstance = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: { labels, datasets: [{ data, borderColor: '#e4e4e7', backgroundColor: 'rgba(228,228,231,0.06)', borderWidth: 1.5, fill: true, spanGaps: false,
+            pointRadius: data.map((_, i) => (i === lastIdx ? 3 : 0)), pointHoverRadius: 3, pointBackgroundColor: '#e4e4e7' }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: { backgroundColor: 'rgba(9, 9, 11, 0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, titleColor: '#fff', bodyColor: '#a1a1aa',
+                    callbacks: { label: c => (c.parsed.y == null ? '' : `${c.parsed.y.toFixed(2)}:1`) } },
+            },
+            scales: {
+                x: { display: false },
+                y: { grid: { color: '#18181b' }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 4 } },
+            },
+        },
+    });
+}
+
+// Paints the headline numbers of the card from the XML reading; the tier attribute is the model's own and is not recomputed here
+function updateComexRatioUI(x) {
     const display = document.getElementById('livePaperRatio');
     const banner = document.getElementById('liveRatioStatusBanner');
-    const claims = document.getElementById('livePaperOz');
-    const statusIcon = document.getElementById('ratioStatusIcon');
-    const statusText = document.getElementById('ratioStatusText');
-    const needle = document.getElementById('ratioNeedle'); // Grab the needle
-
     if (!display) return;
-
-    // 1. Update text numbers
-    display.innerText = `${ratio.toFixed(0)}:1`;
-    claims.innerText = ratio.toFixed(0);
-
-    // 2. Animate the Gauge Needle
-    // Math: Maps a 0 to 50 ratio scale to a -90 to +90 degree angle.
-    let degrees = -90 + (ratio / 50) * 180;
-    if (degrees > 90) degrees = 90;   // Cap it at far right
-    if (degrees < -90) degrees = -90; // Cap it at far left
-    
-    if (needle) {
-        needle.style.transform = `rotate(${degrees}deg)`;
-    }
-
-    // 3. Dynamic Threat Tiering Colors
-    if (ratio >= 40) {
-        display.className = "text-4xl font-bold tracking-tighter text-red-500 drop-shadow-[0_0_12px_rgba(239,68,68,0.4)]";
-        banner.className = "text-[9px] uppercase font-bold text-red-500 mt-1 tracking-widest";
-        banner.innerText = "CRITICAL LEVERAGE";
-        statusIcon.className = "text-red-500 mt-[1px]";
-        statusText.innerHTML = "<span class='text-red-400 font-bold'>Critical ratio level</span>";
-    } else if (ratio >= 25) {
-        display.className = "text-4xl font-bold tracking-tighter text-yellow-500 drop-shadow-[0_0_12px_rgba(234,179,8,0.3)]";
-        banner.className = "text-[9px] uppercase font-bold text-yellow-500 mt-1 tracking-widest";
-        banner.innerText = "DELIVERY STRESS";
-        statusIcon.className = "text-yellow-500 mt-[1px]";
-        statusText.innerHTML = "<span class='text-yellow-400 font-bold'>Elevated ratio level</span>";
-    } else {
-        display.className = "text-4xl font-bold tracking-tighter text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.2)]";
-        banner.className = "text-[9px] uppercase font-bold text-green-500 mt-1 tracking-widest";
-        banner.innerText = "MARKET NOMINAL";
-        statusIcon.className = "text-green-500 mt-[1px]";
-        statusText.innerHTML = "<span class='text-green-400'>Standard leverage level</span>";
-    }
+    ppState.xml = x;
+    const has = x.tier !== null && x.tier !== 'UNAVAILABLE' && x.ratio !== null && x.ratio > 0;
+    const [numCls, tierCls, color] = (has && PP_TIER[x.tier]) || ['text-white', 'text-zinc-500', '#71717a'];
+    const big = n => `${(n / 1e6).toFixed(1)}M oz`;
+    display.textContent = has ? `${x.ratio.toFixed(2)}:1` : DASH;
+    display.className = `war-score ${has ? numCls : 'text-white'}`;
+    banner.textContent = has ? x.tier : 'NO RATIO THIS RUN';
+    banner.className = `text-[9px] font-bold uppercase tracking-widest ${has ? tierCls : 'text-zinc-500'}`;
+    const mark = document.getElementById('ppMark');
+    mark.classList.toggle('hidden', !has);
+    mark.style.left = `${Math.min(x.ratio, 50) / 50 * 100}%`;
+    mark.style.background = color;
+    const claims = has && x.paper_claims_oz !== null, reg = has && x.registered_oz !== null;
+    ppSet('ppClaims', claims ? big(x.paper_claims_oz) : DASH);
+    ppSet('ppContracts', has && x.si_open_interest !== null ? `${x.si_open_interest.toLocaleString('en-US')} contracts × 5,000` : 'contracts × 5,000');
+    ppSet('ppRegistered', reg ? big(x.registered_oz) : DASH);
+    ppSet('ppRatioTile', has ? x.ratio.toFixed(2) : DASH);
+    document.getElementById('ppCover').innerHTML = claims && reg ? `Metal cover <span class="text-zinc-200 font-bold">${(x.registered_oz / x.paper_claims_oz * 100).toFixed(1)}%</span>` : '';
+    ppSet('ppDates', has ? [x.oi_trade_date && `OI trade date ${ppDate(x.oi_trade_date)}`, x.inventory_report_date && `inventory report ${ppDate(x.inventory_report_date)}`, x.run && `run ${x.run}`].filter(Boolean).join(' · ')
+        : 'Silver open interest or registered inventory was unavailable for the latest run.');
 }
 
 
@@ -1452,181 +1528,222 @@ async function loadDealerMap(auto = false) {
 
 let arbChartInstance = null;
 window.arbData = null; // Global store to prevent re-fetching on toggle
+let arbView = 'pct', arbRange = '3M'; // current chart view and range, kept for the buttons
+const ARB_RANGE_DAYS = { '1M': 30, '3M': 91, 'ALL': null };
+const ARB_ZONES = { RICH: '#f59e0b', CHEAP: '#22c55e', NORMAL: '#a1a1aa' };
 
-// 1. Fetcher
+// Pure helpers (no DOM)
+const arbSigned = (v, d = 2, suffix = '') => (isNum(v) ? `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(d)}${suffix}` : DASH);
+const arbWhen = label => (label ? `${ppDate(label)} ${String(label).slice(11, 16)}` : DASH);
+// Index of the first label within the range of the newest label (ALL = 0)
+function arbRangeStart(labels, range) { return arbDaysStart(labels, ARB_RANGE_DAYS[range]); }
+function arbDaysStart(labels, days) {
+    if (!days || !labels.length) return 0;
+    const cut = new Date(labels[labels.length - 1].replace(' ', 'T')).getTime() - days * 864e5;
+    const i = labels.findIndex(l => new Date(l.replace(' ', 'T')).getTime() >= cut);
+    return i < 0 ? 0 : i;
+}
+// Mean, band edges and the premium at -3, -1, 0, +1, +3 sigma; null without stats
+function arbBand(stats) {
+    if (!stats || !isNum(stats.mean) || !isNum(stats.std)) return null;
+    const { mean, std } = stats;
+    return { mean, lo: mean - std, hi: mean + std, ticks: [-3, -1, 0, 1, 3].map(k => mean + k * std) };
+}
+function arbRegime(z) {
+    if (!isNum(z)) return null;
+    return z >= 1 ? 'RICH' : z <= -1 ? 'CHEAP' : 'NORMAL';
+}
+
+// Shared by panels 5 and 14: regime chip, z track (marker and sigma tick labels) and change tile
+function arbSetChip(id, reg, text) {
+    const chip = document.getElementById(id);
+    chip.classList.toggle('hidden', !reg);
+    if (!reg) return;
+    const c = ARB_ZONES[reg];
+    chip.textContent = text;
+    chip.style.cssText = `color:${c};border-color:${c}66;background:${c}1a`;
+}
+function arbSetTrack(markId, ticksId, z, reg, band) {
+    const mark = document.getElementById(markId);
+    mark.classList.toggle('hidden', !reg);
+    if (reg) {
+        mark.style.left = `${(Math.max(-3, Math.min(3, z)) + 3) / 6 * 100}%`;
+        mark.style.background = reg === 'NORMAL' ? '#fff' : ARB_ZONES[reg];
+    }
+    document.querySelectorAll(`#${ticksId} span`).forEach((el, i) => { el.textContent = band ? `${band.ticks[i].toFixed(1)}%` : ''; });
+}
+function arbSetTile(id, c, sub, title) {
+    const tile = document.getElementById(id), val = tile.querySelector('.arb-chg');
+    val.textContent = c ? `${arbSigned(c.pts, 2)} pts` : DASH;
+    val.className = `arb-chg text-[12px] font-bold ${c && c.pts > 0 ? 'text-amber-400' : c && c.pts < 0 ? 'text-green-400' : 'text-white'}`;
+    tile.querySelector('.arb-sub').textContent = sub;
+    tile.title = title;
+}
+
+function arbRenderHeader(data) {
+    const st = data.stats, last = st && st.latest;
+    const n = data.labels.length - 1;
+    const prem = last ? last.cheapest_pct : toNum(data.cheapest_pct[n]);
+    const dollar = last ? last.cheapest_dollar : toNum(data.cheapest_dollar[n]);
+    const spot = last ? last.spot : toNum(data.spot[n]);
+    const label = last ? last.label : data.labels[n];
+    ppSet('arbPremium', arbSigned(toNum(prem), 2, '%'));
+    ppSet('arbSub', isNum(prem) ? `${fmt(dollar, 2, '$')} over ${fmt(spot, 2, '$')} · ${arbWhen(label)}` : '');
+    const reg = st ? arbRegime(st.zscore) : null;
+    arbSetChip('arbRegime', reg, reg);
+    const z = st && st.zscore, rank = st && st.pct_rank, avg = last && last.avg_pct;
+    ppSet('arbZ', isNum(z) ? `z-score ${arbSigned(z, 2, 'σ')}` : '');
+    ppSet('arbRank', isNum(rank) ? `rank ${Math.round(rank)}% of ${st.window_days}d` : '');
+    ppSet('arbAvgNow', isNum(avg) ? `avg dealer ${arbSigned(avg, 2, '%')}` : '');
+    arbSetTrack('arbMark', 'arbTicks', z, reg, arbBand(st));
+    [['1d', 1], ['7d', 7], ['30d', 30]].forEach(([k, days]) => {
+        const c = st && st.changes && st.changes[k];
+        arbSetTile(`arbTile${k}`, c, c ? `silver ${arbSigned(c.spot_pct, 1, '%')} · retail ${arbSigned(c.retail_pct, 1, '%')}` : '',
+            c ? `Change in the premium, in percentage points, against the reading from ${days} days earlier (${c.ref_label}). Silver and retail are the percent moves of the futures price and the cheapest dealer price.` : '');
+    });
+    const f = data.flow, rate = f && f.rate_7d, prior = f && f.rate_prior_7d;
+    const parts = f ? [f.units_prev != null && `Units sold on the tracked listings: ${f.units_prev} since the previous run`,
+        rate && isNum(rate.per_day) && `${rate.per_day.toFixed(1)}/day over ${fmt(rate.days, 1)} days`].filter(Boolean) : [];
+    ppSet('arbFlowNote', parts.join(' · ') + (parts.length && prior && isNum(prior.per_day) ? ` (prior week ${prior.per_day.toFixed(1)}/day)` : ''));
+    const h = st && st.history;
+    ppSet('arbFooter', `${h ? `${h.n} runs since ${ppDate(h.first_label)} · ` : ''}each premium uses the SI=F price recorded by the same run · ask side only, dealer buyback prices are not tracked`);
+    document.getElementById('arbFooter').className = 'text-[8px] text-zinc-600 leading-tight';
+}
+
+// Dealer table built with DOM methods: eBay strings only ever reach textContent, href only for https
+function arbRenderBook(book) {
+    const box = document.getElementById('arbBook');
+    box.replaceChildren();
+    if (!book || !Array.isArray(book.listings) || !book.listings.length) {
+        const p = document.createElement('div');
+        p.className = 'text-[9px] text-zinc-500';
+        p.textContent = 'No per-dealer records stored yet.';
+        box.appendChild(p);
+        ppSet('arbBookTitle', 'Dealer book');
+        ppSet('arbBookRun', '');
+        return;
+    }
+    const short = isNum(book.prev_count) && book.count < book.prev_count;     // a listing that did not answer can move the cheapest price
+    ppSet('arbBookTitle', `Dealer book · ${book.count ?? book.listings.length} listings${short ? ` (${book.prev_count} in the previous run)` : ''} · ${book.in_stock ?? DASH} in stock`);
+    document.getElementById('arbBookTitle').className = short ? 'text-amber-400' : '';
+    ppSet('arbBookRun', `run ${arbWhen(book.run_at)}`);
+    const table = document.createElement('table');
+    const head = table.createTHead().insertRow();
+    ['Dealer', 'All-in', 'Prem', 'Stock', 'Sold', '7d'].forEach(h => { head.appendChild(document.createElement('th')).textContent = h; });
+    const body = table.createTBody();
+    book.listings.forEach((l, i) => {
+        const tr = body.insertRow();
+        const name = String(l.seller || l.title || DASH);
+        const first = tr.insertCell();
+        first.title = l.title || '';
+        if (typeof l.url === 'string' && l.url.startsWith('https://')) {
+            const a = document.createElement('a');
+            a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+            a.textContent = name;
+            first.appendChild(a);
+        } else first.textContent = name;
+        const sold = v => (isNum(v) ? (v > 0 ? `+${v}` : String(v)) : DASH);
+        const out = l.status === 'OUT_OF_STOCK';
+        const cells = [fmt(l.total_cost, 2, '$'), arbSigned(toNum(l.premium_pct), 2, '%'),
+            out ? String(l.status).toLowerCase().replace(/_/g, ' ') : (l.available_qty ?? DASH), sold(toNum(l.sold_prev)), sold(toNum(l.sold_7d))];
+        cells.forEach((text, j) => {
+            const td = tr.insertCell();
+            td.textContent = String(text);
+            if (i === 0 && j < 2) td.className = 'best';
+            if (j === 2 && out) td.className = 'text-red-400';
+        });
+    });
+    box.appendChild(table);
+}
+
+// Chart.js option builders shared by panels 5 and 14
+function arbChartKit() {
+    const tip = callbacks => ({ legend: { display: false },
+        tooltip: { backgroundColor: 'rgba(9, 9, 11, 0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, titleColor: '#fff', bodyColor: '#a1a1aa', displayColors: false,
+            filter: item => !['Mean', 'Low', 'High'].includes(item.dataset.label), callbacks } });
+    const xAxis = { grid: { display: false }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 5, maxRotation: 0, autoSkip: true,
+        callback(v) { return ppDate(this.getLabelForValue(v)); } } };
+    const yAxis = prefix => ({ grid: { color: '#18181b' }, ticks: { color: '#71717a', font: { size: 8 }, maxTicksLimit: 6, callback: v => `${prefix === '$' ? '$' : ''}${v}${prefix === '%' ? '%' : ''}` } });
+    const base = { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false } };
+    const line = (arr, color, width, dash) => ({ data: arr, borderColor: color, borderWidth: width, borderDash: dash || [], pointRadius: 0, pointHoverRadius: 3, spanGaps: false, tension: 0 });
+    return { tip, xAxis, yAxis, base, line };
+}
+
+function arbDrawChart(data, view) {
+    const canvas = document.getElementById('arbChart');
+    const empty = document.getElementById('arbNoFlow');
+    if (arbChartInstance) { arbChartInstance.destroy(); arbChartInstance = null; }
+    const days = data.flow && Array.isArray(data.flow.daily) ? data.flow.daily : [];
+    const noFlow = view === 'flow' && !days.length;
+    empty.classList.toggle('hidden', !noFlow);
+    canvas.classList.toggle('hidden', noFlow);
+    if (noFlow) return;
+    const { tip, xAxis, yAxis, base, line } = arbChartKit();
+    const ctx = canvas.getContext('2d');
+    if (view === 'flow') {
+        arbChartInstance = new Chart(ctx, {
+            type: 'bar',
+            data: { labels: days.map(d => d.date), datasets: [{ data: days.map(d => toNum(d.units)), backgroundColor: 'rgba(56,189,248,0.6)' }] },
+            options: { ...base, plugins: tip({ label: c => (c.parsed.y == null ? '' : `${c.parsed.y} units`) }), scales: { x: xAxis, y: yAxis('') } },
+        });
+        return;
+    }
+    const s = arbRangeStart(data.labels, arbRange);
+    const cut = a => a.slice(s).map(toNum);
+    const labels = data.labels.slice(s), spot = cut(data.spot), n = labels.length;
+    const usd = c => (c.parsed.y == null ? '' : `${c.dataset.label} $${c.parsed.y.toFixed(2)}`);
+    if (view === 'price') {
+        const sets = [{ ...line(spot, '#ffffff', 1.5, [4, 3]), label: 'Silver' }, { ...line(cut(data.cheapest_price), '#38bdf8', 1.5), label: 'Cheapest' },
+            { ...line(cut(data.avg_price), '#818cf8', 1, [3, 3]), label: 'Avg dealer' }];
+        arbChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: sets },
+            options: { ...base, plugins: tip({ title: i => (i.length ? labels[i[0].dataIndex] : ''), label: usd }), scales: { x: xAxis, y: yAxis('$') } } });
+        return;
+    }
+    const cheap = cut(data.cheapest_pct), dollar = cut(data.cheapest_dollar), avg = cut(data.avg_pct);
+    const band = arbBand(data.stats), fill = v => Array(n).fill(v);
+    const lastIdx = cheap.reduce((a, v, i) => (v !== null ? i : a), -1);
+    const sets = [{ ...line(cheap, '#e4e4e7', 1.5), label: 'Cheapest', pointRadius: cheap.map((_, i) => (i === lastIdx ? 3 : 0)), pointBackgroundColor: '#e4e4e7' },
+        { ...line(avg, '#71717a', 1, [3, 3]), label: 'Avg dealer' }];
+    if (band) {
+        sets.push({ ...line(fill(band.mean), 'rgba(255,255,255,0.35)', 1, [4, 4]), label: 'Mean', pointHoverRadius: 0 },
+            { ...line(fill(band.lo), 'transparent', 0), label: 'Low', pointHoverRadius: 0 },
+            { ...line(fill(band.hi), 'transparent', 0), label: 'High', pointHoverRadius: 0, fill: '-1', backgroundColor: 'rgba(228,228,231,0.07)' });
+    }
+    arbChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: sets }, options: { ...base, plugins: tip({
+        title: i => (i.length ? labels[i[0].dataIndex] : ''),
+        label: c => (c.parsed.y == null ? '' : c.datasetIndex === 0
+            ? `Cheapest ${arbSigned(c.parsed.y, 2, '%')} (${fmt(dollar[c.dataIndex], 2, '$')})` : `Avg dealer ${arbSigned(c.parsed.y, 2, '%')}`),
+        afterBody: i => (i.length ? `Silver ${fmt(spot[i[0].dataIndex], 2, '$')}` : ''),
+    }), scales: { x: xAxis, y: yAxis('%') } } });
+}
+
 async function loadArbitrageLedger() {
     try {
-        const json = await fetchJson(`${API_BASE}/api/arbitrage_history?limit=50`);
-        
-        if (json.status === 'success') {
-            window.arbData = json.data;
-            renderArbChart('price'); // Boot up in 'Spot vs Physical' view
-            log('Physical Arbitrage Ledger loaded.', 'success');
-        } else {
-            log(`Arb Ledger Error: ${json.message}`, 'error');
-        }
+        const json = await fetchJson(`${API_BASE}/api/arbitrage_history?limit=500`);
+        if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
+        window.arbData = json.data;
+        arbRenderHeader(json.data);
+        arbRenderBook(json.data.book);
+        renderArbChart(arbView);
+        log('Physical Arbitrage Ledger loaded.', 'success');
     } catch (e) {
-        log(`Arb Ledger Connection Failed: ${e.message}`, 'error');
+        log(`Arb Ledger Error: ${e.message}`, 'error');
+        window.arbData = null;
+        if (arbChartInstance) { arbChartInstance.destroy(); arbChartInstance = null; }
+        ppSet('arbFooter', `Could not load the premium history: ${e.message}`);
+        document.getElementById('arbFooter').className = 'text-[8px] text-red-400 leading-tight';
     }
 }
 
-// 2. Chart Renderer & Toggle Logic
+// Buttons call this with 'pct' | 'price' | 'flow'
 function renderArbChart(view) {
-    if (!window.arbData) return;
-    const data = window.arbData;
-
-    // Manage button active states
-    document.querySelectorAll('.arb-toggle').forEach(btn => btn.classList.remove('active'));
-    if (view === 'price') document.getElementById('btnArbPrice').classList.add('active');
-    if (view === 'pct') document.getElementById('btnArbPct').classList.add('active');
-    if (view === 'dollar') document.getElementById('btnArbDollar').classList.add('active');
-
-    const ctx = document.getElementById('arbChart').getContext('2d');
-    
-    // Destroy the old canvas instance before drawing the new one
-    if (arbChartInstance) {
-        arbChartInstance.destroy();
-    }
-
-    let datasets = [];
-    let yAxisFormat = '';
-
-    // Swap datasets based on user selection
-    if (view === 'price') {
-        yAxisFormat = '$';
-        datasets = [
-            {
-                label: 'Cheapest Eagle',
-                data: data.cheapest_price,
-                borderColor: '#38bdf8', // Light Blue
-                backgroundColor: 'rgba(56, 189, 248, 0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            },
-            {
-                label: 'Avg Eagle',
-                data: data.avg_price,
-                borderColor: '#818cf8', // Indigo
-                borderWidth: 1.5,
-                borderDash: [2, 2],
-                tension: 0.3,
-                pointRadius: 0
-            },
-            {
-                label: 'COMEX Spot',
-                data: data.spot,
-                borderColor: '#ffffff', // White dotted
-                borderWidth: 2,
-                borderDash: [5, 5],
-                tension: 0.3,
-                pointRadius: 0
-            }
-        ];
-    } else if (view === 'pct') {
-        yAxisFormat = '%';
-        datasets = [
-            {
-                label: 'Cheapest Prem %',
-                data: data.cheapest_pct,
-                borderColor: '#22c55e', // Neon Green
-                backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            },
-            {
-                label: 'Avg Prem %',
-                data: data.avg_pct,
-                borderColor: '#f97316', // Orange
-                borderWidth: 1.5,
-                tension: 0.3,
-                pointRadius: 0
-            }
-        ];
-    } else if (view === 'dollar') {
-        yAxisFormat = '$';
-        datasets = [
-            {
-                label: 'Cheapest Prem $',
-                data: data.cheapest_dollar,
-                borderColor: '#eab308', // Neon Yellow
-                backgroundColor: 'rgba(234, 179, 8, 0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            }
-        ];
-    }
-
-    // Initialize Chart
-    arbChartInstance = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: data.labels,
-            datasets: datasets
-        },
-        options: {
-            devicePixelRatio: 3,
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: {
-                mode: 'index',
-                intersect: false,
-            },
-            plugins: {
-                legend: {
-                    labels: { color: '#a1a1aa', boxWidth: 10, font: {size: 9} }
-                },
-                tooltip: {
-                    backgroundColor: 'rgba(9, 9, 11, 0.95)',
-                    titleColor: '#fff',
-                    bodyColor: '#a1a1aa',
-                    borderColor: '#27272a',
-                    borderWidth: 1,
-                    padding: 10,
-                    callbacks: {
-                        label: function(context) {
-                            let label = context.dataset.label || '';
-                            if (label) label += ': ';
-                            if (context.parsed.y !== null) {
-                                label += yAxisFormat === '$' ? '$' + context.parsed.y.toFixed(2) : context.parsed.y.toFixed(2) + '%';
-                            }
-                            return label;
-                        },
-                        // High-Density Injection: Appends all core data to the bottom of the tooltip
-                        afterBody: function(context) {
-                            let idx = context[0].dataIndex;
-                            return `\n-- TAPE --\nSpot: $${data.spot[idx]?.toFixed(2) || 'N/A'}\nEagle: $${data.cheapest_price[idx]?.toFixed(2) || 'N/A'}\nSpread: ${data.cheapest_pct[idx]?.toFixed(2) || 'N/A'}%`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: { display: false },
-                    ticks: { color: '#a1a1aa', font: { size: 9 }, maxTicksLimit: 6 }
-                },
-                y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { 
-                        color: '#a1a1aa', 
-                        font: { size: 9 },
-                        callback: function(value) {
-                            return yAxisFormat === '$' ? '$' + value : value + '%';
-                        }
-                    }
-                }
-            }
-        }
-    });
+    if (view) arbView = view;
+    document.querySelectorAll('.arb-view').forEach(b => b.classList.remove('active'));
+    document.getElementById({ pct: 'btnArbPct', price: 'btnArbPrice', flow: 'btnArbFlow' }[arbView]).classList.add('active');
+    document.querySelectorAll('.arb-range').forEach(b => b.classList.toggle('active', b.id === `btnArbR${arbRange}`));
+    if (window.arbData) arbDrawChart(window.arbData, arbView);
 }
+function arbSetRange(range) { arbRange = range; renderArbChart(); }
 
 // ==========================================
 // --- DARK POOL PROFILE ENGINE ---
@@ -1920,16 +2037,17 @@ function copyPanelData(panelId) {
 
         else if (panelId === 'panel4') {
             // COMEX Paper:Physical ratio panel
-            const ratio = document.getElementById('livePaperRatio').innerText;
-            const status = document.getElementById('liveRatioStatusBanner').innerText;
-            const claims = document.getElementById('livePaperOz').innerText;
-            const statusText = document.getElementById('ratioStatusText').innerText;
+            const x = ppState.xml || {};
             payload = JSON.stringify({
                 panel: PANEL_LABELS[panelId],
-                paper_to_physical_ratio: ratio,
-                oz_paper_claims_per_physical: claims,
-                status_banner: status,
-                status_detail: statusText
+                paper_to_physical_ratio: document.getElementById('livePaperRatio').innerText,
+                tier: x.tier ?? null,
+                paper_claims_oz: x.paper_claims_oz ?? null,
+                registered_oz: x.registered_oz ?? null,
+                si_open_interest: x.si_open_interest ?? null,
+                oi_trade_date: x.oi_trade_date ?? null,
+                inventory_report_date: x.inventory_report_date ?? null,
+                history: ppState.stats
             }, null, 2);
         }
 
@@ -2075,6 +2193,32 @@ document.addEventListener('DOMContentLoaded', () => {
 let slvFlowChartInstance = null;
 window._slvFlowData = null;
 
+// One entry per trading session from the route's rows (several runs a day repeat the same session); pure, no DOM.
+// An absent array counts as all-null. Rows with no total are "no data" and are dropped.
+function slvSessions(d) {
+    const at = (k, i) => { const v = Array.isArray(d[k]) ? d[k][i] : null; return v === undefined ? null : v; };
+    const out = []; let prev = null;
+    (d.labels || []).forEach((lab, i) => {
+        const key = { sess: at('dp_session', i), total: toNum(at('dp_total_vol', i)), vwap: toNum(at('dp_vwap', i)) };
+        if (key.total === null) return;
+        const buy = toNum(at('dp_bull_vol', i)), sell = toNum(at('dp_bear_vol', i));
+        const e = { label: key.sess || String(lab).slice(0, 10), buy, sell, above: toNum(at('dp_above_vwap_vol', i)), below: toNum(at('dp_below_vwap_vol', i)),
+            total: key.total, method: at('dp_method', i), bias: at('dp_sentiment', i) };
+        const u = toNum(at('dp_unknown_vol', i));
+        e.unknown = u !== null ? u : (buy !== null && sell !== null ? Math.max(0, key.total - buy - sell) : null);
+        const same = prev && (key.sess !== null ? key.sess === prev.sess : prev.sess === null && key.total === prev.total && key.vwap === prev.vwap);
+        if (same) out[out.length - 1] = e; else out.push(e);
+        prev = key;
+    });
+    return out;
+}
+function slvFlowNote(ses) {
+    const last = ses.slice(-20), n = last.length, k = last.filter(x => (x.buy || 0) + (x.sell || 0) > 0).length;
+    if (!n) return '';
+    return k === n ? `The feed reported a trade side for all of the last ${n} sessions.`
+        : `The feed reported a trade side for ${k} of the last ${n} sessions. Lighter bars split the rest by price against VWAP, which is a guess.`;
+}
+
 async function loadSlvInstitutionalFlow() {
     try {
         const json = await fetchJson(`${API_BASE}/api/institutional_history?ticker=SLV&limit=100`);
@@ -2090,6 +2234,11 @@ async function loadSlvInstitutionalFlow() {
             
             const sentEl = document.getElementById('slvDpSentiment');
             const lastSent = d.dp_sentiment[lastIdx];
+            const m = DP_METHODS[(d.dp_method || [])[lastIdx]];
+            const mEl = document.getElementById('slvDpMethod');
+            if (mEl) { mEl.textContent = m ? m.label : ''; mEl.title = m ? m.tip : ''; }
+            const noteEl = document.getElementById('slvFlowNote');
+            if (noteEl) noteEl.textContent = slvFlowNote(slvSessions(d));
             if (sentEl && lastSent) {
                 sentEl.innerText = lastSent;
                 if (lastSent === 'BULLISH') sentEl.className = 'text-green-500 font-bold text-sm drop-shadow-[0_0_5px_rgba(34,197,94,0.5)]';
@@ -2129,34 +2278,22 @@ function renderSlvFlowChart(view) {
     
     let datasets = [];
     
+    const ses = slvSessions(data), sLabels = ses.map(x => ppDate(x.label));
     if (view === 'sentiment') {
-        // Bull vs Bear volume bars
-        const bullData = data.dp_bull_vol.map(v => v != null ? parseFloat(v) : null);
-        const bearData = data.dp_bear_vol.map(v => v != null ? -parseFloat(v) : null);
-        
+        const bar = (label, vals, color) => ({ label, data: vals, backgroundColor: color, type: 'bar' });
+        const neg = v => (v === null ? null : -v);
         datasets = [
-            {
-                label: 'Bull Volume',
-                data: bullData,
-                backgroundColor: 'rgba(34, 197, 94, 0.7)',
-                borderColor: 'rgb(34, 197, 94)',
-                borderWidth: 1,
-                type: 'bar'
-            },
-            {
-                label: 'Bear Volume',
-                data: bearData,
-                backgroundColor: 'rgba(239, 68, 68, 0.7)',
-                borderColor: 'rgb(239, 68, 68)',
-                borderWidth: 1,
-                type: 'bar'
-            }
+            bar('Buy aggressor', ses.map(x => x.buy), 'rgba(34,197,94,0.85)'),
+            bar('Above VWAP, side unknown', ses.map(x => x.above), 'rgba(34,197,94,0.3)'),
+            bar('Sell aggressor', ses.map(x => neg(x.sell)), 'rgba(239,68,68,0.85)'),
+            bar('Below VWAP, side unknown', ses.map(x => neg(x.below)), 'rgba(239,68,68,0.3)'),
+            bar('Side unknown', ses.map(x => (x.above === null && x.below === null && x.unknown > 0 ? x.unknown : null)), 'rgba(161,161,170,0.35)'),
         ];
     } else if (view === 'volume') {
         datasets = [
             {
                 label: 'Total Block Volume',
-                data: data.dp_total_vol.map(v => v != null ? parseFloat(v) : null),
+                data: ses.map(x => x.total),
                 borderColor: '#a78bfa',
                 backgroundColor: 'rgba(167, 139, 250, 0.1)',
                 borderWidth: 2,
@@ -2201,26 +2338,33 @@ function renderSlvFlowChart(view) {
     
     slvFlowChartInstance = new Chart(ctx, {
         type: view === 'sentiment' ? 'bar' : 'line',
-        data: { labels: data.labels, datasets: datasets },
+        data: { labels: view === 'gex' ? data.labels : sLabels, datasets: datasets },
         options: {
-            devicePixelRatio: 3,
             responsive: true,
             maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
             plugins: {
-                legend: { labels: { color: '#a1a1aa', boxWidth: 10, font: { size: 9 } } },
+                legend: { labels: { color: '#a1a1aa', boxWidth: view === 'sentiment' ? 8 : 10, font: { size: view === 'sentiment' ? 8 : 9 } } },
                 tooltip: {
                     backgroundColor: 'rgba(9, 9, 11, 0.95)',
                     borderColor: '#27272a',
                     borderWidth: 1,
                     padding: 10,
                     titleColor: '#fff',
-                    bodyColor: '#a1a1aa'
+                    bodyColor: '#a1a1aa',
+                    ...(view === 'sentiment' ? {
+                        filter: item => item.parsed.y !== null && item.parsed.y !== 0,
+                        callbacks: {
+                            title: i => { const x = i.length && ses[i[0].dataIndex]; return x ? sLabels[i[0].dataIndex] + (x.bias ? ` · ${x.bias}` : '') : ''; },
+                            label: c => `${c.dataset.label}: ${formatCompact(Math.abs(c.parsed.y))}`,
+                        },
+                    } : {}),
                 }
             },
             scales: {
-                x: { grid: { display: false }, ticks: { color: '#a1a1aa', font: { size: 8 }, maxTicksLimit: 8 } },
+                x: { stacked: view === 'sentiment', grid: { display: false }, ticks: { color: '#a1a1aa', font: { size: 8 }, maxTicksLimit: 8 } },
                 y: {
+                    stacked: view === 'sentiment',
                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                     ticks: { color: '#a1a1aa', font: { size: 9 }, callback: (v) => {
                         if (view === 'gex') return '$' + v.toFixed(0);
@@ -2562,112 +2706,131 @@ async function loadFedLiquidity() {
 
 let arbSpreadChartInstance = null;
 window._arbSpreadData = null;
+let shView = 'spread', shRange = '1Y'; // chart view and range, kept for the buttons
+const SH_RANGE_DAYS = { '3M': 91, '1Y': 365, 'MAX': null };
+const SH_SESSION = { evening: 'late', morning: 'early' };
+
+// Pure helpers (no DOM)
+const shUsd = v => (isNum(v) ? `${v > 0 ? '+' : v < 0 ? '−' : ''}$${Math.abs(v).toFixed(2)}` : DASH);
+// Whole days from a "YYYY-MM-DD" fix date to the date part of run_at, by splitting the strings; null when either is unreadable
+function shDaysBefore(fixDate, runAt) {
+    const p = s => String(s || '').slice(0, 10).split('-').map(Number);
+    const [fy, fm, fd] = p(fixDate), [ry, rm, rd] = p(runAt);
+    if (![fy, fm, fd, ry, rm, rd].every(Number.isFinite) || !fy || !ry) return null;
+    return Math.round((Date.UTC(ry, rm - 1, rd) - Date.UTC(fy, fm - 1, fd)) / 864e5);
+}
+// Which source the card reads: the dated model when fresh, else the stored reading; every value is a number or null
+function shReading(data) {
+    const d = data.dated && data.dated.status === 'fresh' && data.dated.latest;
+    if (d) return { src: 'dated', date: d.date, session: d.session, pct: toNum(d.adj_pct), dollar: toNum(d.adj_dollar), rawPct: toNum(d.raw_pct),
+        rawDollar: toNum(d.raw_dollar), shanghai: toNum(d.shanghai), comex: toNum(d.comex), fx: toNum(d.usdcny) };
+    const g = data.legacy || {}, ref = toNum(g.comex_ref);
+    const pct = v => (isNum(v) && ref > 0 ? v / ref * 100 : null);
+    return { src: isNum(g.usd_per_oz) ? 'legacy' : null, date: g.sge_date, session: g.sge_session, pct: pct(toNum(g.premium_tax_adj)), dollar: toNum(g.premium_tax_adj),
+        rawPct: pct(toNum(g.raw_spread)), rawDollar: toNum(g.raw_spread), shanghai: toNum(g.usd_per_oz), comex: ref, fx: toNum(g.usdcny) };
+}
+// "fix Oct 7 late · 3 days before run" and whether it is older than 3 days; null without a fix date
+function shFixInfo(r, runAt) {
+    if (!r.date) return null;
+    const n = shDaysBefore(r.date, runAt), when = SH_SESSION[r.session];
+    const age = n === null ? '' : n === 0 ? ' · same day as run' : ` · ${n} day${n === 1 ? '' : 's'} before run`;
+    return { text: `fix ${ppDate(r.date)}${when ? ' ' + when : ''}${age}`, stale: n !== null && n > 3, days: n };
+}
+
+function shRender(data) {
+    const ok = data.dated && data.dated.status === 'fresh' && data.dated.latest;
+    const st = ok ? data.dated.stats : null, r = shReading(data);
+    ppSet('shPremium', arbSigned(r.pct, 2, '%'));
+    ppSet('shSub', isNum(r.dollar) ? `${shUsd(r.dollar)}/oz · raw ${arbSigned(r.rawPct, 2, '%')} (${shUsd(r.rawDollar)}) before 13% VAT` : '');
+    const z = st && st.zscore, reg = arbRegime(z);
+    arbSetChip('shRegime', reg, { RICH: 'HIGH', CHEAP: 'LOW' }[reg] || reg);
+    const row = (id, text) => { document.getElementById(id + 'Row').classList.toggle('hidden', !text); ppSet(id, text); };
+    row('shZ', isNum(z) ? `${arbSigned(z, 2, 'σ')}` : '');
+    row('shRank', st && isNum(st.pct_rank) ? `${Math.round(st.pct_rank)}% of ${st.window_days}d` : '');
+    const fix = shFixInfo(r, data.run_at), fixEl = document.getElementById('shFix');
+    fixEl.className = `font-bold ${fix && fix.stale ? 'text-amber-400' : 'text-zinc-200'}`;
+    fixEl.classList.toggle('hidden', !fix);
+    ppSet('shFix', fix ? fix.text : '');
+    document.getElementById('shTrackBlock').classList.toggle('hidden', !ok);
+    arbSetTrack('shMark', 'shTicks', z, reg, arbBand(st));
+    ['1d', '7d', '30d'].forEach(k => {
+        const c = st && st.changes && st.changes[k];
+        arbSetTile(`shTile${k}`, c, c ? `COMEX ${arbSigned(c.comex_pct, 1, '%')} · Shanghai ${arbSigned(c.shanghai_pct, 1, '%')}` : '',
+            c ? `Change in the VAT-adjusted spread, in percentage points, against the fix of ${c.ref_label}. COMEX and Shanghai are the percent moves of each price in dollars.` : '');
+    });
+    ppSet('liveShfe', fmt(r.shanghai, 2, '$'));
+    ppSet('liveComexSilver', fmt(r.comex, 2, '$'));
+    ppSet('liveShfePremium', shUsd(r.dollar));
+    ppSet('shFx', fmt(r.fx, 4));
+    let text, color = 'text-zinc-600';
+    if (ok) {
+        const h = st.history;
+        const held = data.dated.series && data.dated.series.dates ? data.dated.series.dates.length : null;
+        text = `${h ? `${h.n} fixes since ${formatDate(h.first_label)}${held && held < h.n ? ` (the chart holds the last ${held})` : ''} · ` : ''}each fix against the SI=F and USD/CNY close of the same date, which are set hours apart, so one-day swings are noisy · 13% VAT stripped is an assumption · run ${arbWhen(data.run_at)}`;
+    } else if (r.src) {
+        const n = shDaysBefore(r.date, data.run_at);
+        text = `Stored reading: the newest Shanghai fix against this run's COMEX quote, ${n === null ? '' : n + ' days apart, '}so not a same-day spread. 13% VAT stripped is an assumption.`;
+        if (n > 1) color = 'text-amber-400';
+    } else {
+        text = `Shanghai price unavailable in the latest run (${data.run_at}): ${(data.legacy && data.legacy.reason) || 'no reason stored'}`;
+        color = 'text-red-400';
+    }
+    ppSet('shFooter', text);
+    document.getElementById('shFooter').className = `text-[8px] ${color} leading-tight`;
+    shDrawChart();
+}
+
+function shDrawChart() {
+    const data = window._arbSpreadData, canvas = document.getElementById('arbSpreadChart'), msg = document.getElementById('shNoChart');
+    if (arbSpreadChartInstance) { arbSpreadChartInstance.destroy(); arbSpreadChartInstance = null; }
+    document.querySelectorAll('.sh-view').forEach(b => b.classList.toggle('active', b.id === (shView === 'spread' ? 'btnShSpread' : 'btnShPrice')));
+    document.querySelectorAll('.sh-range').forEach(b => b.classList.toggle('active', b.id === `btnShR${shRange}`));
+    const d = data && data.dated, ok = d && d.status === 'fresh' && d.series;
+    msg.classList.toggle('hidden', !!ok);
+    canvas.classList.toggle('hidden', !ok);
+    if (!ok) { msg.textContent = !data ? '' : d && d.status === 'missing' ? (d.reason || 'Date-paired history is missing.') : 'Date-paired history starts with the next pipeline run.'; return; }
+    const { tip, xAxis, yAxis, base, line } = arbChartKit();
+    const s = d.series, i0 = arbDaysStart(s.dates, SH_RANGE_DAYS[shRange]), cut = a => (a || []).slice(i0).map(toNum);
+    const labels = s.dates.slice(i0), n = labels.length, ctx = canvas.getContext('2d');
+    const title = i => (i.length ? labels[i[0].dataIndex] : '');
+    if (shView === 'price') {
+        const usd = c => (c.parsed.y == null ? '' : `${c.dataset.label} $${c.parsed.y.toFixed(2)}`);
+        arbSpreadChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: [{ ...line(cut(s.shanghai), '#fb7185', 1.5), label: 'Shanghai' },
+            { ...line(cut(s.comex), '#ffffff', 1.5, [4, 3]), label: 'COMEX' }] }, options: { ...base, plugins: tip({ title, label: usd }), scales: { x: xAxis, y: yAxis('$') } } });
+        return;
+    }
+    const adj = cut(s.adj_pct), raw = cut(s.raw_pct), adjD = cut(s.adj_dollar), rawD = cut(s.raw_dollar), sh = cut(s.shanghai), cx = cut(s.comex);
+    const band = arbBand(d.stats), fill = v => Array(n).fill(v);
+    const lastIdx = adj.reduce((a, v, i) => (v !== null ? i : a), -1);
+    // The raw spread is the adjusted one divided by a constant, so it has the same shape: it is listed in the tooltip, not drawn.
+    const sets = [{ ...line(adj, '#e4e4e7', 1.5), label: 'VAT-adjusted', pointRadius: adj.map((_, i) => (i === lastIdx ? 3 : 0)), pointBackgroundColor: '#e4e4e7' }];
+    if (band) {
+        sets.push({ ...line(fill(band.mean), 'rgba(255,255,255,0.35)', 1, [4, 4]), label: 'Mean', pointHoverRadius: 0 },
+            { ...line(fill(band.lo), 'transparent', 0), label: 'Low', pointHoverRadius: 0 },
+            { ...line(fill(band.hi), 'transparent', 0), label: 'High', pointHoverRadius: 0, fill: '-1', backgroundColor: 'rgba(228,228,231,0.07)' });
+    }
+    arbSpreadChartInstance = new Chart(ctx, { type: 'line', data: { labels, datasets: sets }, options: { ...base, plugins: tip({ title,
+        label: c => (c.parsed.y == null ? '' : [`VAT-adjusted ${arbSigned(c.parsed.y, 2, '%')} (${shUsd(adjD[c.dataIndex])})`,
+            `Raw ${arbSigned(raw[c.dataIndex], 2, '%')} (${shUsd(rawD[c.dataIndex])})`]),
+        afterBody: i => (i.length ? `Shanghai ${fmt(sh[i[0].dataIndex], 2, '$')} · COMEX ${fmt(cx[i[0].dataIndex], 2, '$')}` : ''),
+    }), scales: { x: xAxis, y: yAxis('%') } } });
+}
+function shSetView(v) { shView = v; shDrawChart(); }
+function shSetRange(r) { shRange = r; shDrawChart(); }
 
 async function loadShfeArbSpread() {
     try {
-        const json = await fetchJson(`${API_BASE}/api/macro_ledger_full?limit=200`);
-        
-        if (json.status !== 'success' || !json.data) {
-            log(`Shanghai-COMEX Arb Error: ${json.message || 'no data'}`, 'error');
-        } else {
-            const d = json.data;
-            window._arbSpreadData = { labels: d.labels, shfe: d.shfe_silver_usd, comex: d.comex_silver, premium: d.shfe_premium };
-            
-            // Update header stats
-            const lastIdx = d.labels.length - 1;
-            const shfeEl = document.getElementById('liveShfe');
-            const comexEl = document.getElementById('liveComexSilver');
-            const premEl = document.getElementById('liveShfePremium');
-            
-            if (shfeEl && d.shfe_silver_usd[lastIdx] != null) shfeEl.innerText = `$${d.shfe_silver_usd[lastIdx].toFixed(2)}`;
-            if (comexEl && d.comex_silver[lastIdx] != null) comexEl.innerText = `$${d.comex_silver[lastIdx].toFixed(2)}`;
-            if (premEl && d.shfe_premium[lastIdx] != null) {
-                const prem = d.shfe_premium[lastIdx];
-                premEl.innerText = `${prem >= 0 ? '+' : ''}$${prem.toFixed(2)}`;
-                premEl.className = prem >= 0 
-                    ? 'text-green-400 font-bold text-sm font-mono drop-shadow-[0_0_5px_rgba(34,197,94,0.5)]'
-                    : 'text-red-400 font-bold text-sm font-mono';
-            }
-            
-            // Render chart
-            const ctx = document.getElementById('arbSpreadChart').getContext('2d');
-            if (arbSpreadChartInstance) arbSpreadChartInstance.destroy();
-            
-            arbSpreadChartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: d.labels,
-                    datasets: [
-                        {
-                            label: 'SHFE Silver (USD/oz)',
-                            data: d.shfe_silver_usd,
-                            borderColor: '#f43f5e',
-                            borderWidth: 2,
-                            tension: 0.3,
-                            pointRadius: 0,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'COMEX Silver',
-                            data: d.comex_silver,
-                            borderColor: 'rgba(255, 255, 255, 0.7)',
-                            borderWidth: 2,
-                            tension: 0.3,
-                            pointRadius: 0,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'Arb Premium ($/oz)',
-                            data: d.shfe_premium,
-                            borderColor: '#22c55e',
-                            backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                            borderWidth: 2,
-                            fill: true,
-                            tension: 0.3,
-                            pointRadius: 0,
-                            yAxisID: 'y1'
-                        }
-                    ]
-                },
-                options: {
-                    devicePixelRatio: 3,
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
-                    plugins: {
-                        legend: { labels: { color: '#a1a1aa', boxWidth: 10, font: { size: 9 } } },
-                        tooltip: {
-                            backgroundColor: 'rgba(9, 9, 11, 0.95)',
-                            borderColor: '#27272a',
-                            borderWidth: 1,
-                            padding: 10,
-                            titleColor: '#fff',
-                            bodyColor: '#a1a1aa',
-                            callbacks: {
-                                label: function(context) {
-                                    return `${context.dataset.label}: $${context.parsed.y?.toFixed(2) || 'N/A'}`;
-                                }
-                            }
-                        }
-                    },
-                    scales: {
-                        x: { grid: { display: false }, ticks: { color: '#a1a1aa', font: { size: 8 }, maxTicksLimit: 8 } },
-                        y: {
-                            position: 'left',
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                            ticks: { color: '#a1a1aa', font: { size: 9 }, callback: (v) => '$' + v.toFixed(0) }
-                        },
-                        y1: {
-                            position: 'right',
-                            grid: { display: false },
-                            ticks: { color: '#22c55e', font: { size: 9 }, callback: (v) => '$' + v.toFixed(2) }
-                        }
-                    }
-                }
-            });
-        }
+        const json = await fetchJson(`${API_BASE}/api/shanghai_spread`);
+        if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
+        window._arbSpreadData = json.data;
+        shRender(json.data);
+        log('Shanghai-COMEX spread loaded.', 'success');
     } catch (e) {
         log(`Shanghai-COMEX Arb Error: ${e.message}`, 'error');
+        window._arbSpreadData = null;
+        shDrawChart();
+        ppSet('shFooter', `Could not load the Shanghai spread: ${e.message}`);
+        document.getElementById('shFooter').className = 'text-[8px] text-red-400 leading-tight';
     }
 }
 

@@ -302,16 +302,34 @@ def sge_silver_benchmark(s):
         return df
     df, pid = s.fetch("akshare", {"fn": "spot_silver_benchmark_sge"}, call, kind="sge_benchmark", fmt="csv",
                       capture=lambda d: (d.to_csv(index=False).encode(), None, {"rows": len(d)}))
+    fixes = sge_fixes(df)
     latest = df.iloc[-1]
-    cols = list(df.columns)
-    date_col = cols[0]
-    evening = latest.get("晚盘价")
-    morning = latest.get("早盘价")
-    use_evening = evening is not None and pd.notna(evening) and float(evening) > 0
-    price = float(evening) if use_evening else (float(morning) if morning is not None and pd.notna(morning) else None)
-    return {"value": price, "session": "evening" if use_evening else "morning", "date": str(latest[date_col]),
+    price, session = _sge_row_price(latest)
+    return {"value": price, "session": session, "date": str(latest[df.columns[0]]),
             "unit": "CNY/kg", "status": "fresh" if price else "missing", "source": "akshare:SGE",
-            "payload_id": pid}
+            "payload_id": pid, "history": fixes}
+
+
+def _sge_row_price(row):
+    """(CNY/kg, session) of one benchmark row: the late-session price when above 0, else the early-session price."""
+    evening, morning = row.get("晚盘价"), row.get("早盘价")
+    if evening is not None and pd.notna(evening) and float(evening) > 0:
+        return float(evening), "evening"
+    return (float(morning) if morning is not None and pd.notna(morning) else None), "morning"
+
+
+def sge_fixes(df):
+    """Every row of the benchmark frame as {"date", "cny_per_kg", "session"} (a row with no price or no readable date is skipped)."""
+    out = []
+    for _, row in df.iterrows():
+        try:
+            price, session = _sge_row_price(row)
+            date = str(pd.Timestamp(row[df.columns[0]]).date())
+        except (ValueError, TypeError):     # one unreadable row is skipped; it must not cost the rest of the history
+            continue
+        if price is not None and date != "NaT":
+            out.append({"date": date, "cny_per_kg": price, "session": session})
+    return out
 
 
 # ---------------------------------------------------------------- Databento

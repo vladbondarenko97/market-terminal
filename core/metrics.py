@@ -661,3 +661,86 @@ def percentile_context(values, latest):
     return {"latest": latest, "percentile": float((s < latest).mean() * 100),
             "zscore": float((latest - s.mean()) / s.std()) if s.std() else None,
             "min": float(s.min()), "max": float(s.max()), "mean": float(s.mean()), "observations": len(vals)}
+
+
+# ---------------------------------------------------------------- premium statistics and the Shanghai spread
+SHANGHAI_VERSION = "shanghai_dated_v1"
+OZ_PER_KG = 32.1507     # troy ounces per kilogram, as used by collect_shanghai
+
+
+def _r(value, digits=2):
+    value = safe_float(value)
+    return None if value is None else round(value, digits)
+
+
+def premium_stats(rows, legs):
+    """Statistics of a premium series. rows: time-ascending dicts with `ts`, `label`, `pct` and one number per leg;
+    legs: {output name: row field}. One reading per day (the last) over the 90 days before the newest reading;
+    zscore and pct_rank need 20 days and a positive std. Returns the stats dict without `latest`."""
+    df = pd.DataFrame(rows)
+    df["ts"] = pd.to_datetime(df["ts"])
+    latest = df.iloc[-1]
+    daily = df.groupby(df.ts.dt.date).tail(1)
+    window = daily[daily.ts > latest["ts"] - pd.Timedelta(days=90)].pct
+    n = len(window)
+    std = window.std(ddof=1) if n > 1 else float("nan")
+    ranked = n >= 20 and math.isfinite(std) and std > 0
+    changes = {}
+    for h in (1, 7, 30):
+        older = df[df.ts <= latest["ts"] - pd.Timedelta(days=h)]
+        if older.empty:
+            changes[f"{h}d"] = None
+            continue
+        ref = older.iloc[-1]
+        changes[f"{h}d"] = {"ref_label": ref["label"], "pts": _r(latest.pct - ref.pct),
+                            **{name: _r((latest[f] / ref[f] - 1) * 100) for name, f in legs.items()}}
+    return {
+        "basis": "last reading of each day", "window_days": 90, "n": n,
+        "mean": _r(window.mean()), "std": _r(std), "median": _r(window.median()),
+        "min": _r(window.min()), "max": _r(window.max()),
+        "zscore": _r((latest.pct - window.mean()) / std) if ranked else None,
+        "pct_rank": _r((window < latest.pct).mean() * 100, 1) if ranked else None,
+        "changes": changes,
+        "history": {"n": len(df), "days": int(df.ts.dt.date.nunique()), "first_label": df.iloc[0]["label"],
+                    "min": _r(df.pct.min()), "max": _r(df.pct.max())},
+    }
+
+
+def _positive(v):
+    v = safe_float(v)
+    return v if v is not None and v > 0 else None
+
+
+def shanghai_dated_spread(fixes, comex, fx, vat=0.13, keep=400):
+    """SGE silver benchmark against the COMEX (SI=F) and USD/CNY closes of the SAME date; no carrying forward.
+    fixes: time-ascending [{"date", "cny_per_kg", "session"}]; comex, fx: {"YYYY-MM-DD": close}."""
+    base = {"version": SHANGHAI_VERSION}
+    if not fixes or not comex or not fx:
+        what = "SGE benchmark history" if not fixes else ("COMEX history" if not comex else "USD/CNY history")
+        return {"status": "missing", "reason": f"{what} has no data", **base}
+    rows = []
+    for f in fixes:
+        d = f["date"]
+        cny, c, x = _positive(f.get("cny_per_kg")), _positive(comex.get(d)), _positive(fx.get(d))
+        if cny is None or c is None or x is None:
+            continue
+        sh = cny / x / OZ_PER_KG
+        adj = sh / (1 + vat)
+        rows.append({"ts": d, "label": d, "session": f.get("session"), "cny_per_kg": cny, "usdcny": x,
+                     "shanghai": sh, "comex": c, "raw_dollar": sh - c, "raw_pct": (sh / c - 1) * 100,
+                     "adj_dollar": adj - c, "adj_pct": (adj / c - 1) * 100})
+    if not rows:
+        return {"status": "missing", "reason": "no date has an SGE fix, a COMEX close and a USD/CNY close", **base}
+    for r in rows:
+        r["pct"] = r["adj_pct"]
+    last = rows[-1]
+    keys = ("shanghai", "comex", "raw_dollar", "raw_pct", "adj_dollar", "adj_pct")
+    tail = rows[-keep:]
+    return {
+        "status": "fresh", "reason": None, "version": SHANGHAI_VERSION, "vat": vat,
+        "pairing": "each SGE benchmark is compared with the SI=F close and the CNY=X close of the same date",
+        "latest": {"date": last["label"], "session": last["session"], "cny_per_kg": _r(last["cny_per_kg"]),
+                   "usdcny": _r(last["usdcny"], 4), **{k: _r(last[k]) for k in keys}},
+        "stats": premium_stats(rows, {"comex_pct": "comex", "shanghai_pct": "shanghai"}),
+        "series": {"dates": [r["label"] for r in tail], **{k: [_r(r[k]) for r in tail] for k in keys}},
+    }

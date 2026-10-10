@@ -40,7 +40,6 @@ EBAY_SCRIPT_PATH = str(_PROJECT_ROOT / "ebay.py")
 DATA_DIR = str(_DATA_DIR)
 INVENTORY_CSV = os.path.join(DATA_DIR, "comex_inventory_history.csv")
 LEDGER_CSV = os.path.join(DATA_DIR, "macro_master_ledger.csv")
-LEDGER_FILE = os.path.join(DATA_DIR, "physical_arbitrage_ledger.csv")
 INSTITUTIONAL_LEDGER_CSV = os.path.join(DATA_DIR, "equities_darkpool_gex_ledger.csv")
 MANUAL_RUN_LOG = os.path.join(DATA_DIR, ".v2_manual_run.log")        # output of runs started by POST /run
 
@@ -334,45 +333,163 @@ def get_gex_profile():
     payload = build_gex_payload(spot, chains, list(chains), datetime.now().date())
     return jsonify({"status": "success", "data": payload})
 
+def _rnd(value, digits=2):
+    """_num rounded to `digits` places (None stays None, so the JSON never holds NaN)."""
+    value = _num(value)
+    return None if value is None else round(value, digits)
+
+
+def _arb_point(row):
+    """One verified reading as the dict the payload shows (rounded; the average fields are None without an average)."""
+    spot, cheap, avg = row.spot, row.cheap, row.avg
+    has_avg = math.isfinite(avg) and avg > 0
+    return {
+        "label": row.ts.strftime('%Y-%m-%d %H:%M'), "spot": _rnd(spot), "cheapest_price": _rnd(cheap),
+        "avg_price": _rnd(avg) if has_avg else None,
+        "cheapest_dollar": _rnd(cheap - spot), "avg_dollar": _rnd(avg - spot) if has_avg else None,
+        "cheapest_pct": _rnd((cheap / spot - 1) * 100), "avg_pct": _rnd((avg / spot - 1) * 100) if has_avg else None,
+    }
+
+
+def build_arbitrage_series(ledger, limit):
+    """Silver Eagle premium over silver futures from the macro ledger, paired within each run's row.
+    Returns None when no row is a verified reading (both the futures price and the cheapest retail price above 0)."""
+    df = ledger.dropna(how='all').dropna(subset=['Datetime']).copy()
+    df['ts'] = pd.to_datetime(df['Datetime'], format='mixed', errors='coerce')
+    for col, name in (('COMEX_Silver', 'spot'), ('Retail_Silver_Cheapest', 'cheap'), ('Retail_Silver_Avg', 'avg')):
+        df[name] = pd.to_numeric(df[col], errors='coerce') if col in df.columns else float('nan')
+    df = df.dropna(subset=['ts'])
+    df = df[(df.spot > 0) & (df.cheap > 0) & np.isfinite(df.spot) & np.isfinite(df.cheap)].sort_values('ts')
+    if df.empty:
+        return None
+    df['pct'] = (df.cheap / df.spot - 1) * 100
+    points = [_arb_point(r) for r in df.tail(limit).itertuples()]
+    keys = ("spot", "cheapest_price", "avg_price", "cheapest_dollar", "avg_dollar", "cheapest_pct", "avg_pct")
+    payload = {"labels": [p["label"] for p in points], **{k: [p[k] for p in points] for k in keys},
+               "benchmark_symbol": "SI=F"}
+
+    # Statistics use the last reading of each day, over the 90 days before the newest reading.
+    rows = [{"ts": r.ts, "label": r.ts.strftime('%Y-%m-%d %H:%M'), "pct": r.pct, "spot": r.spot, "cheap": r.cheap}
+            for r in df.itertuples()]
+    stats = metrics.premium_stats(rows, {"spot_pct": "spot", "retail_pct": "cheap"})
+    payload["stats"] = {**{k: v for k, v in stats.items() if k not in ("changes", "history")},
+                        "latest": _arb_point(next(df.tail(1).itertuples())),
+                        "changes": stats["changes"], "history": stats["history"]}
+    return payload
+
+
+def _units_between(earlier, later):
+    """Units sold per listing between two runs ({item_id: units}). A listing absent from either run, without an
+    integer count in both, or whose count went down has no delta and is left out (not zero)."""
+    out = {}
+    for item_id, now in later["listings"].items():
+        a, b = (earlier["listings"].get(item_id) or {}).get("sold_qty"), now.get("sold_qty")
+        if all(isinstance(v, int) and not isinstance(v, bool) for v in (a, b)) and b >= a:
+            out[item_id] = b - a
+    return out
+
+
+def build_eagle_book(runs):
+    """The newest run's dealer book and the units-sold flow, from runs oldest first:
+    [{"run_at": aware datetime, "listings": {item_id: listing dict}}]. Returns (book, flow); flow is None under two runs."""
+    if not runs:
+        return None, None
+    newest = runs[-1]
+    stamp = lambda run: run["run_at"].astimezone(config.LOCAL_TZ).strftime('%Y-%m-%d %H:%M')
+    at_least = lambda days, before=newest: next(
+        (r for r in reversed(runs) if r["run_at"] <= before["run_at"] - timedelta(days=days)), None)
+    prev = runs[-2] if len(runs) > 1 else None
+    ref7 = at_least(7)
+    sold_prev = _units_between(prev, newest) if prev else {}
+    sold_7d = _units_between(ref7, newest) if ref7 else {}
+
+    listings = []
+    for item_id, l in newest["listings"].items():
+        listings.append({
+            "item_id": item_id, "title": l.get("title"), "seller": l.get("seller"), "url": l.get("url"),
+            "total_cost": _rnd(l.get("total_cost")), "shipping": _rnd(l.get("shipping")),
+            "premium_pct": _rnd(l.get("premium_percent")), "premium_dollars": _rnd(l.get("premium_dollars")),
+            "status": l.get("status"), "available_qty": l.get("available_qty"), "sold_qty": l.get("sold_qty"),
+            "sold_prev": sold_prev.get(item_id), "sold_7d": sold_7d.get(item_id)})
+    listings.sort(key=lambda l: (l["total_cost"] is None, l["total_cost"] or 0))
+    premiums = [l["premium_pct"] for l in listings if l["premium_pct"] is not None]
+    book = {"run_at": stamp(newest), "count": len(listings),
+            "in_stock": sum(l["status"] in ("IN_STOCK", "LIMITED_STOCK") for l in listings),
+            "prev_count": len(prev["listings"]) if prev else None,
+            "cheapest_pct": min(premiums) if premiums else None,
+            "median_pct": _rnd(np.median(premiums)) if premiums else None, "listings": listings}
+    if prev is None:
+        return book, None
+
+    def rate(a, b):
+        deltas = _units_between(a, b) if a and b else {}
+        if not deltas:
+            return None
+        days = (b["run_at"] - a["run_at"]).total_seconds() / 86400
+        units = sum(deltas.values())
+        return {"ref_run_at": stamp(a), "units": units, "days": _rnd(days, 1),
+                "per_day": _rnd(units / days, 1) if days > 0 else None, "listings": len(deltas)}
+
+    per_date = {}
+    for a, b in zip(runs, runs[1:]):
+        deltas = _units_between(a, b)
+        if deltas:
+            date = b["run_at"].astimezone(config.LOCAL_TZ).strftime('%Y-%m-%d')
+            per_date[date] = per_date.get(date, 0) + sum(deltas.values())
+    flow = {"prev_run_at": stamp(prev), "units_prev": sum(sold_prev.values()) if sold_prev else None,
+            "rate_7d": rate(ref7, newest), "rate_prior_7d": rate(at_least(14), ref7) if ref7 else None,
+            "daily": [{"date": d, "units": u} for d, u in sorted(per_date.items())]}
+    return book, flow
+
+
+def _load_eagle_runs(conn):
+    """The live runs' eBay listings from the 36 days before the newest one, oldest run first."""
+    rows = conn.execute(
+        """SELECT o.run_id, o.entity, o.observed_at, o.value_json FROM v2_observations o
+           JOIN v2_runs r ON r.run_id = o.run_id
+           WHERE o.metric_id = 'ebay.listing' AND r.mode = 'live'
+             AND r.status IN ('committed', 'completed', 'completed_with_warnings')
+             AND o.observed_at >= (SELECT datetime(MAX(observed_at), '-37 days') FROM v2_observations
+                                   WHERE metric_id = 'ebay.listing')""").fetchall()
+    runs = {}
+    for r in rows:
+        try:
+            at = datetime.fromisoformat(r["observed_at"])
+            listing = json.loads(r["value_json"])
+        except (TypeError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        runs.setdefault(r["run_id"], {"run_at": at, "listings": {}})["listings"][r["entity"]] = listing
+    ordered = sorted(runs.values(), key=lambda run: run["run_at"])
+    if ordered:
+        floor = ordered[-1]["run_at"] - timedelta(days=36)
+        ordered = [run for run in ordered if run["run_at"] >= floor]
+    return ordered
+
+
 @app.route('/api/arbitrage_history', methods=['GET'])
 @guarded("Arbitrage history")
 def get_arbitrage_history():
     limit = int_arg('limit', 50)
-    if not os.path.exists(LEDGER_FILE):
+    if not os.path.exists(LEDGER_CSV):
         return json_error("Ledger file not found.", 404)
-
-    # 1. Ingestion: Load the CSV
-    df = pd.read_csv(LEDGER_FILE)
-
-    if df.empty:
+    payload = build_arbitrage_series(data_cache.get_csv(LEDGER_CSV).copy(), limit)
+    if payload is None:
         return json_error("Ledger is empty.", 404)
 
-    # 2. Sanitization: Limit the data points to prevent terminal lag
-    # Defaults to the last 50 data points, but UI can request more via ?limit=100
-    df = df.tail(limit).copy()
-
-    # Format Datetime for cleaner Chart.js X-Axis (e.g., '03-24 14:30')
-    df['Datetime'] = pd.to_datetime(df['Datetime']).dt.strftime('%m-%d %H:%M')
-
-    # Safely handle NaNs (replaces pandas NaN with Python None, which becomes JSON 'null')
-    # This ensures Chart.js simply leaves a gap instead of crashing if a value is missing
-    df = df.astype(object).where(pd.notnull(df), None)
-
-    # 3. Payload Architecture: Parallel arrays for Chart.js
-    payload = {
-        "labels": df['Datetime'].tolist(),
-        "spot": df['COMEX_Spot'].tolist(),
-        "cheapest_price": df['Cheapest_Eagle'].tolist(),
-        "avg_price": df['Average_Eagle'].tolist(),
-        "cheapest_pct": df['Cheapest_Premium_Percent'].tolist(),
-        "avg_pct": df['Average_Premium_Percent'].tolist(),
-        "cheapest_dollar": df['Cheapest_Premium_Dollars'].tolist()
-    }
-
-    return jsonify({
-        "status": "success",
-        "data": payload
-    })
+    # The dealer book and the sales flow come from the pipeline database; without it the series is still served.
+    payload["book"] = payload["flow"] = None
+    conn = _open_readonly()
+    if conn is not None:
+        try:
+            payload["book"], payload["flow"] = build_eagle_book(_load_eagle_runs(conn))
+        except sqlite3.OperationalError as exc:
+            if not _uninitialised(exc):
+                raise
+        finally:
+            conn.close()
+    return jsonify({"status": "success", "data": payload})
 
 # The Databento client is created on first use: only /api/darkpool needs it, so the terminal starts without a key.
 db_client = None
@@ -574,225 +691,305 @@ def get_vmri_history():
 # --- ENDPOINT: VMRI CHART VIEWER ---
 @app.route('/vmri_chart')
 def vmri_chart_page():
-    """Serves a professional-grade interactive risk monitor."""
+    """The VMRI chart page shown in the terminal's panel 1 frame. It draws /api/vmri_history."""
     html_template = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>VMRI Systemic Risk Monitor</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>VMRI Macro Risk Index</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
         <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.1.0/dist/chartjs-plugin-annotation.min.js" integrity="sha384-dB7WWqy9+vERwKo2atAKw+KLNhfY0RX5ZjV1l4HHMBZz5wfSvX/GsytIpOyBY8dG" crossorigin="anonymous"></script>
         <style>
-            body { font-family: 'Courier New', monospace; background: transparent; color: #00ff00; padding: 10px; margin: 0; box-sizing: border-box; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-            .container { flex: 1; display: flex; flex-direction: column; background: #000; padding: 10px; border: 1px solid #1a1a1a; border-radius: 4px; position: relative; }
-            .header-bar { display: flex; justify-content: space-between; items-center: center; margin-bottom: 5px; }
-            h2 { color: #ff0000; letter-spacing: 3px; font-size: 14px; margin: 0; }
-            
-            /* Sleek Toggles */
-            .toggles { display: flex; gap: 5px; }
-            .overlay-btn { background: #111; border: 1px solid #333; color: #666; font-family: monospace; font-size: 9px; padding: 2px 6px; cursor: pointer; border-radius: 3px; transition: all 0.2s; }
-            .overlay-btn:hover { border-color: #888; color: #ccc; }
-            .overlay-btn.active { background: rgba(255, 255, 255, 0.1); color: #fff; border-color: #fff; box-shadow: 0 0 5px rgba(255,255,255,0.3); }
-            
-            .chart-wrapper { flex: 1; position: relative; min-height: 0; }
-            
-            /* The Insight Banner */
-            .insight-banner { margin-top: 5px; padding: 6px; background: #0a0a0a; border: 1px solid #222; border-radius: 3px; font-size: 9px; color: #aaa; text-align: center; font-weight: bold; letter-spacing: 1px; }
-            .insight-threat { color: #ff4444; }
-            .insight-safe { color: #44ff44; }
-            .insight-driver { color: #38bdf8; }
+            * { box-sizing: border-box; }
+            body { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; background: #000; color: #a1a1aa; margin: 0; padding: 10px 12px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+            .head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 14px; margin-bottom: 6px; }
+            .cap { font-size: 8px; text-transform: uppercase; letter-spacing: 1.5px; color: #71717a; }
+            .big { display: flex; align-items: center; gap: 8px; }
+            .score { font-size: 28px; font-weight: 800; line-height: 1.1; color: #fff; font-variant-numeric: tabular-nums; }
+            .chip { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 1px 5px; border: 1px solid #3f3f46; border-radius: 3px; color: #a1a1aa; }
+            .mid { font-size: 9px; line-height: 1.6; padding-top: 10px; }
+            .ctl { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+            .seg { display: flex; }
+            .seg button { font: inherit; font-size: 9px; background: #09090b; border: 1px solid #27272a; color: #a1a1aa; padding: 2px 7px; cursor: pointer; margin-left: -1px; }
+            .seg button:first-child { margin-left: 0; border-radius: 3px 0 0 3px; }
+            .seg button:last-child { border-radius: 0 3px 3px 0; }
+            .seg button[aria-pressed="true"] { color: #fff; border-color: #3f3f46; background: #18181b; position: relative; }
+            .chart-wrap { flex: 1; min-height: 0; position: relative; }
+            .foot { font-size: 9px; color: #71717a; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="header-bar">
-                <h2>🚨 VMRI SYSTEMIC RISK MONITOR</h2>
-                <div class="toggles">
-                    <button id="btnDXY" class="overlay-btn" onclick="toggleOverlay('dxy', this)">+ DXY</button>
-                    <button id="btnVIX" class="overlay-btn" onclick="toggleOverlay('vix', this)">+ VIX</button>
-                    <button id="btnYield" class="overlay-btn" onclick="toggleOverlay('yield', this)">+ 10Y</button>
-                    <button id="btnOAS" class="overlay-btn" onclick="toggleOverlay('oas', this)">+ OAS</button>
-                </div>
+        <div class="head">
+            <div>
+                <div class="cap" id="cap">VMRI</div>
+                <div class="big"><span class="score" id="score">&mdash;</span><span class="chip" id="chip" hidden></span></div>
             </div>
-            
-            <div class="chart-wrapper">
-                <canvas id="vmriChart"></canvas>
-            </div>
-            
-            <div id="insightBanner" class="insight-banner">
-                AWAITING TELEMETRY...
+            <div class="mid" id="mid"></div>
+            <div class="ctl">
+                <div class="seg" id="ranges"></div>
+                <div class="seg" id="overlays"></div>
             </div>
         </div>
+        <div class="chart-wrap"><canvas id="vmriChart"></canvas></div>
+        <div class="foot" id="foot"></div>
 
         <script>
-            let vmriChartInstance = null;
-            let masterData = null;
-            let activeOverlay = null;
+            var TIERS = [
+                { min: 350, name: 'SYSTEMIC THREAT', band: 'SYSTEMIC', color: '#ef4444', rgb: '239,68,68' },
+                { min: 250, name: 'ELEVATED RISK', band: 'ELEVATED', color: '#f97316', rgb: '249,115,22' },
+                { min: 150, name: 'MODERATE RISK', band: 'MODERATE', color: '#eab308', rgb: '234,179,8' },
+                { min: -Infinity, name: 'LOW RISK', band: 'LOW', color: '#22c55e', rgb: '34,197,94' }
+            ];
+            var RANGES = { '1M': 30, '3M': 91, 'ALL': null };
+            var OVERLAYS = { 'DXY': 'dxy', 'VIX': 'vix', '10Y': 'yield', 'OAS': 'oas' };
+            var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            var DAY = 86400000;
 
-            async function loadChart() {
-                try {
-                    const response = await fetch('/api/vmri_history');
-                    masterData = await response.json();
-                    
-                    // Safety Check: Did the API return an error?
-                    if (masterData.error) {
-                        console.error("API Error:", masterData.error);
-                        document.getElementById('insightBanner').innerHTML = `<span class="insight-threat">⚠️ API ERROR: ${masterData.error}</span>`;
-                        return;
-                    }
-                    
-                    renderChart();
-                    updateInsightBanner();
-                } catch (e) { 
-                    console.error("VMRI chart failed:", e); 
-                    document.getElementById('insightBanner').innerHTML = `<span class="insight-threat">⚠️ COULD NOT LOAD THE VMRI HISTORY</span>`;
-                }
+            Chart.defaults.font.family = "'JetBrains Mono', ui-monospace, Menlo, monospace";
+
+            var rows = [];
+            var range = '3M';
+            var overlay = null;
+            var chart = null;
+
+            function $(id) { return document.getElementById(id); }
+            function tierOf(v) { return TIERS.find(function (t) { return v >= t.min; }); }
+            function isNum(v) { return typeof v === 'number' && isFinite(v); }
+            function pad(n) { return (n < 10 ? '0' : '') + n; }
+            function dayText(t) { var d = new Date(t); return MONTHS[d.getMonth()] + ' ' + d.getDate(); }
+            function timeText(t) { var d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+
+            // Selected range: rows from the cutoff to the newest label, or everything when fewer than 2 scores fall inside.
+            function pickView() {
+                var days = RANGES[range], last = rows[rows.length - 1].t;
+                var min = days === null ? rows[0].t : last - days * DAY;
+                var view = rows.filter(function (r) { return r.t >= min; });
+                if (view.filter(function (r) { return isNum(r.y); }).length < 2) { view = rows; min = rows[0].t; }
+                return { view: view, min: min, max: last };
             }
 
-            function updateInsightBanner() {
-                const lastIdx = masterData.scores.length - 1;
-                const currentScore = masterData.scores[lastIdx];
-                const momentum = masterData.momentum_5[lastIdx];
-                const driver = masterData.primary_driver[lastIdx];
-
-                let statusHtml = '';
-                if (currentScore === null || currentScore === undefined || !isFinite(currentScore)) {
-                    // A run whose inputs were incomplete (for example no HY OAS from FRED) records no score.
-                    statusHtml = `<span class="insight-threat">⚠️ NO VMRI SCORE FOR THE LATEST RUN</span> | an input was missing (see the macro ledger row ${masterData.labels[lastIdx] || ''})`;
-                } else if (currentScore >= 250) {
-                    let trend = momentum > 0 ? "ACCELERATING UPWARD" : "DECAYING";
-                    statusHtml = `<span class="insight-threat">⚠️ SYSTEMIC THREAT ACTIVE (${currentScore.toFixed(0)})</span> | Primary Driver: <span class="insight-driver">${driver}</span> | Trend: ${trend}`;
-                } else {
-                    let trend = momentum < 0 ? "COOLING" : "BUILDING";
-                    statusHtml = `<span class="insight-safe">🟢 RISK ON ENVIRONMENT (${currentScore.toFixed(0)})</span> | Primary Driver: <span class="insight-driver">${driver}</span> | Trend: ${trend}`;
-                }
-                
-                document.getElementById('insightBanner').innerHTML = statusHtml;
+            // Y bounds that fit the visible scores, in steps of 50.
+            function yBounds(view) {
+                var ys = view.map(function (r) { return r.y; }).filter(isNum);
+                return {
+                    min: Math.max(0, Math.floor((Math.min.apply(null, ys) - 10) / 50) * 50),
+                    max: Math.ceil((Math.max.apply(null, ys) + 10) / 50) * 50
+                };
             }
 
-            function toggleOverlay(metric, btnElement) {
-                // Clear active states
-                document.querySelectorAll('.overlay-btn').forEach(btn => btn.classList.remove('active'));
-                
-                if (activeOverlay === metric) {
-                    // Turn it off if already active
-                    activeOverlay = null;
-                } else {
-                    // Turn it on
-                    activeOverlay = metric;
-                    btnElement.classList.add('active');
-                }
-                renderChart();
+            function lastIndex(list, key) {
+                for (var i = list.length - 1; i >= 0; i--) { if (isNum(list[i][key])) return i; }
+                return -1;
             }
+
+            function setText(id, text, color) {
+                var el = $(id);
+                el.textContent = text;
+                el.style.color = color || '';
+            }
+
+            function line(text, color) {
+                var d = document.createElement('div');
+                d.textContent = text;
+                if (color) d.style.color = color;
+                $('mid').appendChild(d);
+            }
+
+            function renderHeader(d, drivers) {
+                var n = rows.length - 1, r = rows[n];
+                $('cap').textContent = 'VMRI · ' + dayText(r.t) + ' ' + timeText(r.t);
+                $('mid').textContent = '';
+                var chip = $('chip');
+                chip.hidden = false;
+                if (!isNum(r.y)) {
+                    var k = lastIndex(rows, 'y');
+                    setText('score', '—');
+                    chip.textContent = 'NO SCORE';
+                    chip.style.cssText = '';
+                    line('Latest run (' + dayText(r.t) + ' ' + timeText(r.t) + ') recorded no score: an input was missing.');
+                    line('Last recorded: ' + rows[k].y.toFixed(1) + ' on ' + dayText(rows[k].t) + ' ' + timeText(rows[k].t));
+                    return;
+                }
+                var tier = tierOf(r.y);
+                setText('score', r.y.toFixed(1));
+                chip.textContent = tier.name;
+                chip.style.cssText = 'color:' + tier.color + ';border-color:rgba(' + tier.rgb + ',0.4);background:rgba(' + tier.rgb + ',0.1)';
+                var m = d.momentum_5[n];
+                if (isNum(m)) line((m > 0 ? '▲ +' : m < 0 ? '▼ ' : '') + m.toFixed(1) + ' over 5 runs', m > 0 ? '#f87171' : m < 0 ? '#4ade80' : '');
+                var drv = drivers[n];
+                if (drv && drv !== 'AWAITING DATA') line('Driver: ' + drv);
+            }
+
+            function renderFooter(view) {
+                var ys = view.map(function (r) { return r.y; }).filter(isNum);
+                var avg = lastIndex(rows, 'avg');
+                var text = ys.length + ' readings in view · low ' + Math.min.apply(null, ys).toFixed(1) +
+                    ' · high ' + Math.max.apply(null, ys).toFixed(1) +
+                    (avg >= 0 ? ' · 10-run avg ' + rows[avg].avg.toFixed(1) : '');
+                if (overlay) text += ' · right axis: ' + overlay;
+                setText('foot', text);
+            }
+
+            function showMessage(text, color) {
+                if (chart) { chart.destroy(); chart = null; }
+                setText('foot', text, color);
+            }
+
+            function annotations(yb) {
+                var a = {}, lo = [0, 150, 250, 350], hi = [150, 250, 350, Infinity];
+                TIERS.slice().reverse().forEach(function (t, i) {
+                    var y0 = Math.max(lo[i], yb.min), y1 = Math.min(hi[i], yb.max);
+                    if (y1 > y0) a['box' + i] = {
+                        type: 'box', yMin: y0, yMax: y1, backgroundColor: 'rgba(' + t.rgb + ',0.07)', borderWidth: 0,
+                        label: { display: true, content: t.band, position: { x: 'start', y: 'start' }, color: 'rgba(' + t.rgb + ',0.55)', font: { size: 8, weight: 'normal' }, padding: 3 }
+                    };
+                    if (i > 0 && lo[i] > yb.min && lo[i] < yb.max) a['line' + i] = {
+                        type: 'line', yMin: lo[i], yMax: lo[i], borderColor: 'rgba(' + t.rgb + ',0.45)', borderWidth: 1, borderDash: [4, 4],
+                        label: { display: true, content: String(lo[i]), position: 'end', yAdjust: -7, color: t.color, backgroundColor: 'rgba(0,0,0,0)', font: { size: 8, weight: 'normal' }, padding: 1 }
+                    };
+                });
+                return a;
+            }
+
+            var crosshair = {
+                id: 'crosshair',
+                beforeDatasetsDraw: function (c) {
+                    var act = c.tooltip && c.tooltip.getActiveElements();
+                    if (!act || !act.length) return;
+                    var x = act[0].element.x, ctx = c.ctx;
+                    ctx.save();
+                    ctx.strokeStyle = '#3f3f46';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(x, c.chartArea.top);
+                    ctx.lineTo(x, c.chartArea.bottom);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            };
 
             function renderChart() {
-                const ctx = document.getElementById('vmriChart').getContext('2d');
-                if (vmriChartInstance) vmriChartInstance.destroy();
-
-                let gradient = ctx.createLinearGradient(0, 0, 0, 400);
-                gradient.addColorStop(0, 'rgba(255, 0, 0, 0.4)');
-                gradient.addColorStop(0.6, 'rgba(255, 165, 0, 0.1)');
-                gradient.addColorStop(1, 'rgba(0, 255, 0, 0.02)');
-
-                // 1. Base VMRI Dataset
-                const datasets = [
+                var p = pickView(), view = p.view, yb = yBounds(view);
+                var lastIdx = lastIndex(view, 'y');
+                var datasets = [
                     {
-                        label: 'VMRI Score',
-                        data: masterData.scores,
-                        borderColor: '#00ff00',
-                        borderWidth: 2,
-                        fill: false, // Turn off fill so we can see the banding clearly
-                        tension: 0.2,
-                        pointRadius: 0,
-                        pointHoverRadius: 4,
-                        yAxisID: 'y'
+                        label: 'VMRI', data: view.map(function (r) { return { x: r.t, y: r.y }; }), parsing: false,
+                        borderColor: '#a1a1aa', borderWidth: 1.75, tension: 0.15, spanGaps: true, yAxisID: 'y',
+                        pointRadius: function (c) { return c.dataIndex === lastIdx ? 4 : 0; }, pointHoverRadius: 3,
+                        pointBackgroundColor: function (c) { return c.raw && isNum(c.raw.y) ? tierOf(c.raw.y).color : '#a1a1aa'; },
+                        pointBorderWidth: 0,
+                        // a run that recorded no score is bridged with a faint dashed line, so it reads as a gap, not as a value
+                        segment: {
+                            borderColor: function (c) { return c.p0.skip || c.p1.skip ? 'rgba(161,161,170,0.4)' : tierOf(c.p1.parsed.y).color; },
+                            borderDash: function (c) { return c.p0.skip || c.p1.skip ? [2, 3] : undefined; }
+                        }
                     },
                     {
-                        label: '10-Period SMA',
-                        data: masterData.sma_10,
-                        borderColor: 'rgba(255, 255, 255, 0.4)',
-                        borderWidth: 1,
-                        borderDash: [5, 5],
-                        pointRadius: 0,
-                        yAxisID: 'y'
+                        label: '10-run avg', data: view.map(function (r) { return { x: r.t, y: r.avg }; }), parsing: false,
+                        borderColor: 'rgba(255,255,255,0.35)', borderWidth: 1, borderDash: [4, 4], pointRadius: 0, pointHoverRadius: 0, yAxisID: 'y'
                     }
                 ];
-
-                // 2. Dynamic Overlay Dataset
-                if (activeOverlay) {
-                    let overlayData = masterData.context[activeOverlay];
-                    let overlayLabel = activeOverlay.toUpperCase();
-                    
-                    datasets.push({
-                        label: overlayLabel + ' (Overlay)',
-                        data: overlayData,
-                        borderColor: '#38bdf8', // Neon Blue
-                        borderWidth: 1.5,
-                        borderDash: [2, 2],
-                        pointRadius: 0,
-                        yAxisID: 'y1' // Use secondary axis
-                    });
-                }
-
-                vmriChartInstance = new Chart(ctx, {
+                if (overlay) datasets.push({
+                    label: overlay, data: view.map(function (r) { return { x: r.t, y: r[OVERLAYS[overlay]] }; }), parsing: false,
+                    borderColor: '#38bdf8', borderWidth: 1.25, borderDash: [2, 2], pointRadius: 0, pointHoverRadius: 0, yAxisID: 'y1'
+                });
+                if (chart) chart.destroy();
+                chart = new Chart($('vmriChart').getContext('2d'), {
                     type: 'line',
-                    data: {
-                        labels: masterData.labels,
-                        datasets: datasets
-                    },
+                    data: { datasets: datasets },
+                    plugins: [crosshair],
                     options: {
-                        devicePixelRatio: 3,
                         responsive: true,
                         maintainAspectRatio: false,
-                        interaction: { mode: 'index', intersect: false },
+                        animation: false,
+                        interaction: { mode: 'nearest', axis: 'x', intersect: false },
                         plugins: {
                             legend: { display: false },
-                            // --- RISK REGIME BANDING ---
-                            annotation: {
-                                annotations: {
-                                    box1: { type: 'box', yMin: 0, yMax: 150, backgroundColor: 'rgba(34, 197, 94, 0.05)', borderWidth: 0 },
-                                    box2: { type: 'box', yMin: 150, yMax: 250, backgroundColor: 'rgba(234, 179, 8, 0.05)', borderWidth: 0 },
-                                    box3: { type: 'box', yMin: 250, yMax: 350, backgroundColor: 'rgba(249, 115, 22, 0.05)', borderWidth: 0 },
-                                    box4: { type: 'box', yMin: 350, yMax: 1000, backgroundColor: 'rgba(239, 68, 68, 0.05)', borderWidth: 0 }
-                                }
-                            },
+                            annotation: { annotations: annotations(yb) },
                             tooltip: {
-                                backgroundColor: 'rgba(10, 10, 10, 0.95)',
-                                titleFont: { size: 10, family: 'monospace' },
-                                titleColor: '#aaa',
-                                bodyFont: { family: 'monospace', size: 11 },
-                                borderColor: '#333',
-                                borderWidth: 1,
-                                padding: 10,
+                                backgroundColor: 'rgba(9,9,11,0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, displayColors: false,
+                                titleColor: '#a1a1aa', bodyColor: '#e4e4e7',
+                                titleFont: { size: 10 }, bodyFont: { size: 11 },
+                                filter: function (item, i) { return i === 0; },
                                 callbacks: {
-                                    label: function(context) {
-                                        let label = context.dataset.label || '';
-                                        if (label) { label += ': '; }
-                                        if (context.parsed.y !== null) { label += context.parsed.y.toFixed(2); }
-                                        return label;
+                                    title: function (items) { return dayText(items[0].parsed.x) + ', ' + timeText(items[0].parsed.x); },
+                                    label: function (item) {
+                                        // The rows come from the run at that x, whichever line was hit.
+                                        var r = view.find(function (v) { return v.t === item.parsed.x; });
+                                        if (!r) return '';
+                                        var out = [isNum(r.y) ? 'VMRI ' + r.y.toFixed(1) + ' · ' + tierOf(r.y).name : 'VMRI no score'];
+                                        if (isNum(r.avg)) out.push('10-run avg ' + r.avg.toFixed(1));
+                                        if (overlay && isNum(r[OVERLAYS[overlay]])) out.push(overlay + ' ' + r[OVERLAYS[overlay]].toFixed(2));
+                                        return out;
                                     }
                                 }
                             }
                         },
                         scales: {
-                            x: { display: false },
-                            y: { 
-                                min: 50, 
-                                max: 400, // Lock axis so banding stays consistent
-                                grid: { color: '#111' }, 
-                                ticks: { color: '#666', font: {size: 9} } 
+                            x: {
+                                type: 'linear', min: p.min, max: p.max, grid: { display: false }, border: { color: '#27272a' },
+                                ticks: { color: '#71717a', font: { size: 9 }, maxRotation: 0, align: 'inner', callback: function (v) { return dayText(v); } },
+                                afterBuildTicks: function (axis) {
+                                    var step = Math.max(1, Math.ceil((axis.max - axis.min) / DAY / 5)) * DAY, ticks = [];
+                                    for (var v = new Date(axis.max).setHours(0, 0, 0, 0); v >= axis.min; v -= step) ticks.unshift({ value: v });
+                                    axis.ticks = ticks;
+                                }
                             },
-                            y1: {
-                                display: activeOverlay ? true : false,
-                                position: 'right',
-                                grid: { display: false },
-                                ticks: { color: '#38bdf8', font: {size: 9} }
-                            }
+                            y: { min: yb.min, max: yb.max, grid: { color: '#18181b' }, border: { display: false }, ticks: { color: '#71717a', font: { size: 9 } } },
+                            y1: { display: !!overlay, position: 'right', grid: { display: false }, ticks: { color: '#38bdf8', font: { size: 9 } } }
                         }
                     }
                 });
+                renderFooter(view);
             }
-            
+
+            function makeButtons(id, names, isOn, onClick) {
+                var box = $(id);
+                box.textContent = '';
+                names.forEach(function (name) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = name;
+                    b.setAttribute('aria-pressed', String(isOn(name)));
+                    b.addEventListener('click', function () { onClick(name); });
+                    box.appendChild(b);
+                });
+            }
+
+            function refresh() {
+                makeButtons('ranges', Object.keys(RANGES), function (n) { return n === range; }, function (n) { range = n; refresh(); });
+                makeButtons('overlays', Object.keys(OVERLAYS), function (n) { return n === overlay; }, function (n) { overlay = overlay === n ? null : n; refresh(); });
+                renderChart();
+            }
+
+            async function loadChart() {
+                try {
+                    var response = await fetch('/api/vmri_history');
+                    var d = await response.json();
+                    if (!response.ok || d.status === 'error' || !d.labels) {
+                        showMessage('Could not load the VMRI history: ' + ((d && d.message) || 'the server returned an error.'), '#f87171');
+                        return;
+                    }
+                    var ctxs = d.context || {};
+                    rows = d.labels.map(function (l, i) {
+                        var r = { t: new Date(l.replace(' ', 'T')).getTime(), y: d.scores[i], avg: d.sma_10[i] };
+                        Object.keys(OVERLAYS).forEach(function (k) { var key = OVERLAYS[k]; r[key] = (ctxs[key] || [])[i]; });
+                        return r;
+                    });
+                    if (!rows.length || lastIndex(rows, 'y') < 0) {
+                        showMessage('No VMRI history recorded yet.');
+                        return;
+                    }
+                    renderHeader(d, Array.isArray(d.primary_driver) ? d.primary_driver : []);
+                    refresh();
+                } catch (e) {
+                    console.error('VMRI chart failed:', e);
+                    showMessage('Could not load the VMRI history.', '#f87171');
+                }
+            }
+
             loadChart();
         </script>
     </body>
@@ -999,105 +1196,303 @@ def get_inventory_data():
 # --- ENDPOINT 2: THE DASHBOARD VIEWER ---
 @app.route('/inventory_chart')
 def inventory_chart_page():
-    """Serves a single-page HTML dashboard optimized for iFrame embedding."""
+    """The COMEX inventory chart page shown in the terminal's panel 2 frame. It draws /api/inventory_data."""
     html_template = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>COMEX Inventory Live Chart</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>COMEX Silver Inventory</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
         <style>
-            /* OPTIMIZED FOR TERMINAL IFRAME */
-            body { font-family: sans-serif; background: transparent; color: #eee; margin: 0; padding: 10px; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }
-            .container { flex: 1; display: flex; flex-direction: column; background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #27272a; }
-            h2 { text-align: center; color: #ffcc00; font-size: 14px; margin: 0 0 10px 0; font-weight: bold; letter-spacing: 1px; }
-            .stats { display: flex; justify-content: space-around; margin-bottom: 10px; font-weight: bold; font-size: 11px; }
-            .chart-wrapper { flex: 1; position: relative; min-height: 0; }
+            * { box-sizing: border-box; }
+            body { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; background: #000; color: #a1a1aa; margin: 0; padding: 10px 12px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+            .head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 14px; margin-bottom: 6px; }
+            .cap { font-size: 8px; text-transform: uppercase; letter-spacing: 1.5px; color: #71717a; }
+            .big { display: flex; align-items: center; gap: 8px; }
+            .score { font-size: 28px; font-weight: 800; line-height: 1.1; color: #fff; font-variant-numeric: tabular-nums; }
+            .unit { font-size: 11px; font-weight: 400; color: #71717a; }
+            .mid { font-size: 9px; line-height: 1.6; padding-top: 10px; }
+            .mid span { white-space: nowrap; }
+            .ctl { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+            .seg { display: flex; }
+            .seg button { font: inherit; font-size: 9px; background: #09090b; border: 1px solid #27272a; color: #a1a1aa; padding: 2px 7px; cursor: pointer; margin-left: -1px; }
+            .seg button:first-child { margin-left: 0; border-radius: 3px 0 0 3px; }
+            .seg button:last-child { border-radius: 0 3px 3px 0; }
+            .seg button[aria-pressed="true"] { color: #fff; border-color: #3f3f46; background: #18181b; position: relative; }
+            .chart-wrap { flex: 1; min-height: 0; position: relative; }
+            .foot { font-size: 9px; color: #71717a; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         </style>
     </head>
     <body>
-        <div class="container">
-            <h2>🏦 COMEX PHYSICAL INVENTORY HISTORY</h2>
-            <div class="stats" id="currentStats">Loading latest data...</div>
-            <div class="chart-wrapper">
-                <canvas id="inventoryChart"></canvas>
+        <div class="head">
+            <div>
+                <div class="cap" id="cap">REGISTERED</div>
+                <div class="big"><span class="score"><span id="score">&mdash;</span><span class="unit" id="unit"></span></span></div>
+            </div>
+            <div class="mid" id="mid"></div>
+            <div class="ctl">
+                <div class="seg" id="views"></div>
+                <div class="seg" id="ranges"></div>
             </div>
         </div>
+        <div class="chart-wrap"><canvas id="invChart"></canvas></div>
+        <div class="foot" id="foot"></div>
 
         <script>
-            async function loadChart() {
-                const response = await fetch('/api/inventory_data');
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok || !Array.isArray(data.labels) || !data.labels.length) {
-                    document.getElementById('currentStats').textContent =
-                        data.error || data.message || `No COMEX inventory history yet (HTTP ${response.status}).`;
+            var VIEWS = ['REG', 'STACK', 'SHARE'];
+            var RANGES = { '1M': 30, '3M': 91, 'ALL': null };
+            var CHANGES = [1, 5, 20];
+            var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            var DAY = 86400000;
+            var UP = '#4ade80', DOWN = '#f87171';
+
+            Chart.defaults.font.family = "'JetBrains Mono', ui-monospace, Menlo, monospace";
+
+            var rows = [];
+            var view = 'REG';
+            var range = '3M';
+            var chart = null;
+
+            function $(id) { return document.getElementById(id); }
+            function isNum(v) { return typeof v === 'number' && isFinite(v); }
+            function dayText(t) { var d = new Date(t); return MONTHS[d.getMonth()] + ' ' + d.getDate(); }
+            function fullText(t) { return dayText(t) + ', ' + new Date(t).getFullYear(); }
+            function mText(v, n) { return (v / 1e6).toFixed(n); }
+            function pctText(v) { return v.toFixed(1) + '%'; }
+
+            function lastIndex(list, key) {
+                for (var i = list.length - 1; i >= 0; i--) { if (isNum(list[i][key])) return i; }
+                return -1;
+            }
+
+            // Selected range: rows from the cutoff to the newest report, or everything when fewer than 2 registered values fall inside.
+            function pickView() {
+                var days = RANGES[range], last = rows[rows.length - 1].t;
+                var min = days === null ? rows[0].t : last - days * DAY;
+                var v = rows.filter(function (r) { return r.t >= min; });
+                if (v.filter(function (r) { return isNum(r.reg); }).length < 2) { v = rows; min = rows[0].t; }
+                return { view: v, min: min, max: last };
+            }
+
+            // Bounds rounded outward to the smallest step that leaves at most 5 intervals.
+            function niceBounds(lo, hi, steps) {
+                for (var i = 0; i < steps.length; i++) {
+                    var s = steps[i], a = Math.floor(lo / s) * s, b = Math.ceil(hi / s) * s;
+                    if (b === a) b = a + s;
+                    if ((b - a) / s <= 5 || i === steps.length - 1) return { min: a, max: b, step: s };
+                }
+            }
+
+            function span(list) {
+                var ys = list.filter(isNum);
+                return [Math.min.apply(null, ys), Math.max.apply(null, ys)];
+            }
+
+            function setText(id, text, color) {
+                var el = $(id);
+                el.textContent = text;
+                el.style.color = color || '';
+            }
+
+            function line(text, color) {
+                var s = document.createElement('span');
+                s.textContent = text;
+                s.style.color = color || '';
+                var mid = $('mid');
+                if (mid.children.length) mid.appendChild(document.createTextNode(' · '));
+                mid.appendChild(s);
+            }
+
+            function renderHeader() {
+                var n = rows.length - 1, r = rows[n];
+                $('cap').textContent = 'REGISTERED · report ' + dayText(r.t);
+                $('mid').textContent = '';
+                if (!isNum(r.reg)) {
+                    setText('score', '—');
+                    setText('unit', '');
+                    line('Latest report (' + dayText(r.t) + ') has no registered figure.');
                     return;
                 }
+                setText('score', mText(r.reg, 1) + 'M');
+                setText('unit', ' oz');
+                CHANGES.forEach(function (k) {
+                    var p = rows[n - k];
+                    if (!p || !isNum(p.reg) || p.reg <= 0) return;
+                    var d = r.reg - p.reg, sign = d > 0 ? '+' : d < 0 ? '-' : '';
+                    line(k + (k === 1 ? ' report ' : ' reports ') + sign + mText(Math.abs(d), 2) + 'M (' + sign + (Math.abs(d) / p.reg * 100).toFixed(1) + '%)',
+                        d > 0 ? UP : d < 0 ? DOWN : '');
+                });
+            }
 
-                // Update Stats Header
-                const lastIdx = data.labels.length - 1;
-                document.getElementById('currentStats').innerHTML = `
-                    <span>Total: ${(data.total[lastIdx]/1e6).toFixed(2)}M oz</span>
-                    <span style="color: #ff4444">Registered: ${(data.registered[lastIdx]/1e6).toFixed(2)}M oz</span>
-                    <span style="color: #44ff44">Eligible: ${(data.eligible[lastIdx]/1e6).toFixed(2)}M oz</span>
-                `;
+            function renderFooter(v) {
+                var r = rows[rows.length - 1], parts = [];
+                if (isNum(r.el)) parts.push('Eligible ' + mText(r.el, 1) + 'M');
+                if (isNum(r.tot)) parts.push('Total ' + mText(r.tot, 1) + 'M');
+                if (isNum(r.share)) parts.push('Registered share ' + pctText(r.share));
+                parts.push(v.length + ' reports in view');
+                var regs = v.filter(function (x) { return isNum(x.reg); });
+                if (regs.length) {
+                    var lo = regs[0], hi = regs[0];
+                    regs.forEach(function (x) { if (x.reg < lo.reg) lo = x; if (x.reg > hi.reg) hi = x; });
+                    parts.push('registered low ' + mText(lo.reg, 1) + 'M (' + dayText(lo.t) + ')');
+                    parts.push('high ' + mText(hi.reg, 1) + 'M (' + dayText(hi.t) + ')');
+                }
+                setText('foot', parts.join(' · '));
+            }
 
-                const ctx = document.getElementById('inventoryChart').getContext('2d');
-                new Chart(ctx, {
+            function showMessage(text, color) {
+                if (chart) { chart.destroy(); chart = null; }
+                setText('foot', text, color);
+            }
+
+            var crosshair = {
+                id: 'crosshair',
+                beforeDatasetsDraw: function (c) {
+                    var act = c.tooltip && c.tooltip.getActiveElements();
+                    if (!act || !act.length) return;
+                    var x = act[0].element.x, ctx = c.ctx;
+                    ctx.save();
+                    ctx.strokeStyle = '#3f3f46';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(x, c.chartArea.top);
+                    ctx.lineTo(x, c.chartArea.bottom);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            };
+
+            function series(v, key) {
+                return v.map(function (r) { return { x: r.t, y: isNum(r[key]) ? r[key] : null }; });
+            }
+
+            function renderChart() {
+                var p = pickView(), v = p.view, datasets, yb, fmt, stacked = view === 'STACK';
+                var lastIdx = lastIndex(v, view === 'SHARE' ? 'share' : 'reg');
+                function dot(c) { return c.dataIndex === lastIdx ? 4 : 0; }
+                if (stacked) {
+                    // a report missing either figure is missing in both layers
+                    var ok = v.map(function (r) { return isNum(r.reg) && isNum(r.el); });
+                    var top = v.map(function (r, i) { return ok[i] ? r.reg + r.el : null; });
+                    yb = niceBounds(0, span(top)[1], [25e6, 50e6, 100e6, 200e6]);
+                    yb.min = 0;
+                    fmt = function (x) { return x === 0 ? '0' : mText(x, 0) + 'M'; };
+                    datasets = [
+                        { label: 'Registered', data: v.map(function (r, i) { return { x: r.t, y: ok[i] ? r.reg : null }; }), parsing: false, borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.35)', fill: 'origin', borderWidth: 1, tension: 0, spanGaps: false, pointRadius: 0, pointHoverRadius: 3 },
+                        { label: 'Eligible', data: v.map(function (r, i) { return { x: r.t, y: ok[i] ? r.el : null }; }), parsing: false, borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.18)', fill: '-1', borderWidth: 1, tension: 0, spanGaps: false, pointRadius: 0, pointHoverRadius: 3 }
+                    ];
+                } else if (view === 'SHARE') {
+                    var sb = span(v.map(function (r) { return r.share; }));
+                    yb = niceBounds(sb[0], sb[1], [0.5, 1, 2, 5, 10, 20]);
+                    fmt = function (x) { return x + '%'; };
+                    datasets = [{ label: 'Registered share', data: series(v, 'share'), parsing: false, borderColor: '#e4e4e7', borderWidth: 1.75, tension: 0.15, spanGaps: false, pointRadius: dot, pointHoverRadius: 3, pointBackgroundColor: '#e4e4e7', pointBorderWidth: 0 }];
+                } else {
+                    var rb = span(v.map(function (r) { return r.reg; }));
+                    yb = niceBounds(rb[0], rb[1], [0.5e6, 1e6, 2e6, 5e6, 10e6, 20e6]);
+                    fmt = function (x) { return (Math.round(x / 1e5) / 10) + 'M'; };
+                    datasets = [{ label: 'Registered', data: series(v, 'reg'), parsing: false, borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.08)', fill: 'start', borderWidth: 1.75, tension: 0.15, spanGaps: false, pointRadius: dot, pointHoverRadius: 3, pointBackgroundColor: '#f59e0b', pointBorderWidth: 0 }];
+                }
+                if (chart) chart.destroy();
+                chart = new Chart($('invChart').getContext('2d'), {
                     type: 'line',
-                    data: {
-                        labels: data.labels,
-                        datasets: [
-                            {
-                                label: 'Registered (Sellable)',
-                                data: data.registered,
-                                borderColor: '#ff4444',
-                                backgroundColor: 'rgba(255, 68, 68, 0.1)',
-                                fill: true,
-                                tension: 0.3,
-                                pointRadius: 1
-                            },
-                            {
-                                label: 'Eligible (Vaulted)',
-                                data: data.eligible,
-                                borderColor: '#44ff44',
-                                tension: 0.3,
-                                pointRadius: 1
-                            },
-                            {
-                                label: 'Total Inventory',
-                                data: data.total,
-                                borderColor: '#ffcc00',
-                                borderDash: [5, 5],
-                                tension: 0.3,
-                                pointRadius: 1
-                            }
-                        ]
-                    },
+                    data: { datasets: datasets },
+                    plugins: [crosshair],
                     options: {
-                        devicePixelRatio: 3,    
                         responsive: true,
-                        maintainAspectRatio: false, // <--- THE CRITICAL FIX
-                        interaction: {
-                            mode: 'index',
-                            intersect: false,
-                        },
+                        maintainAspectRatio: false,
+                        animation: false,
+                        interaction: { mode: 'nearest', axis: 'x', intersect: false },
                         plugins: {
-                            legend: { labels: { color: '#eee', boxWidth: 12, font: {size: 10} } }
+                            legend: { display: false },
+                            tooltip: {
+                                backgroundColor: 'rgba(9,9,11,0.95)', borderColor: '#27272a', borderWidth: 1, padding: 8, displayColors: false,
+                                titleColor: '#a1a1aa', bodyColor: '#e4e4e7',
+                                titleFont: { size: 10 }, bodyFont: { size: 11 },
+                                filter: function (item, i) { return i === 0; },
+                                callbacks: {
+                                    title: function (items) { return fullText(items[0].parsed.x); },
+                                    label: function (item) {
+                                        // The rows come from the report at that x, whichever layer was hit.
+                                        var r = v.find(function (q) { return q.t === item.parsed.x; });
+                                        if (!r) return '';
+                                        function oz(name, x) { return name + (isNum(x) ? ' ' + mText(x, 2) + 'M oz' : ' n/a'); }
+                                        return [oz('Registered', r.reg), oz('Eligible', r.el), oz('Total', r.tot),
+                                            'Registered share ' + (isNum(r.share) ? pctText(r.share) : 'n/a')];
+                                    }
+                                }
+                            }
                         },
                         scales: {
-                            y: { 
-                                ticks: { color: '#aaa', font: {size: 10}, callback: (v) => (v/1e6).toFixed(0) + 'M' },
-                                grid: { color: '#333' }
+                            x: {
+                                type: 'linear', min: p.min, max: p.max, grid: { display: false }, border: { color: '#27272a' },
+                                ticks: { color: '#71717a', font: { size: 9 }, maxRotation: 0, align: 'inner', callback: function (t) { return dayText(t); } },
+                                afterBuildTicks: function (axis) {
+                                    var step = Math.max(1, Math.ceil((axis.max - axis.min) / DAY / 5)) * DAY, ticks = [];
+                                    for (var t = new Date(axis.max).setHours(0, 0, 0, 0); t >= axis.min; t -= step) ticks.unshift({ value: t });
+                                    axis.ticks = ticks;
+                                }
                             },
-                            x: { 
-                                ticks: { color: '#aaa', font: {size: 10}, maxTicksLimit: 10 },
-                                grid: { display: false }
+                            y: {
+                                min: yb.min, max: yb.max, stacked: stacked, grid: { color: '#18181b' }, border: { display: false },
+                                ticks: { color: '#71717a', font: { size: 9 }, stepSize: yb.step, callback: fmt }
                             }
                         }
                     }
                 });
+                renderFooter(v);
             }
+
+            function makeButtons(id, names, isOn, onClick) {
+                var box = $(id);
+                box.textContent = '';
+                names.forEach(function (name) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = name;
+                    b.setAttribute('aria-pressed', String(isOn(name)));
+                    b.addEventListener('click', function () { onClick(name); });
+                    box.appendChild(b);
+                });
+            }
+
+            function refresh() {
+                makeButtons('views', VIEWS, function (n) { return n === view; }, function (n) { view = n; refresh(); });
+                makeButtons('ranges', Object.keys(RANGES), function (n) { return n === range; }, function (n) { range = n; refresh(); });
+                renderChart();
+            }
+
+            function noHistory() {
+                setText('score', '—');
+                setText('unit', '');
+                showMessage('No COMEX inventory history recorded yet.');
+            }
+
+            async function loadChart() {
+                try {
+                    var response = await fetch('/api/inventory_data');
+                    var d = await response.json();
+                    if (!response.ok || d.status === 'error' || !Array.isArray(d.labels)) {
+                        showMessage('Could not load the COMEX inventory history.' + (d && d.message ? ': ' + d.message : ''), '#f87171');
+                        return;
+                    }
+                    rows = d.labels.map(function (l, i) {
+                        var q = l.split('-'), r = { t: new Date(+q[0], +q[1] - 1, +q[2]).getTime() };
+                        function num(a) { var x = a && a[i]; return isNum(x) ? x : null; }
+                        r.reg = num(d.registered); r.el = num(d.eligible); r.tot = num(d.total);
+                        r.share = isNum(r.reg) && isNum(r.tot) && r.tot > 0 ? r.reg / r.tot * 100 : null;
+                        return r;
+                    });
+                    if (!rows.length || lastIndex(rows, 'reg') < 0) { noHistory(); return; }
+                    renderHeader();
+                    refresh();
+                } catch (e) {
+                    console.error('Inventory chart failed:', e);
+                    showMessage('Could not load the COMEX inventory history.', '#f87171');
+                }
+            }
+
             loadChart();
         </script>
     </body>
@@ -1318,7 +1713,7 @@ def api_help():
       </parameters>
     </endpoint>
     <endpoint method="GET" path="/api/institutional_history" format="json" source="stored">
-      <description>Dark pool and GEX history for one ticker from the equities_darkpool_gex_ledger.csv ledger.</description>
+      <description>Dark pool and GEX history for one ticker from the equities_darkpool_gex_ledger.csv ledger. Five more arrays aligned with labels come from the pipeline database and are null where a row has no stored run: dp_session (the trading session the flow describes), dp_method (aggressor or vwap_heuristic), dp_unknown_vol (block volume with no provider side), dp_above_vwap_vol and dp_below_vwap_vol (the unknown-side volume at or above, and below, the block VWAP).</description>
       <parameters>
         <param name="ticker" type="string" default="SLV" />
         <param name="limit" type="int" default="100" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
@@ -1375,8 +1770,12 @@ def api_help():
       <description>Runs ebay.py: prices of tracked 1 oz Silver Eagle listings from the eBay Browse API, with premium over the benchmark, the silver futures price SI=F (the root attribute benchmark_symbol names it; comex_spot is the historical attribute name and holds that price). Each successful call appends a row to the arbitrage ledger (CSV and SQLite). Needs eBay credentials. POST only.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/shanghai_spread" format="json" source="stored">
+      <description>Shanghai Gold Exchange silver benchmark against COMEX silver futures from the latest snapshot: legacy (the fields as stored, comparing the latest fix with the run-time quote) and dated (each fix paired with the SI=F and USD/CNY closes of its own date, with 90-day statistics and a daily series; null when the snapshot predates it).</description>
+      <parameters />
+    </endpoint>
     <endpoint method="GET" path="/api/arbitrage_history" format="json" source="stored">
-      <description>Silver Eagle premium history from physical_arbitrage_ledger.csv, as parallel arrays.</description>
+      <description>Silver Eagle premium history, paired per run from macro_master_ledger.csv (the retail prices against the silver futures price recorded by the same run), as parallel arrays, with 90-day statistics (stats) and the latest dealer book and units-sold flow from the pipeline database (book and flow, null when the database is not there yet).</description>
       <parameters>
         <param name="limit" type="int" default="50" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
       </parameters>
@@ -1726,6 +2125,49 @@ def api_macro_news():
 # --- INSTITUTIONAL FLOW HISTORY API ---
 # ==========================================
 
+def _utc_to_local_label(stamp):
+    """A stored UTC timestamp as the ledger's 'YYYY-MM-DD HH:MM' in the configured local zone (None if unparseable).
+    Must produce the same string as the `stamp` in core/render.py `ledger_rows()`: rows are matched to runs by it."""
+    try:
+        moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(config.LOCAL_TZ).strftime('%Y-%m-%d %H:%M')
+
+
+def _flow_side_info(conn, ticker):
+    """{ledger row date: {session, method, unknown_vol, above_vwap_vol, below_vwap_vol}} from the pipeline database.
+    Row date -> run (run.generated_at in local time) -> session (flow.<T>.observed_session) -> summary
+    (flow.<T>.summary, newest per session). A missing link leaves the later fields None."""
+    runs = conn.execute("""SELECT o.run_id, o.observed_at FROM v2_observations o JOIN v2_runs r ON r.run_id = o.run_id
+                           WHERE o.metric_id = 'run.generated_at' AND r.mode = 'live'
+                             AND r.status IN ('committed', 'completed', 'completed_with_warnings')""").fetchall()
+    sessions = {r["run_id"]: r["value_text"] for r in conn.execute(
+        "SELECT run_id, value_text FROM v2_observations WHERE metric_id = ?", (f"flow.{ticker}.observed_session",))}
+    summaries = {}
+    for r in conn.execute("SELECT value_json FROM v2_observations WHERE metric_id = ? ORDER BY obs_id",
+                          (f"flow.{ticker}.summary",)):
+        try:
+            summary = json.loads(r["value_json"] or "null")
+        except ValueError:
+            continue
+        if isinstance(summary, dict) and summary.get("session"):
+            summaries[summary["session"]] = summary
+    out = {}
+    for run in runs:
+        label, session = _utc_to_local_label(run["observed_at"]), sessions.get(run["run_id"])
+        if label is None or not session:
+            continue
+        summary = summaries.get(session) or {}
+        split = summary.get("vwap_heuristic_unknown_side") or {}
+        out[label] = {"session": session, "method": summary.get("bias_method"),
+                      "unknown_vol": summary.get("unknown_side_volume"),
+                      "above_vwap_vol": split.get("at_or_above_vwap"), "below_vwap_vol": split.get("below_vwap")}
+    return out
+
+
 @app.route('/api/institutional_history')
 def get_institutional_history():
     """Returns time-series data from the institutional scanner ledger (SPY + SLV dark pool + GEX)."""
@@ -1768,7 +2210,22 @@ def get_institutional_history():
             "gex_put_wall": df['GEX_Put_Wall'].tolist(),
             "gex_zero_gamma": df['GEX_Zero_Gamma'].tolist()
         }
-        
+
+        # How the bias was reached, from the pipeline database (all null when it is not there yet).
+        side = {}
+        conn = _open_readonly()
+        if conn is not None:
+            try:
+                side = _flow_side_info(conn, ticker)
+            except sqlite3.OperationalError as exc:
+                if not _uninitialised(exc):
+                    raise
+            finally:
+                conn.close()
+        for key, field in (("dp_session", "session"), ("dp_method", "method"), ("dp_unknown_vol", "unknown_vol"),
+                           ("dp_above_vwap_vol", "above_vwap_vol"), ("dp_below_vwap_vol", "below_vwap_vol")):
+            payload[key] = [(side.get(str(d)) or {}).get(field) for d in payload["labels"]]
+
         return jsonify({"status": "success", "data": payload})
     
     except Exception as e:
@@ -2465,6 +2922,36 @@ def api_forecast():
                     "macro_regime": fc.get("macro_regime"), "source_errors": fc.get("source_errors"),
                     "refining": fc.get("_refining"), "chaos": fc.get("chaos"),
                     "scorecard": score, "signals": signals})
+
+
+@app.route('/api/shanghai_spread', methods=['GET'])
+@guarded("Shanghai spread")
+def api_shanghai_spread():
+    """The latest snapshot's Shanghai silver section: the legacy fields as stored and the date-paired spread."""
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+        if not row:
+            return json_error("No committed run yet.", 404)
+        key = f"shanghai_snapshot:{row['run_id']}"
+        data = data_cache.get(key)
+        if data is None:
+            ctx = _v2lake.load_snapshot(conn, row["run_id"])
+            sh = ctx.get("shanghai") or {}
+            data = {"run_at": _utc_to_local_label((ctx.get("run") or {}).get("generated_at")),
+                    "legacy": {k: sh.get(k) for k in ("status", "reason", "sge_date", "sge_session", "cny_per_kg", "usdcny",
+                                                      "usd_per_oz", "comex_ref", "raw_spread", "premium_tax_adj")},
+                    "dated": sh.get("dated")}
+            data_cache.set(key, data)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    return jsonify({"status": "success", "data": _json_safe(data)})
 
 
 @app.route('/api/chaos', methods=['GET'])

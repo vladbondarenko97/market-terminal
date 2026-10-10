@@ -482,23 +482,38 @@ def collect_macro(session):
     return out
 
 
+def _dated_spread(session, fixes):
+    """The date-paired Shanghai spread (metrics.shanghai_dated_spread) from the SGE history and 5y SI=F / CNY=X closes."""
+    try:
+        closes = {}
+        for sym in ("SI=F", "CNY=X"):
+            df, _ = src.yf_history(session, sym, "5y", "1d")
+            closes[sym] = {str(ts)[:10]: v for ts, v in df["Close"].dropna().items()}
+        return metrics.shanghai_dated_spread(fixes, closes["SI=F"], closes["CNY=X"])
+    except Exception as e:      # an addition to the Shanghai section: it must never take the stored reading down with it
+        return {"status": "missing", "reason": str(e), "version": metrics.SHANGHAI_VERSION}
+
+
 def collect_shanghai(session, prices):
     try:
         sge = src.sge_silver_benchmark(session)
     except SourceUnavailable as e:
-        return {"status": "missing", "reason": str(e), "tax_assumption": 0.13}
+        return {"status": "missing", "reason": str(e), "tax_assumption": 0.13,
+                "dated": {"status": "missing", "reason": str(e), "version": metrics.SHANGHAI_VERSION}}
+    fixes = sge.pop("history", [])
+    dated = _dated_spread(session, fixes)
     cny = sge["value"]
     fx = prices["usdcny"].get("value")
     comex = prices["silver_futures"].get("value")
     base = {"cny_per_kg": cny, "sge_date": sge["date"], "sge_session": sge["session"], "usdcny": fx,
             "comex_ref": comex, "comex_ref_symbol": "SI=F", "tax_assumption": 0.13,
             "tax_note": "13% VAT stripped from SGE price; retained legacy assumption, benchmark treatment unverified",
-            "source": "akshare:SGE", "payload_id": sge["payload_id"], "observed_at": sge["date"]}
+            "source": "akshare:SGE", "payload_id": sge["payload_id"], "observed_at": sge["date"], "dated": dated}
     if cny is None or fx is None:
         return {**base, "status": "missing", "reason": "SGE price or USD/CNY unavailable (no hardcoded FX fallback)"}
     usd_kg = cny / fx
-    usd_oz = usd_kg / 32.1507
-    prem = ((cny / 1.13) / fx) / 32.1507 - comex if comex is not None else None
+    usd_oz = usd_kg / metrics.OZ_PER_KG
+    prem = ((cny / 1.13) / fx) / metrics.OZ_PER_KG - comex if comex is not None else None
     return {**base, "usd_per_kg": usd_kg, "usd_per_oz": usd_oz, "raw_spread": usd_oz - comex if comex else None,
             "premium_tax_adj": prem, "status": "fresh" if comex is not None else "partial",
             "reason": None if comex is not None else "COMEX reference unavailable"}
@@ -530,6 +545,7 @@ def collect_ebay(session, benchmark):
             "available_qty": (f"{avail['availabilityThreshold']}+" if "availabilityThreshold" in avail
                               else avail.get("estimatedAvailableQuantity")),
             "sold_qty": avail.get("estimatedSoldQuantity"),
+            "seller": (j.get("seller") or {}).get("username"),
             "premium_dollars": total - bench if (total is not None and bench) else None,
             "premium_percent": (total - bench) / bench * 100 if (total is not None and bench) else None,
             "payload_id": l["payload_id"],
