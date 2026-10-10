@@ -332,6 +332,133 @@ def _refinery_alerts(ctx):
 
 
 # ============================================================ replay / resend / catalog
+SIGNAL_STATE = DATA_DIR / "signal_alert_state.json"
+
+
+def _live_quotes():
+    import yfinance as yf
+    from core import watch
+    out = {}
+    for key, sym in [("SPY", "SPY"), ("SLV", "SLV"), ("SI_F", "SI=F")] + [(s, s) for s in watch.watchlist() if s not in ("SPY", "SLV")]:
+        try:
+            out[key] = float(yf.Ticker(sym).fast_info["last_price"])
+        except Exception:
+            pass                                    # no quote: that signal stays as of the last run
+    return out
+
+
+def signal_alerts(dry_run=False, test=False):
+    """Phone (ntfy) + Mac notification for every Signal Watch row that went from waiting to FIRED since the last check,
+    and for live-watch exits. Price-driven rows are re-evaluated on live quotes; the others change when a pipeline run
+    commits. One alert per signal per day, so a price sitting on its trigger cannot flap. The first check only records
+    the state. A fired dip rule also opens a paper position (core/watch.py) that the exit alert later closes."""
+    import yfinance as yf
+    from datetime import date
+    from core import forecast as F, watch as W
+    from core.market_calendar import scheduled_run_skip_reason
+    from send_email import ntfy_push
+    skip = None if dry_run or test else scheduled_run_skip_reason(early_minutes=0)
+    if skip:
+        return 0
+    conn = lake.connect(DB_PATH)
+    try:
+        lake.migrate(conn)
+        ctx = lake.load_snapshot(conn, _latest_run_id(conn))
+        ticket = conn.execute("SELECT * FROM v2_trade_signals WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not ctx or not ctx.get("forecast"):
+            print("signal-alerts: no committed run with Forecast Lab data")
+            return 1
+        quotes = _live_quotes()
+        spy = quotes.get("SPY")
+        rows = F.signal_watch(F.live_overlay(ctx["forecast"], quotes), dict(ticket) if ticket else None)
+        today, now = datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%-I:%M %p")
+        tail = (f"Engine: {ticket['bias']}\n" if ticket else "") + \
+               f"Live quotes {now} ({', '.join(f'{k} {v:.2f}' for k, v in list(quotes.items())[:3]) or 'none'}); " \
+               f"other inputs from the {ctx['run'].get('generated_local', 'latest')} run."
+        calls = lambda exp: yf.Ticker("SPY").option_chain(exp).calls
+        held, items, dip, spread, exp, others = W.open_positions(conn), [], None, None, None, []
+        try:                                        # live watch: dip entry (with the exact spread) and due exits
+            dip = W.dip_signal(W.fetch_closes(), spy, W.in_entry_window(), bool(held))
+            if dip and dip["fired"]:
+                exp = W.pick_expiry(yf.Ticker("SPY").options)
+                spread = W.pick_spread(calls(exp), spy) if exp else None
+                if spread:
+                    dip["action"] = (f"Buy SPY {exp} {spread['long_strike']:g}/{spread['short_strike']:g} call spread near "
+                                     f"{spread['entry_debit']:.2f} debit (max loss ${spread['entry_debit'] * 100:.0f} each); "
+                                     f"sell on {W.exit_date(date.today()):%a %b %-d} · {dip['action'].rsplit(' · ', 1)[-1]}")
+            for sym in W.watchlist()[1:]:                            # alert only: no paper position for share trades
+                row = W.dip_signal(W.fetch_closes(sym), quotes.get(sym), W.in_entry_window(), False, sym, W.fetch_blackout(sym))
+                if not row or row["edge"] == "none":
+                    continue                                         # no measured edge on this ticker: shown on the card, never alerted
+                if row["fired"]:
+                    row["action"] += f" (sell on {W.exit_date(date.today()):%a %b %-d})"
+                others.append(row)
+            for pos in held:
+                due = date.fromisoformat(pos["exit_due"])
+                if date.today() > due or (date.today() == due and W.in_entry_window()):
+                    value = W.spread_value(calls(pos["expiration"]), pos["long_contract"], pos["short_contract"])
+                    if value is None:
+                        continue
+                    pnl = (value / pos["entry_debit"] - 1) * 100
+                    items.append((f"SPY dip spread: SELL now ({pnl:+.0f}%)",
+                                  f"Sell the SPY {pos['expiration']} {pos['long_strike']:g}/{pos['short_strike']:g} call spread near {value:.2f} "
+                                  f"(entered {pos['opened_on']} at {pos['entry_debit']:.2f}).\n\nThe {W.HOLD_DAYS}-trading-day hold is up; "
+                                  f"the rule is only tested with this exit.\n{tail}", "high", "moneybag"))
+                    if not dry_run and not test:
+                        W.close_position(conn, pos["position_id"], value, spy)
+        except Exception as e:
+            print(f"{today} {now} signal-alerts: live watch unavailable: {lake.redact(str(e))[:200]}")
+        rows += [r for r in [dip] + others if r]
+        if W.in_entry_window() or dry_run:          # edge lab: once a day is enough, these read daily closes
+            try:
+                from core import edges as E
+                scanned = set(W.watchlist())
+                for a in E.payload()["tracked"]:
+                    rows += [{"asset": a["symbol"], "name": e["name"], "fired": e["active"] and e["bias"] == "bullish", "bias": "bullish",
+                              "action": e["action"], "now": e["now"], "trigger": e["trigger"], "evidence": e["evidence"], "what": e["what"],
+                              "where": f"Edge lab card (core/edges.py) · {e['source']}"}
+                             for e in a["edges"] if e["edge"] in ("tested", "thin") and e["key"] not in ("volatility", "overnight")
+                             and not (e["key"] == "reversal" and a["symbol"] in scanned)]       # the scanner already alerts those
+            except Exception as e:
+                print(f"{today} {now} signal-alerts: edge lab unavailable: {lake.redact(str(e))[:200]}")
+        state = json.loads(SIGNAL_STATE.read_text()) if SIGNAL_STATE.exists() else None
+        new_state = dict(state or {})               # rows not evaluated this check (edge lab outside its window) keep their state
+        for i, r in enumerate(rows):
+            key = f"{r['asset']}|{r['name']}"
+            prev = (state or {}).get(key)
+            fire = (test and i == 0) or bool(r["fired"] and prev and not prev["fired"] and prev.get("alerted") != today)
+            new_state[key] = {"fired": r["fired"], "alerted": today if fire else (prev or {}).get("alerted")}
+            if fire:
+                arrow = {"bullish": " ▲", "bearish": " ▼"}.get(r["bias"], "")
+                items.append((f"{'TEST · ' if test else ''}{r['asset']} {r['name']} FIRED{arrow}",
+                              f"{r['action']}\n\nNow: {r['now']}\nTrigger: {r['trigger']}\nEvidence: {r['evidence']}\n\n{r['what']}\n"
+                              f"Source: {r['where']}\n{tail}",
+                              "high" if r["action"].startswith("Buy") else "default",
+                              "chart_with_upwards_trend" if r["bias"] == "bullish" else "chart_with_downwards_trend" if r["bias"] == "bearish" else "warning"))
+                if r is dip and spread and not dry_run and not test:
+                    W.open_position(conn, spread, exp, spy)
+        if dry_run:
+            for r in rows:
+                print(f"{'FIRED  ' if r['fired'] else 'waiting'} {r['asset']:4} {r['name']:30} {r['now']}")
+            print(f"open watch positions: {len(held)}")
+            print(f"would alert: {[t[0] for t in items] or 'nothing'}" + ("" if state is not None else " (first check: state would be recorded, no alerts)"))
+            return 0
+    finally:
+        conn.close()
+    if items:
+        print(f"{today} {now} signal-alerts: {ntfy_push(items)}")
+        if sys.platform == "darwin":              # this Mac too: native banner, no ntfy client needed
+            for title, text, _, _ in items:
+                q = lambda s: json.dumps(s, ensure_ascii=False)
+                subprocess.run(["osascript", "-e", f'display notification {q(text.splitlines()[0])} with title {q(title)} sound name "Glass"'],
+                               check=False, timeout=15)
+    if not test:
+        tmp = SIGNAL_STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(new_state, indent=1))
+        tmp.replace(SIGNAL_STATE)
+    return 0
+
+
 def _latest_run_id(conn):
     row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
     return row["run_id"] if row else None
@@ -434,6 +561,9 @@ def main(argv=None):
     sub.add_parser("status")
     sub.add_parser("cme-login", help="log in to CME in a browser window (MFA) and save the session")
     sub.add_parser("ntfy-test", help="send the latest run's phone brief (summary + report attachment) to NTFY_URL")
+    sa = sub.add_parser("signal-alerts", help="notify (ntfy + this Mac) for each Signal Watch row that just went from waiting to FIRED")
+    sa.add_argument("--dry-run", action="store_true", help="print the live signal states and what would be sent; send and save nothing")
+    sa.add_argument("--test", action="store_true", help="send the first signal as a sample alert to check delivery")
     a = p.parse_args(argv)
     if a.cmd in (None, "run"):
         a.offline = getattr(a, "offline", False)
@@ -454,6 +584,8 @@ def main(argv=None):
         return print_catalog(a.run)
     if a.cmd == "status":
         return status()
+    if a.cmd == "signal-alerts":
+        return signal_alerts(dry_run=a.dry_run, test=a.test)
     if a.cmd == "ntfy-test":
         from send_email import ntfy_brief
         conn = lake.connect(DB_PATH)

@@ -63,6 +63,21 @@ and **COPY** (the card's raw JSON).
 | 10 | Diesel & refining | Crack spreads, EIA runs and stocks, Texas refinery outage filings (TCEQ) | Is refining tight, and is a major unit down? |
 | 11 | EIA inventories | Crude, SPR, Cushing, gasoline, diesel, jet, propane: levels and days of supply, any period from 1982 | Are stocks building or drawing against the 5-year norm, and how does today compare with past years? |
 
+### Ask the terminal (console engine v3)
+
+The console at the bottom takes questions in plain words ("What did the engine pick today?", "Is anything fired on
+the Day Scanner?", "Where are the SPY gamma walls?") and answers from the terminal's own data, using a model that runs
+on this machine. Nothing is sent to a cloud model.
+
+How a question is answered: a short brief of the current state (today's engine tickets, the latest run, fired
+signals, next events) goes in front of the model, so everyday questions are answered in one model call. For anything
+else the model picks the one to three read-only sources it needs out of 25 and opens only the parts it needs; it is
+never handed the whole data dump. It cannot start a run, write anything, reach the web or read files. Each answer
+shows which sources it read and how long it took. Details: [`options_whale/assistant.py`](options_whale/assistant.py).
+
+Any OpenAI-compatible server works: Ollama by default, or oMLX / LM Studio / llama.cpp via `ASSISTANT_LOCAL_URL`,
+`ASSISTANT_LOCAL_MODEL` and `ASSISTANT_LOCAL_API_KEY` in `.env`.
+
 ### Other features
 
 - **Options whale scanner** — contracts with unusual volume against open interest and large premium
@@ -128,10 +143,11 @@ Three design choices matter for anyone changing the code:
 | `core/render.py` | HTML dashboard, XML, email text, charts |
 | `core/positions.py` | Engine tickets and mark-to-market |
 | `options_whale/api_router.py` | Flask server and all `/api/*` routes |
+| `options_whale/assistant.py`, `static/assistant.js` | Console engine v3: brief, read-only data sources, local model, console UI |
 | `options_whale/templates/terminal.html`, `static/app.js`, `static/forecast.js` | Terminal UI |
 | `menubar/` | SwiftBar plugin for the menu bar icon. Keep only plugins in this folder. |
 | `setup.sh`, `requirements.txt`, `.env.example` | New-machine setup |
-| `tests/test_v2.py` | 30 offline tests with fixtures |
+| `tests/test_v2.py` | 34 offline tests with fixtures |
 | `server/` | PHP upload receiver and `.htaccess` for the remote web host |
 
 Data lives outside the repo in `CME_Data/` (next to the project, or wherever `PORTFOLIO_DATA_DIR` points).
@@ -238,6 +254,8 @@ add the values to the XML report in `forecast_xml()` in `core/render.py`, and lo
 - **Tests stay offline.** Use fixtures in `tests/fixtures/`; a test that needs a key or the network will be rejected.
 - **Changes to how a value is computed are recorded** under "What changed in values" in `V2_README.md`.
 - **Only one run at a time.** A second run exits with code 75; do not work around the lock.
+- **The assistant is read-only.** A new data source goes in `SOURCES` in `options_whale/assistant.py` and must be a
+  GET route with no side effects (no scans, scrapes, alerts or runs). A test checks this.
 - **Platform:** macOS. The login flow, Mail import, launchd service and menu bar icon are Mac-specific.
 
 ## API at a glance
@@ -247,6 +265,8 @@ add the values to the XML report in `forecast_xml()` in `core/render.py`, and lo
 | `GET /` | The terminal |
 | `GET /api/forecast?ticker=SPY\|SLV` | All Forecast Lab cards for the latest run |
 | `GET /api/eia_history` | Full weekly EIA stock and days-of-supply history for card 11 |
+| `POST /api/assistant/ask` | Ask a question; streams the answer as server-sent events |
+| `GET /api/assistant/status`, `/api/assistant/data?source=…` | Model server and models; exactly what the model sees for one source (`source=brief` for the brief) |
 | `GET /api/gex`, `/api/darkpool`, `/api/option_chain`, `/api/option_calc` | Dealer gamma, block trades, chains, option pricing |
 | `GET /api/morning`, `/api/evening`, `/api/custom` | Unusual options activity scans |
 | `GET /vmri`, `/api/vmri_history`, `/vmri_chart` | Macro risk index |

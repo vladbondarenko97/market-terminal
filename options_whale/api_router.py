@@ -2271,7 +2271,70 @@ def api_position_delete(signal_id):
 # ==========================================
 # --- FORECAST LAB (reads the latest committed v2 snapshot) ---
 # ==========================================
-from core import forecast as _v2fc
+from core import edges as _v2edges, forecast as _v2fc, watch as _v2watch
+
+
+def _scanner_payload(refresh=False):
+    symbols = _v2watch.watchlist()
+    if refresh:                                        # the card's REFRESH button: back to Yahoo for everything it shows
+        _v2watch.refresh()
+        for key in [k for k in data_cache.cache if k.startswith(("pos_quote:", "pos_chain:"))]:
+            data_cache.cache.pop(key, None)
+    conn = _v2lake.connect(_V2_DB_PATH)
+    try:
+        _v2lake.migrate(conn)
+        positions = _v2watch.list_positions(conn, _cached_chain)
+    finally:
+        conn.close()
+    rows, failed = [], []
+    for sym in symbols:
+        try:
+            closes, live = _v2watch.fetch_closes(sym), _cached_underlying(sym)
+            held = sym == "SPY" and any(not p["closed_at"] for p in positions)
+            dip = _v2watch.dip_signal(closes, live, _v2watch.in_entry_window(), held, sym, _v2watch.fetch_blackout(sym))
+            if not dip:
+                raise ValueError("no quote")
+            rows += [dip] + _v2watch.context_rows(closes, live, sym)
+        except Exception:
+            failed.append(sym)                         # no history or quote right now: listed, so it can still be removed
+    return {"status": "success", "scanner": rows, "watch_positions": positions, "symbols": symbols, "failed": failed,
+            "max_symbols": _v2watch.MAX_SYMBOLS + 1, "as_of": datetime.now().isoformat(timespec="seconds")}
+
+
+@app.route('/api/scanner', methods=['GET', 'POST'])
+def api_scanner():
+    if request.method == 'POST':
+        err = _v2watch.add_symbol((request.get_json(silent=True) or {}).get("symbol"))
+        if err:
+            return jsonify({"status": "error", "message": err}), 400
+    return jsonify(_scanner_payload(refresh=request.args.get("refresh") == "1"))
+
+
+@app.route('/api/edges', methods=['GET', 'POST'])
+def api_edges():
+    """Edge lab: every tracked ticker, plus ?symbol=X analysed without saving. POST {symbol} tracks one."""
+    query = request.args.get("symbol")
+    if request.method == 'POST':
+        query = (request.get_json(silent=True) or {}).get("symbol")
+        err = _v2edges.add_tracked(query)
+        if err:
+            return jsonify({"status": "error", "message": err}), 400
+    try:
+        return jsonify(_v2edges.payload(query, fresh=request.args.get("refresh") == "1"))
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
+@app.route('/api/edges/<symbol>', methods=['DELETE'])
+def api_edges_remove(symbol):
+    _v2edges.remove_tracked(symbol)
+    return jsonify(_v2edges.payload())
+
+
+@app.route('/api/scanner/<symbol>', methods=['DELETE'])
+def api_scanner_remove(symbol):
+    _v2watch.remove_symbol(symbol)
+    return jsonify(_scanner_payload())
 
 
 def _latest_forecast():
@@ -2303,6 +2366,9 @@ def api_forecast():
             return jsonify({"status": "error", "message": (fc or {}).get("reason") or "no Forecast Lab data yet: run the pipeline",
                             "run": run}), 404
         score = _v2fc.scorecard(conn, _cached_daily_closes, ticker)
+        ticket = conn.execute("SELECT * FROM v2_trade_signals WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 1").fetchone()
+        quotes = {k: _cached_underlying(s) for k, s in (("SPY", "SPY"), ("SLV", "SLV"), ("SI_F", "SI=F"))}
+        signals = _v2fc.signal_watch(_v2fc.live_overlay(fc, {k: v for k, v in quotes.items() if v}), dict(ticket) if ticket else None)
     finally:
         conn.close()
     return jsonify({"status": "success", "ticker": ticker, "run": run, "horizons": fc.get("horizons"),
@@ -2310,7 +2376,7 @@ def api_forecast():
                     "positioning": fc.get("positioning"), "silver_fair_value": fc.get("silver_fair_value"),
                     "macro_regime": fc.get("macro_regime"), "source_errors": fc.get("source_errors"),
                     "refining": fc.get("_refining"),
-                    "scorecard": score})
+                    "scorecard": score, "signals": signals})
 
 
 _EIA_HISTORY_CACHE = {}
@@ -2347,6 +2413,12 @@ def api_eia_history():
     return jsonify(dict(hist, status="success"))
 
 
+# ---------------------------------------------------------------- ask-in-words assistant (read-only)
+import assistant as _assistant
+
+_PORT = int(os.environ.get("OPTIONS_WHALE_PORT", "8080"))     # per-machine, set in .env, never committed
+_assistant.register(app, _PORT)
+
+
 if __name__ == "__main__":
-    # Port 8080 unless OPTIONS_WHALE_PORT is set in .env (per-machine, never committed)
-    app.run(host='0.0.0.0', port=int(os.environ.get("OPTIONS_WHALE_PORT", "8080")))
+    app.run(host='0.0.0.0', port=_PORT, threaded=True)

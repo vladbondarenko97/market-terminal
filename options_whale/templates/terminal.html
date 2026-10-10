@@ -1394,6 +1394,45 @@
                 </div>
                 <div id="forecastGrid"
                     class="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-6 p-5 overflow-y-auto terminal-scroll pb-24 flex-1 auto-rows-min">
+                    <div class="rainbow-card lg:col-span-2 2xl:col-span-3" style="--fc-delay:-7.26s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">0 · SIGNAL WATCH</div><div class="fc-sub">Every trigger from the cards below · fired or waiting · what to do · hover any cell for what it means and where it comes from</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="openForecastFaq('fc0')" title="How to use this card">?</button>
+                                    <button class="fc-icon" onclick="toggleForecastFullscreen('fc0')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="copyForecastCard('fc0')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="fc0" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
+                    <div class="rainbow-card lg:col-span-2 2xl:col-span-3" style="--fc-delay:-7.92s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">12 · DAY SCANNER</div><div class="fc-sub">Live dip scan of your watchlist · + ADD any ticker · only tickers with tested evidence can say Buy · live watch positions</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="openForecastFaq('fc12')" title="How to use this card">?</button>
+                                    <button class="fc-icon" onclick="toggleForecastFullscreen('fc12')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="copyForecastCard('fc12')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="fc12" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
+                    <div class="rainbow-card lg:col-span-2 2xl:col-span-3" style="--fc-delay:-8.58s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">13 · EDGE LAB</div><div class="fc-sub">Published edges tested on any ticker · short, mid and long horizon · query any symbol or track it</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="openForecastFaq('fc13')" title="How to use this card">?</button>
+                                    <button class="fc-icon" onclick="toggleForecastFullscreen('fc13')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="copyForecastCard('fc13')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="fc13" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
                     <div class="rainbow-card" style="--fc-delay:-0.00s">
                         <div class="rainbow-inner">
                             <div class="fc-head">
@@ -1549,24 +1588,32 @@
                 class="flex-1 p-4 pt-0 min-h-[40px] transition-all duration-300 overflow-hidden mobile-tab-hidden">
                 <div class="h-full glass-panel flex flex-col border border-zinc-800">
                     <div onclick="toggleConsole()"
-                        class="bg-zinc-900/50 px-4 py-2 flex justify-between items-center border-b border-zinc-800 cursor-pointer hover:bg-zinc-900 transition-colors">
-                        <span class="text-[10px] text-zinc-400 font-bold tracking-widest uppercase">Console Engine
-                            v2.0</span>
-                        <div class="flex gap-4">
-                            <button id="btnMinConsole" onclick="event.stopPropagation(); toggleConsole();"
-                                class="text-[9px] text-zinc-500 hover:text-blue-400 uppercase font-bold">[Minimize]</button>
-                            <button onclick="event.stopPropagation(); triggerAction('/dump')"
+                        class="bg-zinc-900/50 px-4 py-2 flex flex-wrap justify-between items-center gap-2 border-b border-zinc-800 cursor-pointer hover:bg-zinc-900 transition-colors">
+                        <span class="text-[10px] text-zinc-300 font-bold tracking-widest uppercase flex items-center gap-2">
+                            <span id="askDot" class="ask-dot" title="Checking the model server…"></span>Console Engine v3 · ask the terminal</span>
+                        <div class="flex flex-wrap gap-3 items-center" onclick="event.stopPropagation()">
+                            <select id="askEngine" class="ask-select" title="Which model on this machine answers. The default was picked for speed and accuracy on this Mac."
+                                aria-label="Answering model"><option value="">Local model</option></select>
+                            <button onclick="askNewChat()" class="text-[9px] text-zinc-500 hover:text-white uppercase"
+                                title="Forget this conversation and start a new one">New chat</button>
+                            <button onclick="triggerAction('/dump')"
                                 class="text-[9px] text-zinc-500 hover:text-white uppercase">Data Dump</button>
-                            <button
-                                onclick="event.stopPropagation(); document.getElementById('consoleLog').innerHTML = ''"
-                                class="text-[9px] text-zinc-500 hover:text-white uppercase">Clear</button>
+                            <button id="btnMinConsole" onclick="toggleConsole();"
+                                class="text-[9px] text-zinc-500 hover:text-blue-400 uppercase font-bold">[Minimize]</button>
                         </div>
                     </div>
                     <div id="consoleBody" class="flex-1 overflow-hidden flex flex-col">
                         <div id="consoleLog"
                             class="flex-1 p-4 text-[11px] leading-relaxed overflow-y-auto terminal-scroll text-zinc-300 font-mono">
-                            System authenticated. Ready to hunt.
+                            <div class="ask-intro">Ask anything about the data on this terminal, in plain words. A model on this
+                                machine answers from the terminal's own APIs (read-only); answers are estimates, not advice.</div>
                         </div>
+                        <div id="askSuggest" class="ask-suggest hidden"></div>
+                        <form id="askForm" class="ask-form">
+                            <textarea id="askInput" rows="1" placeholder="Ask about engine positions, signals, the scanner, edges, gamma walls, VMRI, forecasts…"
+                                aria-label="Question for the terminal"></textarea>
+                            <button id="askBtn" type="submit" class="ask-btn">Ask</button>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -1583,6 +1630,7 @@
 
     <script src="/static/app.js"></script>
     <script src="/static/forecast.js"></script>
+    <script src="/static/assistant.js"></script>
 </body>
 
 </html>

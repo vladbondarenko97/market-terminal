@@ -59,9 +59,30 @@ FORECASTS_DDL = """CREATE TABLE IF NOT EXISTS v2_forecasts (
     UNIQUE(run_id, symbol, model, horizon)
 )"""
 
+WATCH_DDL = """CREATE TABLE IF NOT EXISTS v2_watch_positions (
+    position_id INTEGER PRIMARY KEY,
+    opened_on TEXT NOT NULL,
+    opened_at TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    underlying TEXT NOT NULL,
+    underlying_price REAL,
+    expiration TEXT,
+    long_strike REAL,
+    short_strike REAL,
+    long_contract TEXT,
+    short_contract TEXT,
+    entry_debit REAL,
+    exit_due TEXT NOT NULL,
+    closed_at TEXT,
+    exit_value REAL,
+    exit_underlying REAL,
+    UNIQUE(rule, opened_on)
+)"""
+
 MIGRATIONS = [
     SIGNALS_DDL,
     FORECASTS_DDL,
+    WATCH_DDL,
     """CREATE TABLE IF NOT EXISTS v2_runs (
         run_id TEXT PRIMARY KEY,
         mode TEXT NOT NULL,

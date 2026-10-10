@@ -815,6 +815,7 @@ def scorecard(conn, closes_fn, symbol):
     """Grade logged forecasts whose target date has passed. closes_fn(sym) -> daily close Series (naive index)."""
     conn.execute(SCORE_DDL)
     rows = [dict(r) for r in conn.execute("SELECT * FROM v2_forecasts WHERE symbol = ? ORDER BY created_at", (symbol,))]
+    rows = list({(r["created_at"][:10], r["model"], r["horizon"]): r for r in rows}.values())    # one forecast a day: its last run
     c = closes_fn(symbol)
     last_day = c.index[-1].date() if c is not None and len(c) else None
     agg, pending = {}, 0
@@ -846,4 +847,157 @@ def scorecard(conn, closes_fn, symbol):
                       "coverage68": a["in68"] / a["rng_n"] if a["rng_n"] else None,
                       "brier": float(np.mean(a["brier"])) if a["brier"] else None})
     return {"graded": table, "pending": pending, "logged": len(rows), "last_price_date": last_day.isoformat() if last_day else None,
-            "note": "hit_rate: direction correct; coverage68: share inside the 68% range (ideal 0.68); brier: lower is better (0.25 = coin flip)"}
+            "note": "one forecast per day (the day's last run); hit_rate: direction correct; coverage68: share inside the 68% range "
+                    "(ideal 0.68); brier: lower is better (0.25 = coin flip)"}
+
+
+# ============================================================ 0. signal watch
+def _edge(p, n, base=0.5):
+    """Evidence gate for a rule: 'tested' | 'thin' | 'none' from its historical win rate p over n cases."""
+    # ponytail: fixed cut-offs (5 points over base, 30 cases), no significance test. Swap in the live scorecard
+    # hit rates once each rule has a few dozen graded forecasts.
+    if p is None or not n or p - base < 0.05:
+        return "none"
+    return "tested" if n >= 30 else "thin"
+
+
+_SIZE = {"tested": "standard size", "thin": "half size (small sample)"}
+
+
+def _fv_sd(fv):
+    """1 sd of the fair-value regression residual, recovered from the stored z-score (None when z is ~0)."""
+    z = fv.get("residual_z")
+    return math.log(fv["price"] / fv["fair_value"]) / z if z and abs(z) > 1e-6 and fv.get("fair_value") else None
+
+
+def live_overlay(fc, quotes):
+    """Copy of a run's forecast with the price-driven inputs of signal_watch moved to live quotes
+    ({"SPY": px, "SLV": px, "SI_F": px}; a missing quote leaves that input as of the run). Levels computed by the run
+    (fair value, flip levels, zero gamma) and the slow inputs (positioning, volatility, macro) are not recomputed."""
+    import copy
+    fc = copy.deepcopy(fc)
+    fv, sd = fc.get("silver_fair_value") or {}, None
+    if quotes.get("SI_F") and fv.get("price"):
+        sd = _fv_sd(fv)
+    if sd:
+        fv["price"], fv["residual_z"] = quotes["SI_F"], math.log(quotes["SI_F"] / fv["fair_value"]) / sd
+    for sym in ("SPY", "SLV"):
+        s, px = fc.get(sym) or {}, quotes.get(sym)
+        if not px or not s.get("spot"):
+            continue
+        s["spot"] = px
+        m1 = ((s.get("trend") or {}).get("signals") or {}).get("1m") or {}
+        if m1.get("flip_level"):
+            m1["signal"], m1["flip_distance_pct"] = "LONG" if px > m1["flip_level"] else "SHORT", (m1["flip_level"] / px - 1) * 100
+        dg = (s.get("flows") or {}).get("dealer_gamma") or {}
+        if dg.get("zero_gamma"):
+            # ponytail: live price vs the run's zero-gamma level stands in for the sign of net gamma between runs
+            dg["regime"] = ("long" if px > dg["zero_gamma"] else "short") + " gamma (live price vs the run's zero-gamma level)"
+    return fc
+
+
+def _signal_row(asset, name, where, what, now, trigger, fired, bias, action, evidence, edge):
+    tradeable = fired and bias in ("bullish", "bearish") and edge in _SIZE
+    return {"asset": asset, "name": name, "where": where, "what": what, "now": now, "trigger": trigger,
+            "fired": bool(fired), "bias": bias if fired else None, "edge": edge, "evidence": evidence, "plan": action,
+            "action": "Wait" if not fired else f"{action} · {_SIZE[edge]}" if tradeable else
+                      action if bias == "structure" else f"No trade on this alone ({evidence}); use as confirmation"}
+
+
+def signal_watch(fc, ticket=None):
+    """Rule-based triggers read off the other cards: current reading, firing level, state and the action when fired.
+    Pure function of one run's forecast dict (no model, no network). ticket = the engine's latest SPY row (optional)."""
+    rows = []
+
+    def add(*a):
+        rows.append(_signal_row(*a))
+
+    def structure(vol, bullish):          # spreads when options are rich, outright when cheap or fair
+        read = ((vol.get("horizons") or {}).get("1m") or {}).get("read") or ""
+        return ("call" if bullish else "put") + (" spreads" if "rich" in read else "s")
+
+    if ticket:
+        cash = ticket["position_type"] == "CASH"
+        add("SPY", "Execution engine", "Engine Positions card (terminal) · table v2_trade_signals",
+            "The engine's SPY ticket from the latest pipeline run: score, bias and the contract it selected.",
+            ticket.get("bias") or "—", "score reaches the call or put trigger", not cash,
+            "bullish" if ticket["position_type"] == "CALL" else "bearish",
+            "Stay in cash" if cash else f"Buy SPY {ticket['expiration']} {ticket['strike']:g} {ticket['position_type'].lower()}"
+            + (f" near {ticket['entry_mid']:.2f}" if ticket.get("entry_mid") else ""),
+            "live track record is on the Engine Positions card", "thin")
+
+    fv = fc.get("silver_fair_value") or {}
+    z, slv = fv.get("residual_z"), fc.get("SLV") or {}
+    if z is not None and fv.get("fair_value") and slv.get("spot"):
+        sd = _fv_sd(fv)
+        lo, hi = (fv["fair_value"] * math.exp(-sd), fv["fair_value"] * math.exp(sd)) if sd else (None, None)
+        bt, bull = fv.get("backtest") or {}, z < 0
+        add("SLV", "Fair-value reversion", "Card 5 · Silver fair value (z-score, gap, backtest)",
+            "Silver vs the value implied by gold, real yields, the dollar, copper and industrial production. "
+            "At 1 standard deviation away it has tended to move back toward fair value within 4 weeks.",
+            f"z {z:+.2f} · silver {fv['price']:.2f} vs fair {fv['fair_value']:.2f}",
+            f"z ≤ −1 (silver ≤ {lo:.2f}) or z ≥ +1 (≥ {hi:.2f})" if sd else "z ≤ −1 or z ≥ +1", abs(z) >= 1,
+            "bullish" if bull else "bearish",
+            (f"Buy SLV {structure(slv.get('vol_forecast') or {}, True)} 45–60 DTE near {slv['spot']:.0f}, or physical metal"
+             if bull else f"Buy SLV {structure(slv.get('vol_forecast') or {}, False)} 45–60 DTE near {slv['spot']:.0f}; pause physical buys")
+            + "; exit at fair value or after 4 weeks",
+            f"{bt['hit_rate']:.0%} reverted within 4 weeks, n={bt['n']}" if bt.get("hit_rate") is not None else "no backtest",
+            _edge(bt.get("hit_rate"), bt.get("n")))
+
+    for sym, grp, who in (("SLV", "silver", "managed_money"), ("SPY", "sp500", "leveraged_funds")):
+        s = fc.get(sym) or {}
+        spot, vol, tr = s.get("spot"), s.get("vol_forecast") or {}, s.get("trend") or {}
+        if not spot:
+            continue
+        m1, bt = (tr.get("signals") or {}).get("1m") or {}, (tr.get("backtest") or {}).get("1m") or {}
+        if m1.get("flip_level"):
+            up = m1["signal"] == "LONG"
+            add(sym, "1-month momentum", "Card 3 · Trend / CTA model (flip levels, 1M row)",
+                "Sign of the 1-month return. The flip level is the close at which it changes sign on the next session.",
+                f"{m1['signal']} · {spot:.2f} is {abs(m1['flip_distance_pct']):.1f}% {'above' if up else 'below'} the flip",
+                f"close above {m1['flip_level']:.2f}", up, "bullish",
+                f"Buy {sym} {structure(vol, True)} 30–45 DTE near {spot:.0f}",
+                f"1M trend test: up {bt['up_rate_when_long']:.0%} of the time when long vs {bt['up_rate_when_short']:.0%} when short"
+                if bt.get("up_rate_when_long") is not None else "no backtest",
+                _edge(bt.get("up_rate_when_long"), bt.get("effective_n"), bt.get("up_rate_when_short") or 0.5))
+        st = ((fc.get("positioning") or {}).get(grp) or {}).get(who) or {}
+        if st.get("cot_index") is not None:
+            ci = st["cot_index"]
+            b = (st.get("forward_4w") or {}).get("when_index_le_20" if ci < 50 else "when_index_ge_80") or {}
+            p, avg = b.get("up_rate"), b.get("avg_pct") or 0
+            bull = p is not None and avg > 0 and p >= 0.5
+            add(sym, f"Positioning ({who.replace('_', ' ')})", "Card 4 · Positioning (COT index, forward-return note)",
+                "CFTC net position on a 0–100 scale over 3 years: 0 = most short, 100 = most long. "
+                "The action follows what the price actually did in the 4 weeks after past extremes.",
+                f"index {ci:.0f}", "index ≤ 20 or ≥ 80", ci <= 20 or ci >= 80, "bullish" if bull else "bearish",
+                f"Buy {sym} {structure(vol, bull)} 30–45 DTE near {spot:.0f}" + ("; physical metal also fits" if bull and sym == "SLV" else "")
+                + "; 4-week hold",
+                f"4 weeks after index {'≤ 20' if ci < 50 else '≥ 80'}: up {p:.0%}, avg {avg:+.1f}%, n={b['n']}" if p is not None else "no history",
+                _edge(p if bull else None if p is None else 1 - p, b.get("n")))
+        h, hb = (vol.get("horizons") or {}).get("1m") or {}, (vol.get("backtest") or {}).get("1m") or {}
+        if h.get("implied_to_forecast"):
+            rich, beats = "rich" in h["read"], (hb.get("rmse_improvement_vs_naive_pct") or 0) > 0
+            add(sym, "Option pricing (1M)", "Card 2 · Volatility forecast (implied ÷ forecast)",
+                "Implied volatility divided by the model's forecast of realised volatility. It picks the structure, not the direction.",
+                f"implied {h['implied_vol']:.0%} ÷ forecast {h['forecast_vol']:.0%} = {h['implied_to_forecast']:.2f}",
+                "ratio < 0.90 (cheap) or > 1.15 (rich)", h["read"] != "fairly priced", "structure" if beats else "none",
+                "Options are rich: use spreads, avoid outright long options" if rich else
+                "Options are cheap: buy calls or puts outright instead of spreads",
+                f"model {'beats' if beats else 'does not beat'} a naive forecast ({hb.get('rmse_improvement_vs_naive_pct', 0):+.1f}% RMSE)", "none")
+        dg = (s.get("flows") or {}).get("dealer_gamma") or {}
+        if dg.get("zero_gamma"):
+            add(sym, "Dealer gamma", "Card 8 · Mechanical flows (dealer gamma, zero-gamma level)",
+                "Above zero gamma dealers trade against moves (quiet, pinned). Below it they trade with moves (fast, trending).",
+                f"{spot:.2f} vs zero gamma {dg['zero_gamma']:.2f} ({(spot / dg['zero_gamma'] - 1) * 100:+.1f}%)",
+                f"net gamma turns negative (near {dg['zero_gamma']:.2f})", dg.get("regime", "").startswith("short"), "structure",
+                "Moves amplify: cut size, take profits sooner, do not sell premium", "convention-based estimate, not backtested", "none")
+
+    mr = fc.get("macro_regime") or {}
+    if mr.get("regime"):
+        add("ALL", "Macro regime", "Card 6 · Macro regime (flags)",
+            "Recession probability, financial conditions, Sahm rule, credit spreads and the yield curve. Any flag is a risk-off warning.",
+            f"{mr['regime']} · recession 12m {mr.get('recession_prob_12m') or 0:.0%}", "any flag raised", bool(mr.get("flags")), "structure",
+            "Risk-off: halve call size and wait for trend confirmation (" + "; ".join(mr.get("flags") or []) + ")",
+            "regime filter, not backtested", "none")
+    rows.sort(key=lambda r: (not r["fired"], r["asset"]))      # fired first, then grouped by asset
+    return rows

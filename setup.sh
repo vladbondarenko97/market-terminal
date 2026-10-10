@@ -22,6 +22,9 @@ SWIFTBAR_ID="com.ameba.SwiftBar"
 SCHED_LABEL="com.vlad.marketdashboard"
 SCHED_PLIST="$HOME/Library/LaunchAgents/$SCHED_LABEL.plist"
 SCHED_LOG="$HOME/Library/Logs/marketdashboard.log"
+ALERT_LABEL="com.vlad.signalalerts"
+ALERT_PLIST="$HOME/Library/LaunchAgents/$ALERT_LABEL.plist"
+ALERT_LOG="$HOME/Library/Logs/signalalerts.log"
 
 MENUBAR=1
 UNINSTALL=0
@@ -57,7 +60,8 @@ set_scheduled_runs() {
 
 remove_schedule() {
     launchctl bootout "$DOMAIN/$SCHED_LABEL" 2>/dev/null || true
-    rm -f "$SCHED_PLIST"
+    launchctl bootout "$DOMAIN/$ALERT_LABEL" 2>/dev/null || true
+    rm -f "$SCHED_PLIST" "$ALERT_PLIST"
     set_scheduled_runs ""
 }
 
@@ -190,7 +194,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 et = ZoneInfo("America/New_York")
 d = datetime.now(et).date()
-for h, m in ((9, 31), (15, 45)):
+for h, m in ((9, 31), (12, 30), (15, 45)):
     t = datetime(d.year, d.month, d.day, h, m, tzinfo=et).astimezone()
     print(t.hour, t.minute)
 ')"
@@ -237,6 +241,36 @@ EOF
     for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$SCHED_PLIST" 2>/dev/null && break; sleep 1; done
     launchctl print "$DOMAIN/$SCHED_LABEL" >/dev/null 2>&1 || warn "launchd did not load $SCHED_PLIST"
     echo "ok: weekdays at $(echo "$TIMES" | awk '{printf "%s%02d:%02d", (NR>1?" and ":""), $1, $2}') local time; NYSE holidays skip"
+    # Signal Watch alerts: every 5 minutes; the command itself exits outside the NYSE session and on holidays.
+    cat > "$ALERT_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$ALERT_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$VPY</string>
+        <string>$ROOT/main_pipeline.py</string>
+        <string>signal-alerts</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$ROOT</string>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>$ALERT_LOG</string>
+    <key>StandardErrorPath</key>
+    <string>$ALERT_LOG</string>
+</dict>
+</plist>
+EOF
+    plutil -lint "$ALERT_PLIST" >/dev/null
+    launchctl bootout "$DOMAIN/$ALERT_LABEL" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$ALERT_PLIST" 2>/dev/null && break; sleep 1; done
+    launchctl print "$DOMAIN/$ALERT_LABEL" >/dev/null 2>&1 || warn "launchd did not load $ALERT_PLIST"
+    echo "ok: Signal Watch alerts every 5 minutes during the session (log: $ALERT_LOG)"
     # A sleeping Mac misses the run until it wakes (and the run then skips if the session is over).
     SLEEP_MIN="$(pmset -g 2>/dev/null | awk '$1=="sleep"{print $2; exit}')"
     if [ -n "$SLEEP_MIN" ] && [ "$SLEEP_MIN" != "0" ]; then

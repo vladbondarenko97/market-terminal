@@ -353,6 +353,66 @@ class T06ForecastLab(unittest.TestCase):
         self.assertEqual(t["direction"], "LONG")
         self.assertAlmostEqual(t["signals"]["1m"]["flip_level"], float(c.iloc[-21]))
 
+    def test_signal_watch_fires_and_gates_on_evidence(self):
+        from core import forecast as F
+        fv = {"residual_z": -1.5, "price": 50.0, "fair_value": 58.0, "backtest": {"hit_rate": 0.61, "n": 49}}
+        trend = {"signals": {"1m": {"signal": "LONG", "flip_level": 44.0, "flip_distance_pct": -2.0}},
+                 "backtest": {"1m": {"up_rate_when_long": 0.56, "up_rate_when_short": 0.80, "effective_n": 46}}}
+        rows = {r["name"]: r for r in F.signal_watch({"silver_fair_value": fv, "SLV": {"spot": 45.0, "trend": trend}})}
+        fair, mom = rows["Fair-value reversion"], rows["1-month momentum"]
+        self.assertTrue(fair["fired"] and fair["bias"] == "bullish" and fair["action"].startswith("Buy SLV calls"))
+        self.assertTrue(mom["fired"] and mom["edge"] == "none" and mom["action"].startswith("No trade"))   # fired, but no edge
+        fv["residual_z"] = 0.2
+        base = {"silver_fair_value": fv, "SLV": {"spot": 45.0}}
+        self.assertEqual(F.signal_watch(base)[0]["action"], "Wait")
+        live = F.live_overlay(base, {"SI_F": 20.0})          # live silver far below fair value: the waiting row fires
+        self.assertTrue(F.signal_watch(live)[0]["fired"] and F.signal_watch(base)[0]["fired"] is False)
+
+    def test_live_watch_dip_rule_and_spread(self):
+        import numpy as np
+        import pandas as pd
+        from datetime import date, datetime
+        from core import watch as W
+        rng = np.random.default_rng(7)
+        closes = pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0006, 0.01, 700))), index=pd.bdate_range("2023-01-02", periods=700))
+        row = W.dip_signal(closes, float(closes.iloc[-1]))
+        level = row["trigger_price"]                              # RSI(2) is exactly 10 at the stated trigger price
+        self.assertAlmostEqual(W.dip_signal(closes, level)["rsi2"], 10.0, places=6)
+        below = W.dip_signal(closes, level - 0.01)
+        self.assertEqual(below["fired"], level - 0.01 > closes.iloc[-199:].mean())      # fires only above the 200-day
+        self.assertFalse(W.dip_signal(closes, level - 0.01, in_window=False)["fired"])    # and only in the entry window
+        self.assertFalse(W.dip_signal(closes, level - 0.01, has_open=True)["fired"])      # and never while one is open
+        self.assertFalse(W.dip_signal(closes, level - 0.01, blocked="earnings")["fired"])  # or when blocked (earnings)
+        deep = W.dip_signal(closes, level - 0.01, symbol="GOOGL")                         # GOOGL needs RSI(2) < 5 and trades shares
+        self.assertTrue(deep["trigger_price"] < level and deep["plan"].startswith("Buy GOOGL shares"))
+        ctx = W.context_rows(closes, float(closes.iloc[-19:].max()) + 1)                  # above the 20-day high: context only
+        hi = next(r for r in ctx if r["name"] == "New 20-day closing high")
+        self.assertTrue(hi["fired"] and not hi["action"].startswith("Buy") and len(ctx) == 4)
+        wide = pd.DataFrame({"strike": [97.0, 98.0, 99.0, 101.0, 102.0, 103.0], "bid": [3.9, 3.1, 2.3, 1.0, 0.6, 0.3],
+                             "ask": [4.1, 3.3, 2.5, 1.2, 0.8, 0.5], "lastPrice": [4, 3.2, 2.4, 1.1, 0.7, 0.4],
+                             "contractSymbol": ["C97", "C98", "C99", "C101", "C102", "C103"]})
+        self.assertEqual(W.pick_spread(wide, 100.0, max_debit=1.5)["long_contract"], "C99")  # 99/101 = 1.30 fits the budget
+        # an added ticker only says Buy when its own history clears the gate; pure noise must not
+        noise = W.dip_signal(closes, level - 0.01, symbol="NOISE")
+        self.assertTrue(noise["edge"] == "none" and not noise["action"].startswith("Buy"))
+        self.assertEqual(W.session_day(datetime(2026, 10, 6, 15, 59, tzinfo=W.NEW_YORK)), date(2026, 10, 6))
+        self.assertEqual(W.session_day(datetime(2026, 10, 6, 16, 0, tzinfo=W.NEW_YORK)), date(2026, 10, 7))   # after the close
+        with mock.patch.object(W, "WATCHLIST", Path(tempfile.mkdtemp()) / "wl.json"):
+            self.assertEqual(W.watchlist(), ["SPY", "GOOGL", "SLV"])
+            self.assertEqual(W.add_symbol("drop table;"), "not a valid ticker")
+            self.assertIn("already", W.add_symbol("googl"))
+            W._save({**W._extras(), "GILD": {"earnings": True}})
+            W.remove_symbol("slv")
+            self.assertEqual(W.watchlist(), ["SPY", "GOOGL", "GILD"])
+        calls = pd.DataFrame({"strike": [98.0, 99.0, 100.0, 101.0, 102.0], "bid": [2.9, 2.2, 1.6, 1.1, 0.7],
+                              "ask": [3.1, 2.4, 1.8, 1.3, 0.9], "lastPrice": [3, 2.3, 1.7, 1.2, 0.8],
+                              "contractSymbol": ["C98", "C99", "C100", "C101", "C102"]})
+        sp = W.pick_spread(calls, 100.0)
+        self.assertEqual((sp["long_contract"], sp["short_contract"]), ("C99", "C101"))
+        self.assertAlmostEqual(sp["entry_debit"], 1.1)
+        self.assertEqual(W.exit_date(date(2026, 10, 6)), date(2026, 10, 13))             # 5 trading days, over a weekend
+        self.assertEqual(W.pick_expiry(["2026-10-09", "2026-10-30", "2026-12-18"], date(2026, 10, 6)), "2026-10-30")
+
     def test_scorecard_grades_after_target_date(self):
         import sqlite3
         import pandas as pd
@@ -463,6 +523,116 @@ class T07Refining(unittest.TestCase):
         self.assertFalse(src._eia_truncated(b"\xd0\xcf\x11\xe0 xls history file"))
 
 
+class T10Assistant(unittest.TestCase):
+    def _app(self):
+        from flask import Flask, jsonify, request
+        app = Flask(__name__)
+        hits = []
+
+        @app.route("/api/gex")
+        def gex():
+            hits.append(("GET", request.path, dict(request.args)))
+            return jsonify({"data": {"spot": 769.43, "callWall": 775.0, "strikes": list(range(700, 801)), "gamma": list(range(101))}})
+
+        @app.route("/run")
+        def run():
+            hits.append(("RUN", request.path, {}))
+            return "started"
+        return app, hits
+
+    def test_only_listed_sources_and_parameters_reach_the_app(self):
+        sys.path.insert(0, str(ROOT / "options_whale"))
+        import assistant as A
+        app, hits = self._app()
+        self.assertIn("must be one of", A.fetch_source(app, "run"))
+        self.assertIn("must be one of", A.fetch_source(app, "../run"))
+        self.assertEqual(hits, [])                                              # nothing outside the list is called
+        text = A.fetch_source(app, "gex", "ticker=SPY&evil=1&limit=5")
+        self.assertEqual(hits, [("GET", "/api/gex", {"ticker": "SPY"})])        # unlisted parameters are dropped
+        self.assertIn("769.43", text)
+        self.assertIn("showing the middle 10 of 101", text)                     # strikes are cut around the centre
+
+    def test_every_source_is_a_get_route_without_side_effects(self):
+        sys.path.insert(0, str(ROOT / "options_whale"))
+        import assistant as A
+        import re
+        src = (ROOT / "options_whale" / "api_router.py").read_text()
+        for name, (route, _params, _desc) in A.SOURCES.items():
+            m = re.search(r"@app\.route\('" + re.escape(route) + r"'(?:, methods=\[([^\]]*)\])?\)", src)
+            self.assertIsNotNone(m, f"{name}: {route} is not a route")
+            self.assertIn("GET", m.group(1) or "'GET'", f"{name}: {route} does not accept GET")
+        for forbidden in ("/run", "/api/silver_eagle_prices"):
+            self.assertNotIn(forbidden, [r for r, _p, _d in A.SOURCES.values()])  # a pipeline run and a 2-minute web scrape
+        self.assertNotIn("claude", (ROOT / "options_whale" / "assistant.py").read_text().lower())   # one engine, on this machine
+
+    def test_shape_outlines_large_data_and_opens_paths(self):
+        sys.path.insert(0, str(ROOT / "options_whale"))
+        import assistant as A
+        import json
+        big = {"a": {"rows": [{"i": i, "pad": "x" * 200} for i in range(400)]}, "b": {"deep": {"value": 3.14159265}}}
+        big.update({f"part{n}": {"rows": [{"i": i, "pad": "y" * 200} for i in range(40)]} for n in range(12)})
+        out = A.shape(big, max_chars=1500)
+        self.assertLessEqual(len(out), 1500)
+        self.assertIn("outline", out)
+        self.assertEqual(A.shape(big, "b.deep.value"), "3.1416")
+        self.assertEqual(json.loads(A.shape({"h": list(range(50))}, "h", last=3))[1:], [47, 48, 49])
+        self.assertEqual(json.loads(A.shape({"h": list(range(50))}, "h", last=3, keep="first"))[1:], [0, 1, 2])
+        with self.assertRaises(KeyError):
+            A.shape(big, "a.nope")
+
+    def test_v3_shaping_and_forgiving_calls(self):
+        sys.path.insert(0, str(ROOT / "options_whale"))
+        import assistant as A
+        import json
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [{"created_at": now, "position_type": "CALL", "underlying": "SPY", "contract": "SPY261023C00779000", "strike": 779.0,
+                 "expiration": "2026-10-23", "entry_bid": 0, "entry_ask": 0, "entry_mid": 6.0, "score": 4, "horizons": {}},
+                {"created_at": "2026-10-01T13:31:00+00:00", "position_type": "CASH", "score": 1, "horizons": {}}]
+        s = A._shape_positions({"data": rows}, {})
+        self.assertEqual((s["counts"]["calls"], s["counts"]["cash"], len(s["trades"])), (1, 1, 1))
+        self.assertEqual(s["today"][0]["position"], "SPY Oct 23 2026 $779 call")
+        self.assertIn("not live", s["today"][0]["note"])                                   # zero bid/ask at entry is flagged
+        g = A._shape_gex({"data": {"spot": 770.0, "callWall": 775.0, "putWall": 760.0, "zeroGamma": 765.0, "strikes": [760, 770], "gamma": [1, 2]}}, {})
+        self.assertEqual(g["spot_minus_level"], {"call_wall": -5.0, "put_wall": 10.0, "zero_gamma": 5.0})   # worked out, not left to the model
+        app, hits = self._app()
+        self.assertEqual(A.fetch_source(app, "gex.spot", "ticker=SPY"), "769.43")            # source.path is accepted
+        self.assertIn("must be one of", A.fetch_source(app, "", "", "spot"))                # a missing source says how to fix the call
+
+    def test_v3_empty_reply_reloads_once_and_thinking_switch(self):
+        sys.path.insert(0, str(ROOT / "options_whale"))
+        import assistant as A
+        import json
+        sent, reloads = [], []
+
+        class Stream:
+            def __init__(self, chunks): self.status_code, self.chunks = 200, chunks
+            def iter_lines(self): return iter(self.chunks)
+            def close(self): pass
+        replies = [[], [b'data: {"choices":[{"delta":{"content":"Done."}}]}', b"data: [DONE]"]]
+        def post(url, json=None, **kw):
+            sent.append(json)
+            return Stream(replies.pop(0))
+        app, _hits = self._app()
+        with mock.patch.object(A.requests, "post", side_effect=post), mock.patch.object(A, "_ollama", lambda *a, **k: reloads.append(a)), \
+             mock.patch.object(A, "brief", lambda app: "BRIEF TEXT"):
+            events = list(A.run_local(app, {"turns": []}, "hi", "m", "auto"))
+        self.assertEqual(len(reloads), 1)                                                   # dead model: reloaded once, asked again
+        self.assertEqual([e["type"] for e in events][-1], "done")
+        self.assertIn({"type": "delta", "text": "Done."}, events)
+        self.assertEqual(sent[0]["chat_template_kwargs"], {"enable_thinking": False})        # auto: no thinking on the first call
+        self.assertNotIn("now", sent[0]["messages"][1]["content"].lower())                  # the clock is not in the cached prefix
+        self.assertIn("(Asked ", sent[0]["messages"][-1]["content"])
+
+    def test_calc_is_arithmetic_only(self):
+        sys.path.insert(0, str(ROOT / "options_whale"))
+        import assistant as A
+        self.assertEqual(A.calc("(775-769.43)/769.43*100"), "0.723913")
+        self.assertEqual(A.calc("round(sqrt(16) + 2**3, 1)"), "12.0")
+        for bad in ("__import__('os').system('id')", "open('/etc/passwd')", "a + 1", "(1).real", "9**999"):
+            self.assertTrue(A.calc(bad).startswith("error"), bad)
+
+
 class T05OfflineImports(unittest.TestCase):
     def test_no_credential_dependent_imports(self):
         env = dict(os.environ, DATABENTO_API_KEY="", DB_API_KEY="", PYTHONPATH=str(ROOT))
@@ -492,6 +662,196 @@ class T08Schedule(unittest.TestCase):
                 mock.patch.object(main_pipeline, "RunLock") as lock:
             self.assertEqual(main_pipeline.run(trigger="scheduled", offline=True), 0)
             lock.assert_not_called()
+
+
+class T09EdgeLab(unittest.TestCase):
+    @staticmethod
+    def walk(n, seed=1, drift=0.0, vol=0.01, end="2026-10-05"):
+        import numpy as np, pandas as pd
+        idx = pd.bdate_range(end=end, periods=n)
+        return pd.Series(100 * np.cumprod(1 + np.random.default_rng(seed).normal(drift, vol, n)), index=idx)
+
+    @staticmethod
+    def bars(c, seed=2):
+        import numpy as np, pandas as pd
+        o = c.shift(1).fillna(c.iloc[0]) * (1 + np.random.default_rng(seed).normal(0, 0.003, len(c)))
+        return pd.DataFrame({"Open": o, "High": np.maximum(o, c) * 1.002, "Low": np.minimum(o, c) * 0.998, "Close": c})
+
+    def test_grade_rules(self):
+        import numpy as np, pandas as pd
+        from core import edges
+        rng = np.random.default_rng(3)
+        base = pd.Series(rng.normal(0, 0.02, 400), index=pd.bdate_range("2015-01-01", periods=400))
+        ix = base.index[::10]                                                  # 40 cases spread over both halves
+        good = pd.Series(0.03 + rng.normal(0, 0.01, 40), index=ix)
+        self.assertEqual(edges._grade(good, base)["edge"], "tested")
+        self.assertEqual(edges._grade(good.iloc[:25], base)["edge"], "thin")   # same data, n < 30
+        self.assertEqual(edges._grade(pd.Series(rng.normal(0, 0.02, 40), index=ix), base)["edge"], "none")   # pure noise
+        flip = pd.Series(np.where(ix < base.index[200], 0.10, -0.005) + rng.normal(0, 0.005, 40), index=ix)
+        g = edges._grade(flip, base)                                           # strong first half, worse second half
+        self.assertGreaterEqual(g["t"], 2)
+        self.assertEqual(g["edge"], "none")
+        few = edges._grade(good.iloc[:7], base)
+        self.assertIsNone(few["p"])
+        self.assertEqual(few["edge"], "none")
+        b2 = pd.Series(np.r_[np.abs(base.values[:200]), -np.abs(base.values[:200])][rng.permutation(400)], index=base.index)   # exactly 50% up
+        hi_t = pd.Series(np.where(np.arange(40) % 2, -0.001, 0.05), index=ix)  # big mean, 50% up-rate
+        g = edges._grade(hi_t, b2)
+        self.assertGreaterEqual(g["t"], 2)
+        self.assertLess(g["p"] - g["base"], 0.05)
+        self.assertEqual(g["edge"], "none")
+        self.assertIn(edges._grade(hi_t, b2, min_up=0.0)["edge"], ("tested", "thin"))
+
+    def test_edge_action(self):
+        from core import edges
+        e = lambda active=True, grade="tested", bias="bullish", note=None: edges._edge(
+            "k", "L", "N", "short", "S", "w", "n", "t", active, bias, grade, "ev", "Buy it", note)
+        self.assertEqual((e(False)["action"], e(False)["bias"], e(False)["active"]), ("Wait", None, False))
+        self.assertEqual(e()["action"], "Buy it · standard size")
+        self.assertEqual(e(grade="thin")["action"], "Buy it · half size (small sample)")
+        self.assertEqual(e(grade="none")["action"], "Context: on, but it has no measured edge on this ticker")
+        self.assertEqual(e(bias="neutral", note="the note")["action"], "the note")
+        self.assertEqual(e(grade="none", bias="neutral", note="the note")["action"], "the note")
+
+    def test_verdict_counts_only_tested(self):
+        from core import edges
+        e = lambda key, name, h, bias, grade, active=True: edges._edge(key, "L", name, h, "S", "w", "n", "t", active, bias, grade, "ev", "plan")
+        v = edges._verdict([e("a", "Dip", "short", "bullish", "tested"), e("b", "Noise", "short", "bullish", "none"),
+                            e("c", "Off", "short", "bullish", "tested", False), e("d", "Trend", "mid", "bearish", "tested"),
+                            e("f", "Ctx", "long", "bullish", "none")])
+        self.assertEqual((v["short"]["bias"], v["short"]["score"], v["short"]["label"], v["short"]["edges"]), ("bullish", 1, "Bullish (1 tested)", ["Dip"]))
+        self.assertEqual((v["mid"]["bias"], v["mid"]["score"], v["mid"]["label"]), ("bearish", -1, "Bearish (1 tested)"))
+        self.assertEqual((v["long"]["bias"], v["long"]["score"], v["long"]["label"], v["long"]["edges"]), ("neutral", 0, "No tested edge on", []))
+
+    def test_trend_and_momentum(self):
+        from core import edges
+        up, dn = self.walk(600, drift=0.002, vol=0.002), self.walk(600, drift=-0.002, vol=0.002)
+        for c, bias, sign in ((up, "bullish", "+"), (dn, "bearish", "-")):
+            t, m = edges._trend("X", c, float(c.iloc[-1]) * (1.01 if bias == "bullish" else 0.99)), edges._momentum("X", c)
+            self.assertEqual((t["bias"], t["active"], t["horizon"], t["now"][0]), (bias, True, "mid", sign))
+            self.assertEqual((m["bias"], m["active"], m["horizon"]), (bias, True, "mid"))
+        c = up.copy()
+        c.iloc[-15:] *= 0.8                                                    # a sharp last month does not flip 12-to-1-month momentum
+        self.assertEqual(edges._momentum("X", c)["bias"], "bullish")
+        self.assertEqual(edges._trend("X", c, float(c.iloc[-1]))["bias"], "bearish" if c.iloc[-1] < c.iloc[-200:].mean() else "bullish")
+
+    def test_turn_of_month_window(self):
+        from datetime import date
+        from core import edges
+        for today, on, now in ((date(2026, 10, 30), True, "inside"), (date(2026, 11, 3), True, "inside"), (date(2026, 10, 14), False, "Oct 30")):
+            c = self.walk(1100, end=today - __import__("datetime").timedelta(days=1))
+            r = edges._turn_of_month("X", c, today)
+            self.assertEqual(r["active"], on, today)
+            self.assertIn(now, r["now"])
+        self.assertEqual(r["bias"], None)
+
+    def test_earnings_drift_reaction_session(self):
+        import numpy as np, pandas as pd
+        from core import edges
+        rng = np.random.default_rng(5)
+        n = 250
+        def closes(i):
+            r = rng.normal(0, 0.002, n)
+            r[i] = 0.05
+            return pd.Series(100 * np.cumprod(1 + r), index=pd.bdate_range(end="2026-10-05", periods=n))
+        e = edges._earnings_drift("X", closes(5), [])
+        self.assertEqual((e["edge"], e["active"]), ("n/a", False))
+        stamp = lambda c, k, hm: pd.Timestamp(f"{c.index[k]:%Y-%m-%d} {hm}")
+        c = closes(n - 6)                                                      # jump on the session 5 before the last bar
+        for k, hm in ((-7, "16:05"), (-6, "08:00")):                           # after the close -> next session; before the open -> same
+            e = edges._earnings_drift("X", c, [stamp(c, k, hm)])
+            self.assertIn("+5.0% reaction, 5 trading days ago", e["now"], hm)
+            self.assertTrue(e["active"])
+        c = closes(n - 31)
+        e = edges._earnings_drift("X", c, [stamp(c, -32, "16:05")])
+        self.assertIn("30 trading days ago", e["now"])
+        self.assertFalse(e["active"])
+
+    def test_overnight(self):
+        import numpy as np, pandas as pd
+        from core import edges
+        n, rng = 4000, np.random.default_rng(7)
+        idx = pd.bdate_range("2005-01-03", periods=n)
+        def bars(night_mu):
+            night, day = rng.normal(night_mu, 0.003, n), rng.normal(0, 0.005, n)
+            o, c, prev = np.zeros(n), np.zeros(n), 100.0
+            for i in range(n):
+                o[i] = prev * (1 + night[i]); c[i] = o[i] * (1 + day[i]); prev = c[i]
+            return pd.DataFrame({"Open": o, "High": np.maximum(o, c), "Low": np.minimum(o, c), "Close": c}, index=idx)
+        e = edges._overnight("X", bars(0.001))
+        self.assertEqual(e["edge"], "tested")
+        self.assertTrue(e["action"].startswith("Hold positions overnight"))
+        self.assertNotEqual(edges._overnight("X", bars(0.0))["edge"], "tested")
+
+    def test_vol_premium(self):
+        from core import edges
+        c = self.walk(300)                                                     # ~16% realised
+        e = edges._vol_premium("XYZ", c, 0.30, None)
+        self.assertEqual(e["edge"], "n/a")
+        self.assertEqual(e["bias"], "neutral")
+        self.assertTrue(e["active"])
+        self.assertIn("rich", e["action"])
+        self.assertIn("cheap", edges._vol_premium("XYZ", c, 0.08, None)["action"])
+        e = edges._vol_premium("XYZ", c, None, None)
+        self.assertEqual((e["active"], e["edge"], e["bias"]), (False, "n/a", None))
+
+    def test_tracked_list(self):
+        from core import edges
+        with mock.patch.object(edges, "TRACKED", Path(tempfile.mkdtemp()) / "t.json"):
+            self.assertEqual(edges.tracked(), ["SPY", "INTC", "SLV", "GOOGL"])
+            self.assertIn("already", edges.add_tracked("spy"))
+            with mock.patch.object(edges, "analyze", side_effect=ValueError("X: no price history found")):
+                self.assertEqual(edges.add_tracked("X"), "X: no price history found")
+            self.assertFalse(edges.TRACKED.exists())
+            with mock.patch.object(edges, "analyze", return_value={}):
+                self.assertIsNone(edges.add_tracked("tsla"))
+                self.assertEqual(edges.tracked(), ["SPY", "INTC", "SLV", "GOOGL", "TSLA"])
+                self.assertEqual(__import__("json").loads(edges.TRACKED.read_text())[-1], "TSLA")
+                edges.remove_tracked("tsla")
+                self.assertEqual(edges.tracked(), ["SPY", "INTC", "SLV", "GOOGL"])
+                edges._save([f"S{i}" for i in range(edges.MAX_TRACKED)])
+                self.assertIn("full", edges.add_tracked("NEW"))
+
+    def test_analyze_end_to_end_offline(self):
+        import json
+        import pandas as pd
+        from core import edges
+        b = self.bars(self.walk(2000, drift=0.0004))
+        info = {"shortName": "Test Co", "quoteType": "EQUITY", "trailingPE": 20.0, "forwardPE": None, "returnOnEquity": 0.2, "beta": 1.1, "profitMargins": 0.1}
+        ann = [pd.Timestamp(f"{b.index[k]:%Y-%m-%d} 16:05") for k in (-300, -100, -30)]
+        with mock.patch.object(edges, "_bars", return_value=b), mock.patch.object(edges, "_live", return_value=(float(b["Close"].iloc[-1]), 0.30)), \
+                mock.patch.object(edges, "_info", return_value=info), mock.patch.object(edges, "_earnings", return_value=ann), \
+                mock.patch.object(edges, "_fomc_dates", return_value=[]):
+            r = edges.analyze(" test ")
+            self.assertTrue({"symbol", "name", "quote_type", "price", "history_since", "verdict", "edges"} <= set(r))
+            self.assertEqual((r["symbol"], r["name"], r["quote_type"]), ("TEST", "Test Co", "EQUITY"))
+            self.assertEqual([e["key"] for e in r["edges"]], ["reversal", "earnings", "tom", "fed", "trend", "momentum", "volatility", "overnight", "factors"])
+            keys = {"key", "label", "name", "horizon", "source", "what", "now", "trigger", "active", "bias", "edge", "evidence", "action", "plan"}
+            for e in r["edges"]:
+                self.assertEqual(set(e), keys)
+                self.assertIn(e["edge"], ("tested", "thin", "none", "n/a"))
+            for h in ("short", "mid", "long"):
+                self.assertEqual(set(r["verdict"][h]), {"score", "bias", "label", "edges"})
+            self.assertTrue(r["verdict"]["summary"].startswith("TEST: "))
+            json.dumps(r)
+            with self.assertRaises(ValueError):
+                edges.analyze("bad ticker!")
+            with mock.patch.object(edges, "_bars", return_value=b.iloc[:299]), self.assertRaises(ValueError):
+                edges.analyze("TEST")
+
+    def test_payload(self):
+        from core import edges
+        def fake(s):
+            if s in ("BBB", "DDD"):
+                raise ValueError(f"{s}: no price history found")
+            return {"symbol": s}
+        with mock.patch.object(edges, "tracked", return_value=["AAA", "BBB"]), mock.patch.object(edges, "analyze", side_effect=fake):
+            p = edges.payload()
+            self.assertEqual((p["status"], p["symbols"], p["failed"], len(p["tracked"])), ("success", ["AAA", "BBB"], ["BBB"], 1))
+            self.assertNotIn("query", p)
+            self.assertEqual(edges.payload(query="CCC")["query"], {"symbol": "CCC"})
+            with self.assertRaises(ValueError):
+                edges.payload(query="DDD")
 
 
 if __name__ == "__main__":

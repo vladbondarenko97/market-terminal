@@ -8,7 +8,7 @@ legacy ledgers from that snapshot. Same stack (Python, SQLite), same `CME_Data` 
 
 Code: `~/dev/portfolio_dashboard` · data: `~/dev/CME_Data` (pinned by `PORTFOLIO_DATA_DIR` in `.env`) ·
 scheduler: `~/Library/LaunchAgents/com.vlad.marketdashboard.plist`, installed by `./setup.sh --schedule` on the
-one Mac that owns the schedule (NYSE trading days at 09:31 and 15:45 ET; holidays and late wake-ups skip) ·
+one Mac that owns the schedule (NYSE trading days at 09:31, 12:30 and 15:45 ET; holidays and late wake-ups skip) ·
 terminal: `python options_whale/api_router.py` → http://localhost:8080. No code hardcodes these paths; everything
 derives from `config.py`.
 
@@ -16,7 +16,7 @@ derives from `config.py`.
 
 | What | Command |
 |---|---|
-| Normal run (what launchd runs at 09:31 / 15:45 ET) | `./run_dashboard.command` → `python main_pipeline.py run --trigger scheduled` |
+| Normal run (what launchd runs at 09:31 / 12:30 / 15:45 ET) | `./run_dashboard.command` → `python main_pipeline.py run --trigger scheduled` |
 | Run without email/NTFY/upload | `python main_pipeline.py run --no-deliver` |
 | Offline run (no network at all) | `python main_pipeline.py run --offline` |
 | Re-render a saved run (no network, no delivery) | `python main_pipeline.py replay [--run RUN_ID] [--out DIR]` |
@@ -78,6 +78,24 @@ tracking (the row is kept, hidden).
 Historical tickets were recovered from sent report emails: `python scripts/import_email_positions.py`
 (Apple Mail, messages from `REPORT_SENDER`) or `--dir <folder of .eml/.mbox>`; idempotent by Message-ID.
 
+## Rule cards and alerts (Forecast Lab tab, top)
+
+Three cards are plain rules on stored runs and live Yahoo quotes: no model output. Every row is graded on history
+and only a row with tested evidence can say "Buy"; hover any cell for what it means and where it comes from.
+
+- **0 · Signal Watch** (`core/forecast.py: signal_watch`): the triggers the model cards compute (fair value, momentum
+  flip, positioning, option pricing, dealer gamma, macro, engine ticket), fired or waiting, with the action.
+- **12 · Day Scanner** (`core/watch.py`, `/api/scanner`): the dip-in-an-uptrend rule (2-day RSI under 10 or 5, above
+  the 200-day average) on a saved watchlist (`+ ADD`, stored in `scanner_watchlist.json`). SPY trades as a call spread
+  of at most $300 and opens a paper position (`v2_watch_positions`) that a sell alert closes 5 trading days later.
+- **13 · Edge Lab** (`core/edges.py`, `/api/edges`): the published edges (reversal, post-earnings drift, turn of month,
+  pre-Fed day, trend, 12-month momentum, volatility premium, overnight vs intraday, factor profile) tested on any
+  ticker's own history; `QUERY` analyses a symbol, `+ TRACK` saves it (`edges_tracked.json`).
+
+Alerts: `python main_pipeline.py signal-alerts` (launchd `com.vlad.signalalerts`, every 5 minutes, installed by
+`./setup.sh --schedule`) pushes to `NTFY_URL` and raises a macOS banner when a row goes from waiting to FIRED; it
+exits outside the NYSE session. `--dry-run` prints the live states, `--test` sends a sample.
+
 ## Forecast Lab (terminal tab, SPY / SLV toggle)
 
 Nine cards computed once per run inside the pipeline (stored in the snapshot as `forecast`, summarized in the
@@ -121,6 +139,40 @@ AUMs, 5-year daily histories. Error messages are credential-redacted before anyt
 
 Every Forecast Lab card has **⛶ full screen** (Esc or ⛶ to return) and a **? FAQ**: what it shows, how to read it,
 how to trade with it, how hedge funds and quant desks use it, and caveats.
+
+## Ask the terminal (console engine v3)
+
+The console answers questions typed in words with a model on this machine. `options_whale/assistant.py` holds
+everything server-side; v3 restored the October 3 version (branch `ai-terminal`, never merged), dropped the Claude
+Code engine and added the routing below.
+
+- **Brief first.** Every question carries a brief built from the database and the latest run: today's engine tickets
+  (local time, contract, entry mid, score, size; a not-live entry quote is flagged), the latest run, fired and
+  waiting Signal Watch rows, macro regime and the next CPI / Fed / OPEX dates, and what the brief leaves out. It has
+  no clock and no live readings, so it only changes when the data does and a server with a prompt cache reads it
+  once per run. The question carries the time. `GET /api/assistant/data?source=brief` shows it.
+- **Then routing.** For anything the brief does not show, the model calls `fetch_source` for one to three of the 25
+  read-only GET sources in `SOURCES` (Flask test client, unlisted parameters dropped). Large results come back as an
+  outline that the model opens with `path=` and `last=`. Positions, Signal Watch, the Day Scanner, the Edge Lab and
+  gamma are pre-shaped (`SHAPERS`): plain contract names, local times, trades apart from cash tickets, gamma
+  distances already worked out. `calc` does the arithmetic. `/run` and the eBay scrape are not sources.
+- **Reasoning.** `ASSISTANT_LOCAL_REASONING=auto` (default): no deliberate reasoning to answer from the brief or to
+  pick sources, brief reasoning once data has been fetched. Sent both as `reasoning_effort` and as the chat
+  template's `enable_thinking`, so oMLX and vLLM-style servers really switch it off.
+- **Limits.** 8 rounds and 16 distinct calls per question (a repeated call is refused), 2,000 tokens per model call,
+  `ASSISTANT_MAX_SECONDS` (default 150) per question, `ASSISTANT_MAX_CHARS` (default 12,000) per source. An empty
+  reply (a server left loaded but dead after a GPU out-of-memory error) reloads the model once and asks again.
+- **Servers.** Default Ollama at `http://127.0.0.1:11434/v1` with `qwen3.6:35b-a3b`; on Ollama the default model is
+  kept loaded (`ASSISTANT_KEEP_WARM`, 30 min) and the brief is built when the page opens. This Mac points `.env` at
+  oMLX on port 8000 (`Qwen3.8-27B-oQ4e-mtp`, shared with the coding agent; `ASSISTANT_MAX_SECONDS=300`,
+  `ASSISTANT_MAX_CHARS=8000`). Do not keep a large Ollama model loaded next to oMLX: together they exceed the GPU's
+  memory and both start failing.
+- **Measured here (M4 Pro, 48 GB, 2026-10-09), 17 graded questions** (5 answerable from the brief, 5 needing one
+  lookup, 7 multi-step): Ollama `qwen3.6:35b-a3b` with reasoning off 14-15/17, median 5-8 s; reasoning low 17/17,
+  median 20 s. The old default `qwen3.8:27b-mlx` on Ollama read prompts at about 90 tokens/s: 96 s for the
+  engine-position question. oMLX has not been graded yet: it was busy with an agent run during testing.
+- **Conversations** live in server memory (the last 40; 8 turns each) and are lost on restart. "New chat" starts one.
+- The server has no login. Anyone who can reach the port can ask questions. Keep the port on a private network.
 
 ## What changed in values (versioned in snapshots)
 

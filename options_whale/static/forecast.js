@@ -1,5 +1,5 @@
 // ==========================================================================================
-// FORECAST LAB — nine model cards for SPY / SLV (data: /api/forecast, from the committed v2 snapshot)
+// FORECAST LAB — signal watch + model cards for SPY / SLV (data: /api/forecast, from the committed v2 snapshot)
 // ==========================================================================================
 const FC = { ticker: 'SPY', data: null, charts: {}, h1: '1m' };
 const FC_COL = { blue: '#3987e5', orange: '#d95926', aqua: '#199e70', yellow: '#c98500', violet: '#9085e9',
@@ -49,15 +49,17 @@ async function loadForecast(ticker) {
         const json = await res.json();
         if (json.status !== 'success') throw new Error(json.message || 'load failed');
         FC.data = json;
+        loadScanner();
+        loadEdges();
         const r = json.run || {};
         document.getElementById('fcRunInfo').textContent = `${FC.ticker} · run ${r.run_id || '—'} · ${r.generated_local || ''}`
             + (json.source_errors && Object.keys(json.source_errors).length ? ` · ${Object.keys(json.source_errors).length} source issue(s)` : '');
-        [renderImplied, renderVolForecast, renderTrend, renderPositioning, renderFairValue, renderMacro,
+        [renderSignals, renderImplied, renderVolForecast, renderTrend, renderPositioning, renderFairValue, renderMacro,
          renderCalendar, renderFlows, renderScorecard, renderDiesel, renderInventories].forEach(fn => {
             try { fn(json); } catch (e) { console.error(fn.name, e); }
         });
     } catch (e) {
-        for (let i = 1; i <= 11; i++) {
+        for (let i = 0; i <= 11; i++) {
             const b = document.getElementById(`fc${i}`);
             if (b) b.innerHTML = `<div class="fc-neg">Forecast Lab unavailable: ${fcEsc(e.message)}</div>`;
         }
@@ -67,13 +69,183 @@ async function loadForecast(ticker) {
 function copyForecastCard(id) {
     const d = FC.data || {};
     const map = {
-        fc1: d.data?.implied, fc2: d.data?.vol_forecast, fc3: d.data?.trend, fc4: d.positioning, fc5: d.silver_fair_value,
+        fc0: d.signals, fc12: FC.scanner, fc13: FC.edges, fc1: d.data?.implied, fc2: d.data?.vol_forecast, fc3: d.data?.trend, fc4: d.positioning, fc5: d.silver_fair_value,
         fc6: d.macro_regime, fc7: d.data?.calendar, fc8: d.data?.flows, fc9: d.scorecard, fc10: d.refining, fc11: d.refining?.inventories,
     };
     const title = document.querySelector(`#${id}`)?.closest('.rainbow-inner')?.querySelector('.fc-title')?.textContent || id;
     const payload = JSON.stringify({ ticker: FC.ticker, run: d.run?.run_id, card: title, data: map[id] ?? null }, null, 2);
     if (typeof openCopyModal === 'function') openCopyModal(title, payload, 'json');
     else navigator.clipboard?.writeText(payload);
+}
+
+// ---------------------------------------------------------------- 0. signal watch / 12. day scanner
+const sigTd = (txt, tip, cls = '') => `<td class="${cls}" title="${fcEsc(tip)}">${fcEsc(txt)}</td>`;
+const sigTh = (txt, tip) => `<th title="${fcEsc(tip)}">${txt}</th>`;
+function sigTable(rows, when, lead = () => '') {
+    const td = sigTd, th = sigTh;
+    const body = rows.map(r => {
+        const arrow = r.bias === 'bullish' ? ' ▲' : r.bias === 'bearish' ? ' ▼' : '';
+        const cls = !r.fired ? 'fc-muted' : r.bias === 'bullish' ? 'fc-pos' : r.bias === 'bearish' ? 'fc-neg' : 'fc-warn';
+        return `<tr><td title="Market this signal applies to. ALL = both SPY and SLV.">${lead(r)}${fcEsc(r.asset)}</td>
+            ${td(r.name, `${r.what} Where: ${r.where}.`)}
+            ${td(r.now, `Current reading: live quotes for price-driven rows, otherwise the ${when} run. Where: ${r.where}.`)}
+            ${td(r.trigger, `The signal fires when this is true. ${r.what}`)}
+            ${td(r.fired ? 'FIRED' + arrow : 'waiting', r.fired ? `True right now.${r.bias ? ' Read: ' + r.bias + '.' : ''}` : `Not true right now. Rechecked every 5 minutes during the session.`, cls)}
+            ${td(r.action, r.fired ? `Rule-based action for this signal. Sized by its evidence: ${r.evidence}.` : `If it fires: ${r.plan}. Whether that is a trade or only confirmation depends on the evidence column.`, r.fired ? cls : 'fc-muted')}
+            ${td(r.evidence, `How this rule did on history. Evidence grade: ${r.edge} (tested = at least 5 points better than its baseline over 30+ cases; thin = better but under 30 cases; none = no measured edge, so it never produces a trade by itself).`, r.edge === 'tested' ? 'fc-pos' : r.edge === 'thin' ? 'fc-warn' : 'fc-muted')}</tr>`;
+    }).join('');
+    return `<table class="fc-table fc-sig"><tr>${th('Asset', 'Market the signal applies to')}${th('Signal', 'What is being watched. Hover a row for the definition and where it comes from')}
+            ${th('Now', 'Current reading')}${th('Trigger', 'The level or condition that fires the signal')}
+            ${th('Status', 'FIRED = the condition is true right now. ▲ bullish, ▼ bearish, no arrow = context, structure or size only')}
+            ${th('Action', 'What the rules say to do. Hover a waiting row to see what it would do if it fired')}
+            ${th('Evidence', 'How the rule performed historically. Green = tested, amber = small sample, grey = no measured edge')}</tr>${body}</table>`;
+}
+function renderSignals(j) {
+    const el = document.getElementById('fc0'), rows = j.signals || [];
+    if (!rows.length) { el.innerHTML = missing({ reason: 'no signals in this run' }); return; }
+    const fired = rows.filter(r => r.fired), trades = fired.filter(r => r.action.startsWith('Buy'));
+    el.innerHTML = `
+        <div class="fc-kpis">${kpi('Signals tracked', rows.length)}${kpi('Fired', fired.length, '', fired.length ? 'fc-warn' : '')}
+            ${kpi('Trades on', trades.length, trades.map(r => r.asset).join(' · '), trades.length ? 'fc-pos' : '')}${kpi('As of', fcEsc(j.run?.generated_local || '—'))}</div>
+        ${sigTable(rows, j.run?.generated_local || 'latest')}
+        <div class="fc-note">Rules only: no model output. Price-driven rows use live quotes; the rest are as of the latest run. Both markets are shown whichever ticker is selected. Actions are generated from each rule's own backtest, so a fired signal with no measured edge says so instead of giving a trade.</div>`;
+}
+async function loadScanner(opts = {}) {
+    const el = document.getElementById('fc12');
+    const note = document.getElementById('fcScanMsg');
+    if (note) note.textContent = opts.refresh ? 'Refreshing from Yahoo…' : opts.add ? `Checking ${opts.add}…` : 'Loading…';
+    try {
+        const url = `${API_BASE}/api/scanner` + (opts.remove ? `/${encodeURIComponent(opts.remove)}` : opts.refresh ? '?refresh=1' : '');
+        const res = await fetch(url, opts.add ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: opts.add }) }
+                                     : opts.remove ? { method: 'DELETE' } : undefined);
+        const json = await res.json();
+        if (json.status !== 'success') throw new Error(json.message || 'load failed');
+        FC.scanner = json;
+        renderScanner(json);
+    } catch (e) {
+        if (FC.scanner) renderScanner(FC.scanner, e.message);                    // keep the table, show why it failed
+        else el.innerHTML = `<div class="fc-neg">Day scanner unavailable: ${fcEsc(e.message)}</div>`;
+    }
+}
+function scannerAdd() {
+    const v = (document.getElementById('fcScanAdd')?.value || '').trim().toUpperCase();
+    if (v) loadScanner({ add: v });
+}
+function renderScanner(j, error = '') {
+    const el = document.getElementById('fc12'), rows = j.scanner || [], td = sigTd, th = sigTh;
+    const dips = rows.filter(r => r.rsi2 !== undefined), trades = rows.filter(r => r.fired && r.action.startsWith('Buy'));
+    const shown = rows.filter(r => r.rsi2 !== undefined || r.fired);            // context rows only while they are true
+    const remove = r => r.rsi2 !== undefined && r.asset !== 'SPY'
+        ? `<button class="fc-x" title="Stop scanning ${fcEsc(r.asset)}" onclick="loadScanner({remove:'${fcEsc(r.asset)}'})">✕</button> ` : '';
+    el.innerHTML = `
+        <div class="fc-scanbar">
+            <input id="fcScanAdd" placeholder="TICKER" maxlength="10" autocomplete="off" title="Type a ticker and press Enter or +. It is checked against Yahoo, saved on this Mac, and scanned by the 5-minute alert job from then on."
+                   onkeydown="if(event.key==='Enter')scannerAdd()">
+            <button class="fc-toggle" onclick="scannerAdd()" title="Add this ticker to the scanner (up to ${j.max_symbols} symbols)">+ ADD</button>
+            <button class="fc-toggle" onclick="loadScanner({refresh:true})" title="Fetch fresh quotes, price history, earnings dates and option prices for everything on this card">↻ REFRESH</button>
+            <span id="fcScanMsg" class="${error ? 'fc-neg' : 'fc-muted'}">${error ? fcEsc(error) : `updated ${fcEsc((j.as_of || '').replace('T', ' '))}`}</span>
+        </div>
+        <div class="fc-kpis">${kpi('Symbols', (j.symbols || []).length, (j.symbols || []).join(' · '))}
+            ${kpi('Trades on', trades.length, trades.map(r => r.asset).join(' · ') || 'nothing to do', trades.length ? 'fc-pos' : '')}
+            ${kpi('With tested edge', dips.filter(r => r.edge === 'tested').length, dips.filter(r => r.edge === 'tested').map(r => r.asset).join(' · ') || 'none')}
+            ${kpi('Entry window', '2:30–3:00 PM CT', 'the only time a trade can fire')}</div>
+        ${shown.length ? sigTable(shown, 'latest', remove) : missing({ reason: 'no live quotes or price history right now' })}
+        ${(j.failed || []).length ? `<div class="fc-note">No data right now for: ${j.failed.map(s => `${fcEsc(s)} <button class="fc-x" title="Remove ${fcEsc(s)}" onclick="loadScanner({remove:'${fcEsc(s)}'})">✕</button>`).join(' · ')}</div>` : ''}
+        <div class="fc-sub" style="margin-top:4px">LIVE WATCH POSITIONS</div>
+        ${(j.watch_positions || []).length ? `<table class="fc-table fc-sig"><tr>${th('Opened', 'When the dip rule fired and the alert was sent')}
+            ${th('Position', 'The call spread the alert named: long the lower strike, short the higher one')}
+            ${th('SPY', 'SPY price when the position opened')}${th('Entry', 'Debit per spread at the alert (mid prices). x100 = dollars at risk per spread')}
+            ${th('Now', 'Live value of the spread (mid prices), or the value recorded at the exit alert')}
+            ${th('P&L', 'Change in the spread value since entry')}${th('Exit', 'The exit alert is sent near the close on this date; the rule is only tested with a 5-trading-day hold')}</tr>
+            ${j.watch_positions.map(p => `<tr>${td(p.opened_at.replace('T', ' ').slice(0, 16), 'Alert time (this Mac\'s clock)')}
+                ${td(`SPY ${p.expiration} ${p.long_strike}/${p.short_strike} call spread`, `${p.long_contract} long, ${p.short_contract} short`)}
+                ${td(fcNum(p.underlying_price), 'SPY at entry')}${td(fcNum(p.entry_debit), `$${fcNum(p.entry_debit * 100, 0)} per spread`)}
+                ${td(fcNum(p.value), p.closed_at ? 'Value recorded at the exit alert' : 'Live mid value')}
+                ${td(fcPct(p.pnl_pct, 0), 'Paper result from alert prices, not your fills', fcCls(p.pnl_pct))}
+                ${td(p.closed_at ? `closed ${p.closed_at.slice(0, 10)}` : `sell ${p.exit_due}`, p.closed_at ? 'Exit alert sent' : 'Open: waiting for the exit date', p.closed_at ? 'fc-muted' : 'fc-warn')}</tr>`).join('')}</table>`
+          : `<div class="fc-muted">None yet. When SPY's "Dip in an uptrend" fires the alert names a call spread of at most $300, it is recorded here, and a sell alert follows 5 trading days later.</div>`}
+        <div class="fc-note">One row per symbol, plus any context state that is true right now. Green evidence = the dip rule beat a normal uptrend day on that symbol's own history (5 points of up-rate, t ≥ 2, in both halves); grey = no measured edge, so it never says Buy. Added tickers are saved on this Mac and scanned by the 5-minute alert job. After the 3 PM CT close the triggers shown are the next session's.</div>`;
+}
+
+// ---------------------------------------------------------------- 13. edge lab
+const jsArg = s => fcEsc(String(s).replace(/[\\']/g, '\\$&'));                 // string literal inside an inline onclick
+async function loadEdges(opts = {}) {
+    const el = document.getElementById('fc13');
+    const note = document.getElementById('fcEdgeMsg');
+    if (note) note.textContent = opts.query || opts.add ? `Analysing ${opts.query || opts.add}…` : opts.refresh ? 'Refreshing…' : 'Loading…';
+    try {
+        const url = `${API_BASE}/api/edges` + (opts.remove ? `/${encodeURIComponent(opts.remove)}` : opts.query ? `?symbol=${encodeURIComponent(opts.query)}` : opts.refresh ? '?refresh=1' : '');
+        const res = await fetch(url, opts.add ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: opts.add }) }
+                                     : opts.remove ? { method: 'DELETE' } : undefined);
+        const json = await res.json();
+        if (json.status !== 'success') throw new Error(json.message || 'load failed');
+        if (!json.query && FC.edges?.query && (opts.refresh || opts.remove)) json.query = FC.edges.query;   // keep the lookup on screen
+        if (opts.query || opts.add) FC.edgeSel = null;
+        FC.edges = json;
+        renderEdges(json);
+    } catch (e) {
+        if (FC.edges) renderEdges(FC.edges, e.message);
+        else el.innerHTML = `<div class="fc-neg">Edge Lab unavailable: ${fcEsc(e.message)}</div>`;
+    }
+}
+const edgesSym = () => (document.getElementById('fcEdgeSym')?.value || '').trim().toUpperCase();
+function edgesQuery() { const v = edgesSym(); if (v) loadEdges({ query: v }); }
+function edgesTrack() { const v = edgesSym(); if (v) loadEdges({ add: v }); }
+function renderEdges(j, error = '') {
+    const el = document.getElementById('fc13'), tracked = j.tracked || [], td = sigTd, th = sigTh;
+    const sel = tracked.find(a => a.symbol === FC.edgeSel) || j.query || tracked[0];
+    const bcls = b => b === 'bullish' ? 'fc-pos' : b === 'bearish' ? 'fc-neg' : 'fc-warn';
+    const active = tracked.flatMap(a => a.edges.filter(e => e.active && (e.edge === 'tested' || e.edge === 'thin')).map(e => `${a.symbol} ${e.label}`));
+    const glyph = e => {
+        if (!e.active) return e.edge === 'n/a' ? ['–', 'fc-muted'] : ['·', 'fc-muted'];
+        const g = e.bias === 'bullish' ? '▲' : e.bias === 'bearish' ? '▼' : '●';
+        return [g, e.edge === 'tested' || e.edge === 'thin' ? bcls(e.bias) : 'fc-muted'];     // on, but no measured edge = grey
+    };
+    const vcell = (v, h) => td(v.label, v.edges.length ? `Active ${h} edges: ${v.edges.join(', ')}` : `No tested edge is active on the ${h} horizon`,
+                               v.bias === 'bullish' ? 'fc-pos' : v.bias === 'bearish' ? 'fc-neg' : 'fc-muted');
+    const cols = (tracked[0] || {}).edges || [];
+    const matrix = tracked.length ? `<table class="fc-table fc-sig"><tr>${th('Ticker', 'Click a symbol to show its detail below; ✕ stops tracking it')}${th('Price', 'Latest price')}
+            ${th('Short', 'Days to weeks: verdict from the tested short-horizon edges that are active now')}${th('Mid', 'About 1–12 months: verdict from the tested mid-horizon edges')}
+            ${th('Long', 'Years: verdict from the tested long-horizon edges')}
+            ${cols.map(c => th(fcEsc(c.label), `${c.name} — ${c.what} Source: ${c.source}`)).join('')}</tr>
+        ${tracked.map(a => `<tr><td title="${fcEsc(a.name)}"><button class="fc-x" title="Stop tracking ${fcEsc(a.symbol)}" onclick="loadEdges({remove:'${jsArg(a.symbol)}'})">✕</button>
+                <span class="fc-pick${a.symbol === sel?.symbol ? ' sel' : ''}" onclick="FC.edgeSel='${jsArg(a.symbol)}';renderEdges(FC.edges)">${fcEsc(a.symbol)}</span></td>
+            ${td(fcNum(a.price), 'Latest price')}${vcell(a.verdict.short, 'short')}${vcell(a.verdict.mid, 'mid')}${vcell(a.verdict.long, 'long')}
+            ${a.edges.map(e => { const [g, c] = glyph(e); return td(g, `${e.name}: ${e.now}. ${e.evidence}`, c); }).join('')}</tr>`).join('')}</table>`
+        : missing({ reason: 'nothing tracked yet' });
+    let detail = '';
+    if (sel) {
+        const v = sel.verdict, st = e => e.active ? `ACTIVE${e.bias === 'bullish' ? ' ▲' : e.bias === 'bearish' ? ' ▼' : ''}` : e.edge === 'n/a' ? 'n/a' : 'inactive';
+        const untracked = sel === j.query && !(j.symbols || []).includes(sel.symbol) ? ' · not tracked' : '';
+        detail = `<div class="fc-sub" style="margin-top:4px">DETAIL · ${fcEsc(sel.symbol)} · ${fcEsc(sel.name)} · ${fcNum(sel.price)} · history since ${fcEsc(sel.history_since)}${untracked}</div>
+        <div>${fcEsc(v.summary)}</div>
+        <table class="fc-table fc-sig"><tr>${th('Edge', 'The published effect being tested. Hover a row for the definition and citation')}${th('Horizon', 'How long the effect plays out: short = days to weeks, mid = months, long = years')}
+            ${th('Now', 'Current reading for this ticker')}${th('Trigger', 'The level or condition that turns the edge on')}
+            ${th('Status', 'ACTIVE = the condition is true now. ▲ bullish, ▼ bearish, no arrow = context')}${th('Action', 'What the rules say to do. Hover to see the plan if the edge is active')}
+            ${th('Evidence', "How the edge did on this ticker's own history. Green = tested, amber = small sample, grey = no measured edge")}</tr>
+        ${sel.edges.map(e => { const c = e.active && (e.edge === 'tested' || e.edge === 'thin') ? bcls(e.bias) : 'fc-muted';   // on without evidence = grey
+            return `<tr>${td(e.name, `${e.what} Source: ${e.source}`)}${td(e.horizon.toUpperCase(), 'Horizon of the effect')}
+            ${td(e.now, 'Current reading for this ticker')}${td(e.trigger, `The edge turns on when this is true. ${e.what}`)}
+            ${td(st(e), e.active ? 'True right now' : 'Not true right now', e.active ? c : 'fc-muted')}${td(e.action, `If active: ${e.plan}`, c)}
+            ${td(e.evidence, `Evidence grade: ${e.edge}. tested = beat this ticker's own baseline by a clear margin over 30+ cases; thin = same but under 30 cases; none = no measured edge; n/a = cannot be tested from price history.`,
+                 e.edge === 'tested' ? 'fc-pos' : e.edge === 'thin' ? 'fc-warn' : 'fc-muted')}</tr>`; }).join('')}</table>`;
+    }
+    el.innerHTML = `
+        <div class="fc-scanbar">
+            <input id="fcEdgeSym" placeholder="TICKER" maxlength="10" autocomplete="off" title="Type any ticker and press Enter to analyse it without saving"
+                   onkeydown="if(event.key==='Enter')edgesQuery()">
+            <button class="fc-toggle" onclick="edgesQuery()" title="Analyse this ticker now without saving it">QUERY</button>
+            <button class="fc-toggle" onclick="edgesTrack()" title="Add this ticker to the tracked list (up to ${fcEsc(j.max_symbols)} symbols), saved on this Mac">+ TRACK</button>
+            <button class="fc-toggle" onclick="loadEdges({refresh:true})" title="Bypass the caches and fetch fresh prices and history for everything on this card">↻ REFRESH</button>
+            <span id="fcEdgeMsg" class="${error ? 'fc-neg' : 'fc-muted'}">${error ? fcEsc(error) : `updated ${fcEsc((j.as_of || '').replace('T', ' '))}`}</span>
+        </div>
+        <div class="fc-kpis">${kpi('Tracked', tracked.length, fcEsc((j.symbols || []).join(' · ')))}
+            ${kpi('Tested edges active', active.length, fcEsc(active.join(' · ') || 'none'))}
+            ${kpi('Showing', fcEsc(sel ? sel.symbol : '—'))}</div>
+        ${matrix}
+        ${(j.failed || []).length ? `<div class="fc-note">No data right now for: ${j.failed.map(s => `${fcEsc(s)} <button class="fc-x" title="Remove ${fcEsc(s)}" onclick="loadEdges({remove:'${jsArg(s)}'})">✕</button>`).join(' · ')}</div>` : ''}
+        ${detail}
+        <div class="fc-note">Each edge is graded on this ticker's own history. Only green evidence can produce a trade; an active edge with grey evidence is context, not a signal.</div>`;
 }
 
 // ---------------------------------------------------------------- 1. implied range
@@ -548,6 +720,48 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', e => { if (e.target && e.target.id === 'fcFaqModal') closeForecastFaq(); });
 
 const FC_FAQ = {
+    fc13: { title: '13 · Edge lab — FAQ',
+        what: 'Runs the published edges (short-term reversal, post-earnings drift, calendar effects, trend, 12-month momentum, volatility premium, overnight vs intraday, factor profile) against any ticker\'s own price history. For each one it says whether it is active now and whether it actually worked on that ticker. QUERY analyses any symbol without saving it; + TRACK adds it to the matrix.',
+        read: ['<b>Matrix glyphs</b>: ▲ active and bullish, ▼ active and bearish, ● active with no direction, · inactive, – cannot be tested. Green/red/amber = the edge is active and measured on this ticker; grey = it is on but has no measured edge.',
+               '<b>Short / Mid / Long</b>: one verdict per horizon, built only from tested edges that are active now.',
+               '<b>Detail table</b>: click a ticker for its edges with current reading, trigger, status, action and evidence.',
+               '<b>Evidence</b>: green = tested (beat the ticker\'s own baseline over 30+ cases), amber = thin (under 30), grey = none or not testable.'],
+        trade: ['Trade only edges with green evidence. Treat grey as context.',
+                'An active edge with grey evidence is background, not a reason to act.'],
+        funds: ['Systematic desks run a book of small, published effects and size each by how well it has held up, not by how good the story is.'],
+        caveats: ['Public edges are small and tend to decay after publication.',
+                  'Testing many edges on many tickers produces some false passes by chance.',
+                  'Results come from daily closes and ignore trading costs.'] },
+    fc12: { title: '12 · Day scanner — FAQ',
+        what: 'Live rule scan of SPY, GOOGL and any ticker you add with + ADD, from daily closes plus the current price (core/watch.py), rechecked every 5 minutes during the session. ↻ REFRESH pulls fresh quotes and history on demand; the list is saved on this Mac. One rule can produce a trade; the rest are context. Every row is graded against that symbol\'s own history: was the price higher 5 trading days later more often than on a normal uptrend day?',
+        read: ['<b>Dip in an uptrend</b>: 2-day RSI under 10 (SPY) or 5 (GOOGL) with the price above its 200-day average. The trigger column is the exact price that fires it today. Added tickers use 10 if that tested well on their own history, otherwise 5.',
+               '<b>Evidence</b> decides everything: a ticker whose dips did not beat a normal uptrend day stays grey and never says Buy, even when its trigger is hit.',
+               '<b>Context rows</b>: overbought, new 20-day high, 3 down closes, lower Bollinger band. Grey evidence means the state has no measured edge.',
+               '<b>Live watch positions</b>: paper record of each SPY spread the alert named, with its live value and the sell date.'],
+        trade: ['Trade only when "Dip in an uptrend" is FIRED, which can only happen 2:30–3:00 PM CT. SPY: one call spread of at most $300, sold after 5 trading days. GOOGL: shares, because its option bid/ask eats most of a narrow spread\'s edge.',
+                'Overbought and breakout rows firing is a reason to wait, not to buy calls: on both symbols the following 5 days were no better than normal.',
+                'GOOGL is blocked when earnings fall inside the 5-day hold.'],
+        funds: ['Short-term mean reversion inside an uptrend is one of the most replicated equity-index effects; desks size it small and trade it often.',
+                'A rule sheet with a fixed entry, structure and exit is what makes a small edge repeatable.'],
+        caveats: ['Expect about 8 SPY and 4 GOOGL signals a year. Most days the correct output is nothing.',
+                  'Option results behind the SPY structure are modelled, not real fills. The worst modelled trade lost about 80% of the debit.',
+                  'Noon entries were tested and showed no edge on either symbol, so there is no mid-day rule.'] },
+    fc0: { title: '0 · Signal watch — FAQ',
+        what: 'One table of every trigger the other cards compute, for SPY and SLV together: the current reading, the level that fires it, whether it has fired, and the rule-based action. It is plain code (core/forecast.py, signal_watch) evaluated on the latest pipeline run — no AI.',
+        read: ['<b>Now / Trigger</b>: how far the reading is from firing.',
+               '<b>Status</b>: FIRED means the condition is true as of the latest run; ▲ bullish, ▼ bearish, no arrow = it changes structure or size, not direction.',
+               '<b>Action</b>: instrument, tenor and size when fired. Hover a waiting row to see what it would do.',
+               '<b>Evidence</b>: the rule\'s own backtest. Green = tested (30+ cases, 5+ points better than baseline), amber = small sample, grey = no measured edge.',
+               'Hover any cell for its definition and the card and field it comes from.'],
+        trade: ['Only act on rows whose action starts with "Buy". Fired rows with grey evidence are confirmation only.',
+                'Tenor follows the tested horizon: 4-week rules get 30–60 DTE so the option outlives the test window.',
+                'The option-pricing row decides calls/puts outright versus spreads; dealer gamma and macro rows adjust size.'],
+        funds: ['Systematic desks keep exactly this kind of rule sheet: signal, state, pre-agreed action, and the evidence behind it.',
+                'Pre-committing the action before the signal fires removes discretion at the moment of the trade.'],
+        caveats: ['Price-driven rows follow live quotes; positioning, option pricing and macro only change when the pipeline runs.',
+                  'Intraday rules for SPY and GOOGL live in card 12, the day scanner.',
+                  'Backtests are short (about 3–5 years) and overlap; "tested" is a low bar, not proof.',
+                  'Actions are generic templates — check the live quote and spread before placing anything.'] },
     fc1: { title: '1 · Market-implied range — FAQ',
         what: 'The probability distribution for SPY/SLV on each horizon (1D, 1W, 1M, 1Y) that is <b>implied by option prices</b>. It is extracted with the Breeden-Litzenberger method: the second derivative of call prices across strikes is the market\'s risk-neutral density. In plain terms: it is what the options market is charging for each possible outcome.',
         read: ['<b>68% / 90% range</b>: the price band the market assigns ~68% / ~90% probability to by that date (roughly ±1σ / ±1.65σ).',
