@@ -738,7 +738,7 @@ function renderChaos(j) {
         <td>${x.hit_rate == null ? '—' : fcPctF(x.hit_rate, 0)} / ${x.base_hit_rate == null ? '—' : fcPctF(x.base_hit_rate, 0)}</td><td>${fcNum(x.t, 2)}</td><td>${fcEsc(x.grade)}</td></tr>`).join('');
     const ls = c.lever_study || {};
     const lsRows = (ls.rows || []).map(x => x.status === 'fresh'
-        ? `<tr title="${fcEsc(x.definition)}"><td style="text-align:left">${fcEsc(x.lever)}</td><td>${x.n} / ${x.n_base}</td><td>${fcPct(x.mean_pct, 1)}</td><td>${fcPct(x.base_mean_pct, 1)}</td><td>${fcNum(x.t, 2)}</td><td>${fcEsc(x.grade)}</td></tr>`
+        ? `<tr title="${fcEsc(x.definition)}"><td style="text-align:left">${fcEsc(x.lever)}</td><td>${x.n} / ${x.n_base}</td><td>${fcPct(x.median_pct, 1)} / ${fcPct(x.base_median_pct, 1)}</td><td>${fcPct(x.mean_pct, 1)} / ${fcPct(x.base_mean_pct, 1)}</td><td>${fcNum(x.t, 2)}</td><td>${fcEsc(x.grade)}</td></tr>`
         : `<tr><td style="text-align:left">${fcEsc(x.lever)}</td><td colspan="5" class="fc-muted" style="text-align:left">missing: ${fcEsc(x.reason)}</td></tr>`).join('');
     const head = miss ? `<div class="fc-kpis">${kpi('Chaos / Peace', '—', fcEsc(c.reason || c.status))}${kpi('Components', `0 of ${c.components_total ?? 12}`)}${kpi('Midterm', fcEsc(mid))}</div>`
         : `<div class="fc-kpis">
@@ -763,7 +763,7 @@ function renderChaos(j) {
                  : missing(es)}
         <div class="fc-note">${fcEsc(es.note || '')}</div>
         <div class="fc-sub" style="margin-top:2px">LEVERS BEFORE ELECTIONS · 60 days to election day, election years vs the same dates in odd years (n = years) · hover for the definition</div>
-        ${lsRows ? `<table class="fc-table"><tr><th style="text-align:left">Lever</th><th>n / odd</th><th>Mean</th><th>Odd years</th><th>t</th><th>Grade</th></tr>${lsRows}</table>` : missing(ls)}
+        ${lsRows ? `<table class="fc-table"><tr><th style="text-align:left">Lever</th><th>n / odd</th><th>Median / odd</th><th>Mean / odd</th><th>t</th><th>Grade</th></tr>${lsRows}</table>` : missing(ls)}
         <div class="fc-note">${fcEsc(ls.note || '')} ${Object.keys(c.source_errors || {}).length ? '⚠ source issues: ' + fcEsc(Object.keys(c.source_errors).join(', ')) : ''}</div>`;
     const h = c.history || [];
     if (!miss && h.length > 1) fcChart('fc14Chart', { type: 'line', data: { labels: h.map(x => x[0]), datasets: [

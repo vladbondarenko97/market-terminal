@@ -89,7 +89,8 @@ return with `n`, `mean_pct`, `hit_rate`, `t_vs_baseline` and `grade`: `core.watc
     buybacks accepted over the last 28 days) sit beside the score and are not part of it.
   - `event_study` compares S&P 500 (1950 on) and VIX (1990 on) returns in four windows around past midterm election days
     with all other windows of the same length, through `core.watch.grade`. About 19 midterms (9 for the VIX) means the
-    best grade is `thin`. `lever_study` compares the 60 days before November elections in even and odd years. Both are
+    best grade is `thin`. `lever_study` compares the 60 days before November elections in even and odd years, with the
+    median beside the mean because one extreme year (a percent change of a small balance) can dominate a mean. Both are
     descriptive and say nothing about why anything moved.
   - The long ^GSPC and ^VIX histories are reused for 30 days (`yf_long_history()` in `core/sources.py`).
 - **Card 11.**

@@ -237,7 +237,7 @@ def _lever_study(inp):
         definition = f"percent change over the 60 calendar days ending on the first Tuesday after the first Monday of November; {rule}"
         if s is None or len(s) < 10:
             rows.append({"lever": label, "definition": definition, "status": "missing", "reason": "not enough history", "n": 0, "n_base": 0,
-                         "mean_pct": None, "base_mean_pct": None, "t": None, "grade": "none"})
+                         "mean_pct": None, "base_mean_pct": None, "median_pct": None, "base_median_pct": None, "t": None, "grade": "none"})
             continue
         sig, base = {}, {}
         for y in range(s.index[0].year, s.index[-1].year + 1):
@@ -248,10 +248,13 @@ def _lever_study(inp):
             (sig if y % 2 == 0 else base)[e] = sign * (b.iloc[-1] / a.iloc[-1] - 1)
         sig, base = pd.Series(sig, dtype=float), pd.Series(base, dtype=float)
         g = grade(sig, base)
+        pct = lambda x, f: round(float(f(x)) * 100, 2) if len(x) else None      # grade() gives no mean under 8 cases
         rows.append({"lever": label, "definition": definition, "status": "fresh", "reason": None, "n": len(sig), "n_base": len(base),
-                     "mean_pct": g["avg"], "base_mean_pct": g["bavg"], "t": g["t"], "grade": g["edge"]})
+                     "mean_pct": pct(sig, np.mean), "base_mean_pct": pct(base, np.mean), "median_pct": pct(sig, np.median),
+                     "base_median_pct": pct(base, np.median), "t": g["t"], "grade": g["edge"]})
     return {"status": "fresh" if any(r["status"] == "fresh" for r in rows) else "missing", "rows": rows,
             "note": "Descriptive only. Even years (election years) against the same dates in odd years; a handful of years each, so small n. "
+                    "One extreme year can dominate a mean, so the median is shown beside it; under 8 years on a side there is no t. "
                     "It says nothing about why a lever moved."}
 
 
