@@ -5,6 +5,7 @@ Conventions (recorded in snapshots as `derivation` versions):
 - IV is a fraction (0.25 == 25%); formatting to percent happens in rendering.
 """
 import math
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -744,3 +745,121 @@ def shanghai_dated_spread(fixes, comex, fx, vat=0.13, keep=400):
         "stats": premium_stats(rows, {"comex_pct": "comex", "shanghai_pct": "shanghai"}),
         "series": {"dates": [r["label"] for r in tail], **{k: [_r(r[k]) for r in tail] for k in keys}},
     }
+
+
+# ---------------------------------------------------------------- Silver Eagle premium, dealer flow, paper:physical history
+EAGLE_VERSION = "eagle_premium_v1"
+PAPER_PHYSICAL_HISTORY_VERSION = "paper_physical_history_v1"
+
+
+def _reading(v):
+    v = safe_float(v)
+    return v if v is not None and math.isfinite(v) and v > 0 else None
+
+
+def _arb_point(r):
+    """One verified reading ({"ts", "spot", "cheap", "avg"}) as the dict the payload shows (rounded; no average -> None)."""
+    spot, cheap, avg = r["spot"], r["cheap"], _reading(r.get("avg"))
+    return {
+        "label": r["ts"].strftime('%Y-%m-%d %H:%M'), "spot": _r(spot), "cheapest_price": _r(cheap),
+        "avg_price": _r(avg), "cheapest_dollar": _r(cheap - spot), "avg_dollar": _r(avg - spot) if avg else None,
+        "cheapest_pct": _r((cheap / spot - 1) * 100), "avg_pct": _r((avg / spot - 1) * 100) if avg else None,
+    }
+
+
+def eagle_premium(history, current):
+    """Premium of the cheapest Silver Eagle over silver futures. history: time-ascending earlier readings
+    [{"ts" (naive Chicago), "spot", "cheap", "avg"}]; current: this run's reading or None. A reading counts only
+    when spot and cheap are finite and above 0."""
+    base = {"version": EAGLE_VERSION}
+    if current is None or not (_reading(current.get("spot")) and _reading(current.get("cheap"))):
+        return {"status": "missing", "reason": "this run has no retail price or no silver price", **base}
+    rows = []
+    for r in [*history, current]:
+        spot, cheap = _reading(r.get("spot")), _reading(r.get("cheap"))
+        if spot and cheap:
+            rows.append({"ts": r["ts"], "label": r["ts"].strftime('%Y-%m-%d %H:%M'), "pct": (cheap / spot - 1) * 100,
+                         "spot": spot, "cheap": cheap, "avg": r.get("avg")})
+    stats = premium_stats(rows, {"spot_pct": "spot", "retail_pct": "cheap"})
+    stats["latest"] = _arb_point(rows[-1])
+    return {"status": "fresh", "reason": None, **base, "stats": stats}
+
+
+def _units_between(earlier, later):
+    """Units sold per listing between two runs. A listing absent from either run, without an integer count in both,
+    or whose count went down has no delta and is left out (not zero)."""
+    out = {}
+    for item_id, now in later["listings"].items():
+        a, b = (earlier["listings"].get(item_id) or {}).get("sold_qty"), now.get("sold_qty")
+        if all(isinstance(v, int) and not isinstance(v, bool) for v in (a, b)) and b >= a:
+            out[item_id] = b - a
+    return out
+
+
+def listing_flow(runs, tz):
+    """Units sold per listing since the previous run and since the run at least 7 days back, and the flow summary.
+    runs: oldest first, the current run last: [{"run_at": aware datetime, "listings": {item_id: listing}}]."""
+    newest = runs[-1]
+    stamp = lambda run: run["run_at"].astimezone(tz).strftime('%Y-%m-%d %H:%M')
+    at_least = lambda days, before=newest: next(
+        (r for r in reversed(runs) if r["run_at"] <= before["run_at"] - timedelta(days=days)), None)
+    prev = runs[-2] if len(runs) > 1 else None
+    ref7 = at_least(7)
+    sold_prev = _units_between(prev, newest) if prev else {}
+    sold_7d = _units_between(ref7, newest) if ref7 else {}
+    if prev is None:
+        return {"sold_prev": sold_prev, "sold_7d": sold_7d, "flow": None}
+
+    def rate(a, b):
+        deltas = _units_between(a, b) if a and b else {}
+        if not deltas:
+            return None
+        days = (b["run_at"] - a["run_at"]).total_seconds() / 86400
+        units = sum(deltas.values())
+        return {"ref_run_at": stamp(a), "units": units, "days": _r(days, 1),
+                "per_day": _r(units / days, 1) if days > 0 else None, "listings": len(deltas)}
+
+    per_date = {}
+    for a, b in zip(runs, runs[1:]):
+        deltas = _units_between(a, b)
+        if deltas:
+            date = b["run_at"].astimezone(tz).strftime('%Y-%m-%d')
+            per_date[date] = per_date.get(date, 0) + sum(deltas.values())
+    flow = {"prev_run_at": stamp(prev), "prev_count": len(prev["listings"]),
+            "units_prev": sum(sold_prev.values()) if sold_prev else None,
+            "rate_7d": rate(ref7, newest), "rate_prior_7d": rate(at_least(14), ref7) if ref7 else None,
+            "daily": [{"date": d, "units": u} for d, u in sorted(per_date.items())], "version": EAGLE_VERSION}
+    return {"sold_prev": sold_prev, "sold_7d": sold_7d, "flow": flow}
+
+
+def paper_physical_history(history, current):
+    """Statistics of the recorded paper:physical ratio. history: time-ascending [{"ts", "label", "ratio", "oi"}]
+    from the ledger; current: this run's reading or None (then the statistics describe the history alone)."""
+    base = {"version": PAPER_PHYSICAL_HISTORY_VERSION}
+    allrows = [*history, *([current] if current else [])]
+    rows = [{"ts": r["ts"], "label": r["label"], "ratio": _reading(r.get("ratio")), "oi": _reading(r.get("oi"))}
+            for r in allrows if _reading(r.get("ratio"))]
+    n = len(rows)
+    if not n:
+        return {"status": "missing", "reason": "no ratio recorded yet", **base}
+    vals = sorted(r["ratio"] for r in rows)
+    median = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+    last = rows[-1]
+    pct = None
+    if n >= 20:
+        if last["ratio"] < median:
+            pct = {"side": "below", "pct": int(round(sum(v > last["ratio"] for v in vals) / n * 100))}
+        else:
+            pct = {"side": "above", "pct": int(round(sum(v < last["ratio"] for v in vals) / n * 100))}
+    ref = next((r for r in reversed(rows) if r["ts"] <= last["ts"] - timedelta(days=30)), None)
+    d30 = None
+    if ref:
+        d30 = {"label": ref["label"], "ratio": _r(ref["ratio"], 4),
+               "ratio_chg_pct": _r((last["ratio"] / ref["ratio"] - 1) * 100), "oi_chg_pct": None,
+               "registered_chg_pct": None}
+        if last["oi"] and ref["oi"]:    # registered = open interest x contract size / ratio; the size cancels
+            d30["oi_chg_pct"] = _r((last["oi"] / ref["oi"] - 1) * 100)
+            d30["registered_chg_pct"] = _r(((last["oi"] / last["ratio"]) / (ref["oi"] / ref["ratio"]) - 1) * 100)
+    return {"status": "fresh", **base, "n": n, "low": _r(vals[0], 4), "high": _r(vals[-1], 4),
+            "median": _r(median, 4), "first_label": rows[0]["label"], "excluded": len(allrows) - n,
+            "latest": {"ratio": _r(last["ratio"], 4), "label": last["label"]}, "percentile": pct, "d30": d30}

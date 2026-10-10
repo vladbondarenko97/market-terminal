@@ -81,6 +81,11 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 fix dates, each SGE silver benchmark against the SI=F close and the CNY=X close of the same date. The other keys of `shanghai`
 keep the older reading (the newest fix against the run-time COMEX quote), which the report and the macro ledger still use.
 
+Three more model blocks back the Macro Direction cards: `ebay.premium` (`eagle_premium_v1`: the Silver Eagle premium of the run with its
+90-day statistics over the macro ledger), `ebay.flow` with `sold_prev` / `sold_7d` on each entry of `ebay.listings` (units sold between
+runs, from the `ebay.listing` records of earlier runs) and `paper_physical.history` (`paper_physical_history_v1`: the ratio's recorded
+range, rank and 30-day change). Each is `{"status": "missing", "reason": ...}` when its inputs are missing.
+
 ### Observations and payloads
 
 `v2_observations.metric_id` families:

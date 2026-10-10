@@ -1208,7 +1208,7 @@ document.addEventListener('keydown', e => {
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
-// COMEX Paper:Physical card. ppState keeps the last XML reading and ledger statistics for the COPY button.
+// COMEX Paper:Physical card. ppState keeps the last stored reading and its history statistics for the COPY button.
 let ppState = { xml: null, stats: null };
 let ppHistoryChartInstance = null;
 const PP_TIER = { // text colour of the number, text colour of the tier, marker colour (the zone colours)
@@ -1219,64 +1219,37 @@ const ppDate = iso => { const [, m, d] = String(iso).slice(0, 10).split('-').map
 const ppPct = v => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%`;
 const ppSet = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
 
-// Pure statistics of the ledger columns. A ratio or open interest that is null or not above 0 is a gap, not a reading.
-function ppHistoryStats(labels, ratios, ois) {
-    const ok = v => Number.isFinite(v) && v > 0;
-    const rows = [];
-    labels.forEach((label, i) => { if (ok(ratios[i])) rows.push({ label, t: new Date(label.replace(' ', 'T')).getTime(), ratio: ratios[i], oi: ok(ois[i]) ? ois[i] : null }); });
-    const n = rows.length;
-    if (!n) return null;
-    const sorted = rows.map(r => r.ratio).sort((a, b) => a - b);
-    const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
-    const last = rows[n - 1];
-    const stats = { n, low: sorted[0], high: sorted[n - 1], median, firstLabel: rows[0].label, excluded: labels.length - n,
-        latest: { ratio: last.ratio, label: last.label }, percentile: null, d30: null };
-    if (n >= 20) {
-        const below = sorted.filter(v => v < last.ratio).length / n * 100, above = sorted.filter(v => v > last.ratio).length / n * 100;
-        stats.percentile = last.ratio < median ? { side: 'below', pct: Math.round(above) } : { side: 'above', pct: Math.round(below) };
-    }
-    const ref = rows.filter(r => r.t <= last.t - 30 * 864e5).pop();
-    if (ref) {
-        stats.d30 = { label: ref.label, ratio: ref.ratio, ratio_chg_pct: (last.ratio / ref.ratio - 1) * 100, oi_chg_pct: null, registered_chg_pct: null };
-        if (last.oi && ref.oi) { // registered = open interest × 5,000 ÷ ratio
-            stats.d30.oi_chg_pct = (last.oi / ref.oi - 1) * 100;
-            stats.d30.registered_chg_pct = ((last.oi / last.ratio) / (ref.oi / ref.ratio) - 1) * 100;
-        }
-    }
-    return stats;
-}
-
-// Re-reads the XML dump (headline numbers) and the ledger (history); each fails on its own
+// Re-reads the stored paper_physical section (headline numbers and history statistics, both computed by the pipeline) and the
+// ledger (chart); each fails on its own
 async function syncComexModule() {
+    let stats = ppState.stats, hist = null;
     try {
-        const xmlText = await (await fetch(`${API_BASE}/api/dump`)).text();
-        if (xmlErrorText(xmlText)) throw new Error(xmlErrorText(xmlText));
-        const doc = new DOMParser().parseFromString(xmlText, "text/xml");
-        const node = doc.querySelector("paper_physical");
-        const a = name => node ? toNum(node.getAttribute(name)) : null;
-        const s = name => (node && node.getAttribute(name)) || null;
+        const json = await fetchJson(`${API_BASE}/api/paper_physical`);
+        if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
+        const pp = json.data.paper_physical || {}, run = json.data.run_at;
+        const claims = toNum(pp.paper_claims_oz), size = toNum(pp.contract_size_oz);
         updateComexRatioUI({
-            tier: s('tier'), ratio: a('ratio'), si_open_interest: a('si_open_interest'), paper_claims_oz: a('paper_claims_oz'),
-            registered_oz: a('registered_oz'), oi_trade_date: s('oi_trade_date'), inventory_report_date: s('inventory_report_date'),
-            run: doc.documentElement.getAttribute('source_folder'),
+            tier: pp.tier ?? null, ratio: toNum(pp.ratio), paper_claims_oz: claims, registered_oz: toNum(pp.registered_oz),
+            si_open_interest: isNum(claims) && isNum(size) && size > 0 ? Math.round(claims / size) : null, // unit conversion: ounces to contracts
+            oi_trade_date: pp.oi_trade_date || null, inventory_report_date: pp.inventory_report_date || null, run: run ? arbWhen(run) : null,
         });
+        hist = pp.history || null;
+        stats = hist && hist.status === 'fresh' ? hist : null;
     } catch (e) {
         console.error("Failed to sync COMEX module:", e);
     }
-    let stats = null, note = '';
+    let ledger = true, note = '';
     try {
         const json = await fetchJson(`${API_BASE}/api/macro_ledger_full?limit=500`);
         if (json.status !== 'success' || !json.data) throw new Error(json.message || 'no data');
-        const d = json.data;
-        stats = ppHistoryStats(d.labels || [], d.paper_physical_ratio || [], d.silver_oi || []);
-        note = stats ? '' : 'No ratio recorded yet.';
-        if (stats) ppDrawHistory(d.labels, d.paper_physical_ratio, stats);
+        ppDrawHistory(json.data.labels || [], json.data.paper_physical_ratio || []);
     } catch (e) {
+        ledger = false;
         note = `Could not load the recorded history: ${e.message}`;
     }
     ppState.stats = stats;
-    if (!stats && ppHistoryChartInstance) { ppHistoryChartInstance.destroy(); ppHistoryChartInstance = null; }
-    ppSet('ppHistTitle', stats ? `Recorded ratio · since ${ppDate(stats.firstLabel)}` : 'Recorded ratio');
+    if (!ledger && ppHistoryChartInstance) { ppHistoryChartInstance.destroy(); ppHistoryChartInstance = null; }
+    ppSet('ppHistTitle', stats ? `Recorded ratio · since ${ppDate(stats.first_label)}` : 'Recorded ratio');
     ppSet('ppHistCount', stats ? `${stats.n} readings` : '');
     const range = document.getElementById('ppRange');
     if (range) {
@@ -1290,8 +1263,10 @@ async function syncComexModule() {
     if (stats) {
         const d30 = stats.d30;
         note = `Low ${stats.low.toFixed(2)} · median ${stats.median.toFixed(2)} · high ${stats.high.toFixed(2)}.`
-            + (d30 && d30.oi_chg_pct !== null ? ` 30 days: open interest ${ppPct(d30.oi_chg_pct)}, registered stock ${ppPct(d30.registered_chg_pct)} (implied).` : '')
+            + (d30 && isNum(d30.oi_chg_pct) && isNum(d30.registered_chg_pct) ? ` 30 days: open interest ${ppPct(d30.oi_chg_pct)}, registered stock ${ppPct(d30.registered_chg_pct)} (implied).` : '')
             + (stats.excluded ? ` ${stats.excluded} runs recorded no ratio.` : '');
+    } else if (ledger) {
+        note = hist && hist.status === 'missing' && hist.reason ? hist.reason : 'History statistics appear after the next pipeline run.';
     }
     ppSet('ppHistNote', note);
     const p30 = document.getElementById('pp30d'), pPct = document.getElementById('ppPercentile');
@@ -1303,12 +1278,12 @@ async function syncComexModule() {
     }
 }
 
-function ppDrawHistory(labels, ratios, stats) {
+function ppDrawHistory(labels, ratios) {
     const canvas = document.getElementById('ppHistoryChart');
     if (!canvas) return;
     if (ppHistoryChartInstance) ppHistoryChartInstance.destroy();
     const data = ratios.map(v => (Number.isFinite(v) && v > 0 ? v : null));
-    const lastIdx = labels.lastIndexOf(stats.latest.label);
+    const lastIdx = data.reduce((k, v, i) => (v === null ? k : i), -1); // last drawable reading
     ppHistoryChartInstance = new Chart(canvas.getContext('2d'), {
         type: 'line',
         data: { labels, datasets: [{ data, borderColor: '#e4e4e7', backgroundColor: 'rgba(228,228,231,0.06)', borderWidth: 1.5, fill: true, spanGaps: false,
@@ -1329,7 +1304,7 @@ function ppDrawHistory(labels, ratios, stats) {
     });
 }
 
-// Paints the headline numbers of the card from the XML reading; the tier attribute is the model's own and is not recomputed here
+// Paints the headline numbers of the card from the stored reading; the tier is the model's own and is not recomputed here
 function updateComexRatioUI(x) {
     const display = document.getElementById('livePaperRatio');
     const banner = document.getElementById('liveRatioStatusBanner');

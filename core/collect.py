@@ -494,6 +494,57 @@ def _dated_spread(session, fixes):
         return {"status": "missing", "reason": str(e), "version": metrics.SHANGHAI_VERSION}
 
 
+def _card_stats(conn, as_of, run, ebay, pp):
+    """Statistics the terminal cards show, stored with the run: ebay["premium"], ebay["flow"] and sold_prev / sold_7d
+    on each listing, and pp["history"]. Each part fails on its own into a missing section; nothing escapes."""
+    def guard(fn, version, target, key):
+        try:
+            target[key] = fn()
+        except Exception as e:      # additions to stored sections: they must never take the run down
+            target[key] = {"status": "missing", "reason": str(e), "version": version}
+
+    run_dt = datetime.fromisoformat(run["generated_at"])
+    ts = run_dt.astimezone(CHICAGO).replace(tzinfo=None, second=0, microsecond=0)
+    try:
+        ledger, ledger_err = history.legacy_frame(conn, "macro_master_ledger", "Datetime", as_of), None
+    except Exception as e:
+        ledger, ledger_err = pd.DataFrame(), e
+    num = lambda col: (pd.to_numeric(ledger[col], errors="coerce") if col in ledger.columns
+                       else pd.Series(float("nan"), index=ledger.index))
+
+    def premium():
+        if ledger_err:
+            raise ledger_err
+        hist = [{"ts": t.to_pydatetime(), "spot": a, "cheap": b, "avg": c} for t, a, b, c in zip(
+            ledger.get("_ts", []), num("COMEX_Silver"), num("Retail_Silver_Cheapest"), num("Retail_Silver_Avg"))]
+        spot, cheap = (ebay.get("benchmark") or {}).get("value"), ebay.get("cheapest")
+        cur = None if spot is None or cheap is None else {"ts": ts, "spot": spot, "cheap": cheap, "avg": ebay.get("average")}
+        return metrics.eagle_premium(hist, cur)
+    guard(premium, metrics.EAGLE_VERSION, ebay, "premium")
+
+    def flow():
+        listings = ebay.get("listings") or []
+        runs = history.eagle_listing_runs(conn, as_of) + [{"run_at": run_dt, "listings": {l["item_id"]: l for l in listings}}]
+        res = metrics.listing_flow(runs, CHICAGO)
+        for l in listings:
+            l["sold_prev"], l["sold_7d"] = res["sold_prev"].get(l["item_id"]), res["sold_7d"].get(l["item_id"])
+        return res["flow"]
+    guard(flow, metrics.EAGLE_VERSION, ebay, "flow")
+
+    def pphist():
+        if ledger_err:
+            raise ledger_err
+        hist = [{"ts": t.to_pydatetime(), "label": t.strftime("%Y-%m-%d %H:%M"), "ratio": r, "oi": o} for t, r, o in zip(
+            ledger.get("_ts", []), num("Paper_Physical_Ratio"), num("Silver_OI"))]
+        cur = None
+        if pp.get("ratio") is not None:
+            oi = pp["paper_claims_oz"] / pp["contract_size_oz"] if pp.get("paper_claims_oz") and pp.get("contract_size_oz") else None
+            # rounded as the ledger row of this run will hold it, so a later run ranks this reading the same way
+            cur = {"ts": ts, "label": ts.strftime("%Y-%m-%d %H:%M"), "ratio": round(pp["ratio"], 2), "oi": oi}
+        return metrics.paper_physical_history(hist, cur)
+    guard(pphist, metrics.PAPER_PHYSICAL_HISTORY_VERSION, pp, "history")
+
+
 def collect_shanghai(session, prices):
     try:
         sge = src.sge_silver_benchmark(session)
@@ -721,6 +772,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
     si_latest = cme_vol["latest"].get("SI_F") or {}
     pp = metrics.paper_physical(si_latest.get("open_interest"), inventory.get("registered"))
     pp.update({"oi_trade_date": si_latest.get("date"), "inventory_report_date": inventory.get("report_date")})
+    _card_stats(conn, as_of, run, ebay, pp)
     div_silver = metrics.oi_divergence(cme_vol["products"]["SI_F"], cme_vol["products"]["SIL_F"])
     div_es = metrics.oi_divergence(cme_vol["products"]["ES_F"], cme_vol["products"]["MES_F"])
     pc = []
