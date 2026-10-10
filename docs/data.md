@@ -73,7 +73,7 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 `vmri`, `paper_physical`, `oi_divergence`, `es_put_call`, `options`, `flow`, `technicals`, `weather`, `breadth`,
 `execution`, `ebay`, `sources`, `stage_seconds`, the model-feature sections from `extended_features()`
 (`price_stats`, `vol_regime`, `cme_positioning`, `silver_options_cme`, `inventory_trend`, `silver_basis`,
-`regime_context`), `position_marks`, `forecast`, `refining` and `appendix`. A section that could not be built is
+`regime_context`), `position_marks`, `forecast`, `refining`, `chaos` and `appendix`. A section that could not be built is
 `{"status": "missing", "reason": "..."}`. The daily file `report_snapshot.json` is this document, indented.
 `python main_pipeline.py catalog` lists the metrics with their paths.
 
@@ -86,15 +86,15 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 | Catalog metrics (`core/catalog.py METRICS`, one per report value) | `quote.SLV.price`, `flow.SLV.block_vwap`, `options.SPY.call_wall`, `fred.WALCL`, `sge.*`, `comex.*`, `ebay.*`, `execution.*`, `run.generated_at` |
 | CME facts | `cme.<product>.volume`, `cme.<product>.open_interest`, `cme.asset_class.row`, `comex.silver.registered`, `.eligible`, `.total`, `.depository`, `.reconciliation` and the change and adjustment fields |
 | Per-run records | `options.<SYM>.gex_profile`, `options.<SYM>.selection`, `flow.<SYM>.summary`, `trade.block` (one per block print), `execution.engine`, `vmri.components`, `ebay.listing`, `calendar.event` |
-| Stored series and events | `refinery.event` (TCEQ filings, one per event id), `slv.ounces_in_trust`, `position.mark` (real mid-price of an open ticket contract, from the chains the run already downloaded) |
+| Stored series and events | `refinery.event` (TCEQ filings, one per event id), `slv.ounces_in_trust`, `chaos.equity_put_call` (CBOE equity put/call ratio, one per trading day) and `chaos.short_volume_spy` (FINRA SPY short volume / total volume, one per trading day; `observed_at` is the trading date; each run stores the last 5 trading days it lacks), `position.mark` (real mid-price of an open ticket contract, from the chains the run already downloaded) |
 | Imported history | `legacy.<table>.row` (a legacy ledger row, status `historical`) |
 
 `v2_payloads.kind` values: `ohlcv`, `option_expirations`, `option_chain`, `fred_series`, `fred_release_dates`,
 `calendar_xml`, `spot_quote`, `sge_benchmark`, `trades`, `listing`, `cot`, `etf_page`, `fomc_calendar`,
-`fund_info`, `eia_weekly`, `refinery_capacity`, `tceq_rss`, `tceq_event`; CME `volume_workbook`,
+`fund_info`, `eia_weekly`, `refinery_capacity`, `tceq_rss`, `tceq_event`, `cboe_daily_stats`, `finra_short_volume`, `treasury_auctions`, `treasury_buybacks`; CME `volume_workbook`,
 `inventory_workbook`, `*_workbook_invalid` and `*_rejected`; run output `daily_market_report` and `email_mime`;
 imported files `ledger_csv`, the daily file name, `spy_wicks_1m`, `deployment_simulation`. The eBay OAuth token is
-never stored (kind `auth`).
+never stored (kind `auth`). The FINRA daily file is 535 KB, so its capture keeps only the header line and the requested symbol's line, with coverage `{"rows_in_file": n, "kept": [symbol]}`; every other capture is the whole response. The `ohlcv` capture with `period=max` for ^GSPC and ^VIX (Chaos / Peace event study) is reused for 30 days.
 
 ## Legacy ledgers
 

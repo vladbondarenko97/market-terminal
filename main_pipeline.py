@@ -473,7 +473,7 @@ def signal_alerts(dry_run=False, test=False):
         ticket = positions.run_ticket(conn, run_id)          # the latest run's own ticket; never an older run's
         quotes = _live_quotes()
         spy = quotes.get("SPY")
-        rows = F.signal_watch(F.live_overlay(ctx["forecast"], quotes), ticket)
+        rows = F.signal_watch(F.live_overlay({**ctx["forecast"], "chaos": ctx.get("chaos")}, quotes), ticket)
         today, now, window = datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%-I:%M %p"), W.in_entry_window()
         tail = (f"Engine: {ticket['bias']}\n" if ticket else "") + \
                f"Live quotes {now} ({', '.join(f'{k} {v:.2f}' for k, v in list(quotes.items())[:3]) or 'none'}); " \

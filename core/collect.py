@@ -634,6 +634,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
     frames_hist = extended.pop("_frames", {})
     forecast = timed("forecast_lab", lambda: build_forecast(conn, session, now, today, frames_hist, options, prices, macro))
     refining_ctx = timed("refining", lambda: _guarded_refining(conn, session, run["run_id"], today))
+    chaos_ctx = timed("chaos", lambda: _guarded_chaos(conn, session, run["run_id"], today, frames_hist))
 
     ctx = {
         "run": {k: run[k] for k in ("run_id", "generated_at", "run_folder", "mode", "code_version", "trigger")}
@@ -647,6 +648,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
         "technicals": technicals, "weather": weather, "breadth": breadth, "execution": engine, "ebay": ebay,
         "sources": {"cme": cme_acq}, "stage_seconds": stage_times, **extended, "position_marks": position_marks,
         "forecast": forecast, "refining": refining_ctx,
+        "chaos": chaos_ctx,
     }
     frames = {"trades": {k: v[1] for k, v in flows.items()}}
     return lake.clean_json(ctx), frames
@@ -926,6 +928,115 @@ def build_refining(conn, session, run_id, today):
            "top_refineries": RF.refinery_table(capacity), "capacity_report_year": cf.get("capacity_year"),
            "ulsd_positioning": ulsd_cot, "source_errors": {k: lake.redact(v) for k, v in errors.items()}}
     return out
+
+
+FRED_CHAOS = {"BAMLH0A0HYM2": 800, "USEPUINDXD": 1150, "WALCL": 1300, "WTREGEN": 1300, "WRESBAL": 1300, "RRPONTSYD": 3500}
+CHAOS_FRED_NAMES = {"BAMLH0A0HYM2": "HY", "USEPUINDXD": "EPU"}      # the others are lever inputs
+# own 3y fetches: price_stats keeps ^VIX at 1y (its bars field would change) and six more entries there would add six <instrument> rows to the XML
+CHAOS_YAHOO = {"VIX": "^VIX", "VIX3M": "^VIX3M", "VIX9D": "^VIX9D", "VIX6M": "^VIX6M", "VVIX": "^VVIX", "SKEW": "^SKEW", "MOVE": "^MOVE"}
+CHAOS_DAILY = {"PUTCALL": ("chaos.equity_put_call", "cboe", src.cboe_putcall), "SHORTVOL": ("chaos.short_volume_spy", "finra", src.finra_short_volume)}
+
+
+def _guarded_chaos(conn, session, run_id, today, frames):
+    """The Chaos / Peace card is optional: a failure there must not abort the run (same contract as build_forecast)."""
+    try:
+        return build_chaos(conn, session, run_id, today, frames)
+    except Exception as e:
+        import traceback
+        return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}"),
+                "trace": lake.redact(traceback.format_exc()[-1500:])}
+
+
+def build_chaos(conn, session, run_id, today, frames):
+    """Collect the Chaos / Peace inputs (each failure becomes an entry in `errors`, never an exception) and run core.chaos."""
+    from core import chaos as CH
+    from core import market_calendar as MC
+    errors, series, serr, fred = {}, {}, {}, {}
+
+    def yahoo():
+        for name, sym in CHAOS_YAHOO.items():
+            try:
+                series[name] = src.yf_history(session, sym, "3y", "1d")[0]["Close"]
+            except SourceUnavailable as e:
+                errors[f"yahoo:{sym}"] = serr[name] = str(e)
+        spy = (frames or {}).get("SPY")
+        if spy is not None and len(spy):
+            series["SPY"] = spy["Close"]
+        else:
+            serr["SPY"] = errors["yahoo:SPY"] = "SPY daily history not available this run"
+        out = {}
+        for key, sym in (("gspc", "^GSPC"), ("vix_long", "^VIX")):
+            try:
+                out[key] = src.yf_long_history(session, sym)
+            except SourceUnavailable as e:
+                errors[f"yahoo:{sym}:max"] = str(e)
+        return out
+
+    def fred_all():
+        for sid, lim in FRED_CHAOS.items():
+            try:
+                obs, _ = src.fred_series(session, sid, config.FRED_API_KEY, limit=lim)
+            except SourceUnavailable as e:
+                errors[f"fred:{sid}"] = str(e)
+                if sid in CHAOS_FRED_NAMES:
+                    serr[CHAOS_FRED_NAMES[sid]] = str(e)
+                continue
+            ser = pd.Series({pd.Timestamp(o["date"]): o["value"] for o in obs}, dtype=float)
+            if sid in CHAOS_FRED_NAMES:
+                series[CHAOS_FRED_NAMES[sid]] = ser
+            else:
+                fred[sid] = ser
+
+    def others():
+        out = {}
+        try:
+            out["spr"], _ = src.eia_weekly(session, "WCSSTUS1")
+        except SourceUnavailable as e:
+            errors["eia:WCSSTUS1"] = str(e)
+        try:
+            out["auctions"], _ = src.treasury_auctions(session, 60)
+        except SourceUnavailable as e:
+            errors["treasury:auctions"] = str(e)
+        try:
+            out["buybacks"], _ = src.treasury_buybacks(session, (today - timedelta(days=56)).isoformat())
+        except SourceUnavailable as e:
+            errors["treasury:buybacks"] = str(e)
+        for name, (metric, source, fetch) in CHAOS_DAILY.items():
+            have = {r[0][:10] for r in conn.execute("SELECT observed_at FROM v2_observations WHERE metric_id = ?", (metric,))}
+            days, d = [], today
+            while len(days) < 5:      # today's files are published in the evening: take the 5 trading days before today
+                d -= timedelta(days=1)
+                if MC.is_trading_day(d):
+                    days.append(d)
+            new = []
+            for d in days:
+                if d.isoformat() in have:
+                    continue
+                try:
+                    val, pid = fetch(session, d)
+                except SourceUnavailable as e:
+                    if e.outcome == "offline":
+                        errors[source] = str(e)
+                        break
+                    errors[f"{source}:{d}"] = str(e)
+                    continue
+                new.append(lake.obs(metric, d.isoformat(), value=val, source=source, payload_id=pid, time_quality="as_of_date"))
+            if new:
+                lake.record_observations(conn, new, run_id=run_id)
+            rows = {r[0][:10]: r[1] for r in conn.execute(      # a revised value is a second row for the date: the later fetch wins
+                "SELECT observed_at, value_num FROM v2_observations WHERE metric_id = ? AND value_num IS NOT NULL ORDER BY observed_at, fetched_at",
+                (metric,))}
+            if rows:
+                series[name] = pd.Series({pd.Timestamp(k): v for k, v in rows.items()}, dtype=float)
+            else:
+                serr[name] = f"no observations stored yet ({source} daily files accumulate one per trading day)"
+        return out
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f1, f2, f3 = pool.submit(yahoo), pool.submit(fred_all), pool.submit(others)
+        long, _, rest = f1.result(), f2.result(), f3.result()
+    return CH.build({"today": today, "series": series, "series_errors": serr, "fred": fred, "spr": rest.get("spr"),
+                     "auctions": rest.get("auctions"), "buybacks": rest.get("buybacks"), "gspc": long.get("gspc"),
+                     "vix_long": long.get("vix_long"), "errors": {k: lake.redact(v) for k, v in errors.items()}})
 
 
 def _spot(session):

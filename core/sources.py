@@ -16,7 +16,8 @@ import pandas as pd
 from core import lake
 
 PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forexfactory": 1, "databento": 1, "goldapi": 1, "akshare": 1,
-                   "ebay": 1, "cme": 1}
+                   "ebay": 1, "cme": 1,
+                   "cboe": 1, "finra": 1, "treasury": 1}
 
 
 class SourceUnavailable(Exception):
@@ -621,6 +622,110 @@ def eia_refinery_capacity(s):
     c = d[(d["PRODUCT"] == "TOTAL OPERABLE CAPACITY") & d["SUPPLY"].str.contains("calendar day", case=False, na=False)]
     t = c.groupby(["COMPANY_NAME", "SITE", "STATE_NAME", "PADD"], as_index=False)["QUANTITY"].sum()
     return t.rename(columns={"QUANTITY": "capacity_bpd"}), res["year"], pid
+
+
+def cboe_putcall(s, day):
+    """CBOE daily market statistics for one trading day -> (equity put/call ratio, payload_id). The CDN answers 403 for a day with no file."""
+    import requests
+    day = str(day)
+
+    def call():
+        r = requests.get(f"https://cdn.cboe.com/data/us/options/market_statistics/daily/{day}_daily_options", timeout=30,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            raise SourceUnavailable("cboe", f"http_{r.status_code}", day)
+        return r.content
+    content, pid = s.fetch("cboe", {"day": day, "stat": "daily_options"}, call, kind="cboe_daily_stats", fmt="json",
+                           capture=lambda c: (c, None, None), source_date=day)
+    try:
+        ratio = next(float(x["value"]) for x in json.loads(content)["ratios"] if x["name"] == "EQUITY PUT/CALL RATIO")
+    except (StopIteration, KeyError, TypeError, ValueError) as e:
+        raise SourceUnavailable("cboe", "parse", f"{day}: no equity put/call ratio ({type(e).__name__})")
+    return ratio, pid
+
+
+def finra_short_volume(s, day, symbol="SPY"):
+    """FINRA consolidated daily short sale volume for one symbol -> (ShortVolume / TotalVolume, payload_id)."""
+    import requests
+    day = str(day).replace("-", "")
+
+    def call():
+        r = requests.get(f"https://cdn.finra.org/equity/regsho/daily/CNMSshvol{day}.txt", timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            raise SourceUnavailable("finra", f"http_{r.status_code}", day)
+        return r.text
+
+    def cap(text):      # the file is ~535 KB a day: keep only the header and the requested symbol's line
+        rows = text.splitlines()
+        keep = [l for l in rows[1:] if l.split("|")[1:2] == [symbol]][:1]
+        return "\n".join(rows[:1] + keep).encode(), None, {"rows_in_file": len(rows) - 1, "kept": [symbol]}
+    text, pid = s.fetch("finra", {"day": day, "symbol": symbol}, call, kind="finra_short_volume", fmt="txt", capture=cap)
+    for line in text.splitlines()[1:]:
+        f = line.split("|")
+        if len(f) >= 5 and f[1] == symbol:
+            try:
+                short, total = float(f[2]), float(f[4])
+            except ValueError:
+                break
+            if total > 0:
+                return short / total, pid
+            break
+    raise SourceUnavailable("finra", "parse", f"{day}: {symbol} absent or zero total volume")
+
+
+def treasury_auctions(s, days=60):
+    """Treasury auctions announced or held in the last `days` days (TreasuryDirect): auctionDate, securityType, offeringAmount (USD, strings)."""
+    import requests
+
+    def call():
+        r = requests.get("https://www.treasurydirect.gov/TA_WS/securities/auctioned", timeout=30, headers={"User-Agent": "Mozilla/5.0"},
+                         params={"format": "json", "days": days})
+        if r.status_code != 200:
+            raise SourceUnavailable("treasury", f"http_{r.status_code}", "auctions")
+        rows = r.json()
+        if not rows:
+            raise SourceUnavailable("treasury", "empty", "auctions")
+        return rows
+    rows, pid = s.fetch("treasury", {"fn": "auctions", "days": days}, call, kind="treasury_auctions", fmt="json",
+                        capture=lambda r: (json.dumps(r).encode(), None, {"rows": len(r)}))
+    return [{k: x.get(k) for k in ("auctionDate", "securityType", "offeringAmount")} for x in rows], pid
+
+
+def treasury_buybacks(s, since):
+    """Treasury buyback operations since a date (Fiscal Data): operation_date, total_par_amt_accepted (USD string, can be 'null')."""
+    import requests
+    since = str(since)
+
+    def call():
+        r = requests.get("https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/buybacks_operations", timeout=30,
+                         headers={"User-Agent": "Mozilla/5.0"},
+                         params={"filter": f"operation_date:gte:{since}", "sort": "-operation_date", "page[size]": 200})
+        if r.status_code != 200:
+            raise SourceUnavailable("treasury", f"http_{r.status_code}", "buybacks")
+        return r.json().get("data", [])
+    rows, pid = s.fetch("treasury", {"fn": "buybacks", "since": since}, call, kind="treasury_buybacks", fmt="json",
+                        capture=lambda r: (json.dumps(r).encode(), None, {"rows": len(r)}))
+    return [{k: x.get(k) for k in ("operation_date", "total_par_amt_accepted")} for x in rows], pid
+
+
+def yf_long_history(s, symbol):
+    """Full daily Close history (period=max) as a date-indexed Series. It changes by one row a day and the event study does not need
+    today's row, so a capture under 30 days old is reused (offline: any stored capture)."""
+    with lake._WRITE_LOCK:
+        row = s.conn.execute("""SELECT payload_id, fetched_at FROM v2_payloads WHERE kind = 'ohlcv' AND request_json LIKE ? AND request_json LIKE ?
+                                ORDER BY fetched_at DESC LIMIT 1""", (f'%"symbol": "{symbol}"%', '%"period": "max"%')).fetchone()
+    if row and row["fetched_at"]:
+        f = datetime.fromisoformat(row["fetched_at"])
+        if s.offline or datetime.now(timezone.utc) - (f if f.tzinfo else f.replace(tzinfo=timezone.utc)) < timedelta(days=30):
+            with lake._WRITE_LOCK:
+                _, content = lake.load_payload(s.conn, row["payload_id"])
+            if content:
+                s._count(s.cache_hits, "yahoo")
+                df = pd.read_csv(io.BytesIO(content), index_col=0)
+                return pd.Series(df["Close"].values, index=pd.to_datetime(df.index, utc=True).tz_localize(None).normalize()).dropna()
+    df, _ = yf_history(s, symbol, "max", "1d")
+    c = df["Close"].dropna()
+    return pd.Series(c.values, index=pd.DatetimeIndex(c.index).tz_localize(None).normalize())
 
 
 def tceq_feed(s):

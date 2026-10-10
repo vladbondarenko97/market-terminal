@@ -1005,5 +1005,14 @@ def signal_watch(fc, ticket=None):
             f"{mr['regime']} · recession 12m {mr.get('recession_prob_12m') or 0:.0%}", "any flag raised", bool(mr.get("flags")), "structure",
             "Risk-off: halve call size and wait for trend confirmation (" + "; ".join(mr.get("flags") or []) + ")",
             "regime filter, not backtested", "none")
+    ch = fc.get("chaos") or {}
+    if ch.get("score") is not None:
+        pv = ch.get("prev") or {}
+        add("ALL", "Chaos/Peace regime", "Card 14 · Chaos / Peace index (score, regime, components)",
+            "The Chaos/Peace score is the mean of up to 12 stress z-scores. This row fires on the run where its regime differs from the previous trading day's.",
+            f"{ch['score']:+.0f} {ch['regime']} ({ch['components_used']} of {ch['components_total']} components)", "regime differs from the previous trading day",
+            bool(ch.get("regime_changed")), "structure",
+            f"Chaos/Peace regime changed: {pv.get('regime')} -> {ch['regime']} (a description of the reading, not a trade signal)",
+            f"fixed, uncalibrated cut-offs at -30 / 30 / 60; previous day {pv.get('score')}", "none")
     rows.sort(key=lambda r: (not r["fired"], r["asset"]))      # fired first, then grouped by asset
     return rows

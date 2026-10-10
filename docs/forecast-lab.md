@@ -1,6 +1,6 @@
 # Forecast Lab
 
-Reference for the eleven Forecast Lab cards, the status values a model may return, and a tutorial for adding a card.
+Reference for the twelve Forecast Lab model cards (1 to 11 and 14), the status values a model may return, and a tutorial for adding a card.
 It is for contributors, human or AI, and for anyone who wants to know what a card means and where its data comes
 from. How the card looks in the browser is in [Terminal](terminal.md#forecast-lab-tab).
 
@@ -10,15 +10,15 @@ from. How the card looks in the browser is in [Terminal](terminal.md#forecast-la
 
 - The models run **in the pipeline**, once per run. `build_forecast()` in `core/collect.py` fetches the extra inputs
   and calls `build()` in `core/forecast.py` (cards 1 to 9). `build_refining()` in `core/collect.py` builds cards 10
-  and 11 with the pure functions in `core/refining.py`. Failures are isolated: if a card or a source fails, the run
+  and 11 with the pure functions in `core/refining.py`. `build_chaos()` builds card 14 with `core/chaos.py`. Failures are isolated: if a card or a source fails, the run
   continues (see [Architecture: design rules](architecture.md#design-rules)).
-- The results are stored in the run's snapshot under `forecast` and `refining` (see [Data](data.md)).
-- `GET /api/forecast?ticker=SPY|SLV` ([API](api.md)) returns the latest snapshot's forecast and refining blocks plus a
+- The results are stored in the run's snapshot under `forecast`, `refining` and `chaos` (see [Data](data.md)).
+- `GET /api/forecast?ticker=SPY|SLV` ([API](api.md)) returns the latest snapshot's forecast, refining and chaos blocks plus a
   scorecard computed at request time. The server keeps the snapshot in memory for 60 seconds.
 - The browser (`options_whale/static/forecast.js`) draws the cards. It never computes a model.
 - A card appears only for runs made after it was added. Older snapshots do not hold the new key, and the card reads
   "Unavailable".
-- If the request fails (no snapshot yet, or the forecast block is in the `error` state) all eleven cards show
+- If the request fails (no snapshot yet, or the forecast block is in the `error` state) all model cards show
   `Forecast Lab unavailable: <message>`.
 - Model versions are `VERSION` in `core/forecast.py` (cards 1 to 9) and in `core/refining.py` (cards 10 and 11). See
   [Value changes](value-changes.md).
@@ -38,6 +38,7 @@ from. How the card looks in the browser is in [Terminal](terminal.md#forecast-la
 | 9 | Forecast scorecard | Every logged forecast graded after its target date, plus walk-forward backtests | Were past forecasts right? Hit rate, 68% coverage, Brier score | per ticker | not in the snapshot: graded per request from `v2_forecasts` |
 | 10 | Diesel & refining | Crack spreads, EIA refinery runs and stocks, 10-year maintenance-season path, Texas refinery outage filings (TCEQ), CFTC ULSD positioning | Is refining tight, and is a major unit down? | shared | `ctx["refining"]` (`margins`, `fundamentals`, `maintenance`, `outages`, `ulsd_positioning`) |
 | 11 | EIA inventories | Weekly US petroleum stocks against the 5-year same-week average, and days of supply | Are stocks building or drawing against the norm, and how does today compare with past years? | shared | `ctx["refining"]["inventories"]`, full history from `/api/eia_history` |
+| 14 | Chaos / Peace | Twelve stress readings (VIX, VIX/VIX3M, VVIX, SKEW, MOVE, high-yield spread, SPY realised vol and drawdown, policy uncertainty, equity put/call, VIX9D/VIX6M, SPY short-sale share), each a z-score against its own 3 years | How stressed does the market look against its own recent history, and what do the liquidity levers and past midterm windows look like? | shared | `ctx["chaos"]` (`score`, `regime`, `components`, `levers`, `event_study`, `lever_study`), also `GET /api/chaos` |
 
 `SYM` is `SPY` or `SLV`. Cards 1 to 3, 7 and 8 sit under `forecast[SYM]`; the browser receives that object as `data`.
 
@@ -61,6 +62,31 @@ from. How the card looks in the browser is in [Terminal](terminal.md#forecast-la
   - Delivered runs send one push (ntfy) for each newly seen MAJOR outage (`_refinery_alerts()` in `main_pipeline.py`).
   - EIA files are reused until the next weekly release (Wednesday 10:30 ET): `_cached_eia()` and `last_eia_release()` in
     `core/sources.py`.
+- **Card 14.** `core/chaos.py`, version `chaos_v1`, built by `build_chaos()` in `core/collect.py`.
+  - Score = 50 x the mean z-score of the available components, limited to -100 (peace) .. +100 (chaos). Each z-score is
+    the latest value against a trailing 3-year window (1,096 calendar days, at least 252
+    observations), clipped to +-3, oriented so that higher is more stress. Regimes: score <= -30 peace, up to 30
+    neutral, up to 60 stress, above 60 chaos. The cut-offs are fixed and uncalibrated (`REGIMES` in `core/chaos.py`).
+  - A component is used only when its series spans 3 years less 30 days and its last observation is within 10
+    calendar days of the run; otherwise it is `missing` with `history shorter than 3y (N observations since DATE)` or
+    `stale: last observation DATE`. The block always says `components_used` of 12 and lists `components_missing`. With no
+    usable component the whole block is `missing`.
+  - Equity put/call (CBOE) and SPY short-sale share (FINRA) are published as one file per day, so each run stores the last 5 trading days it has not stored yet (observations `chaos.equity_put_call`
+    and `chaos.short_volume_spy`). Until 3 years have accumulated, or a backfill loads them, both are `missing` with the
+    `history shorter than 3y` reason. Policy uncertainty (FRED `USEPUINDXD`) is published 7 days a week and is noisy, so
+    it enters as a 7-day mean.
+  - `prev` is the previous trading day's score computed from the same histories; `regime_changed` is true when its regime
+    differs. Signal Watch has one row ("Chaos/Peace regime") that fires on that. The row describes the reading and
+    recommends no trade. `history` holds the last 60 trading days as `[date, score, components_used]`.
+  - `election` counts trading days to the 2026-11-03 midterm (negative after) and `tracking` is true until 60 trading days
+    after it.
+  - `levers` (net liquidity, bank reserves, Strategic Petroleum Reserve, Treasury bills and coupons offered and
+    buybacks accepted over the last 28 days) sit beside the score and are not part of it.
+  - `event_study` compares S&P 500 (1950 on) and VIX (1990 on) returns in four windows around past midterm election days
+    with all other windows of the same length, through `core.watch.grade`. About 19 midterms (9 for the VIX) means the
+    best grade is `thin`. `lever_study` compares the 60 days before November elections in even and odd years. Both are
+    descriptive and say nothing about why anything moved.
+  - The long ^GSPC and ^VIX histories are reused for 30 days (`yf_long_history()` in `core/sources.py`).
 - **Card 11.**
   - Eight lines: crude (commercial), distillate/diesel, gasoline, jet fuel, Strategic Petroleum Reserve, Cushing OK,
     propane/propylene and **residual fuel oil**.
@@ -88,9 +114,9 @@ Every model returns a dict with a `status` key. The browser treats anything othe
 
 | Level | Values | Meaning |
 |---|---|---|
-| A model or block (cards 1 to 9, card 11, and blocks inside them) | `"fresh"`, `"missing"` | `fresh` carries the numbers and a `model` string. `missing` carries a `reason` and nothing else to rely on. |
+| A model or block (cards 1 to 9, 11 and 14, and blocks inside them) | `"fresh"`, `"missing"` | `fresh` carries the numbers and a `model` string. `missing` carries a `reason` and nothing else to rely on. |
 | Inside a model | `"fresh"`, `"missing"` per item | For example `implied.horizons[k]` (one horizon can fail while the others work), and `positioning.silver` / `positioning.sp500`. The top `positioning` status is `fresh` while any of silver, S&P 500 or the SLV trust reading has data, and `missing` (with a `reason` joining the three) when none does; the two groups stay in the block either way so the card can print each reason. |
-| The wrapper blocks `forecast` and `refining` | `"fresh"`, `"partial"`, `"error"` | `partial`: the model code ran but some inputs could not be fetched; `source_errors` names them. `error`: the whole build raised; the block holds `reason` and a redacted `trace` and nothing else. |
+| The wrapper blocks `forecast`, `refining` and `chaos` | `"fresh"`, `"partial"`, `"error"` | `partial`: the model code ran but some inputs could not be fetched; `source_errors` names them. `error`: the whole build raised; the block holds `reason` and a redacted `trace` and nothing else. |
 | Parts of the refining block | `"fresh"`, `"missing"`, and `"partial"` for `fundamentals` | `partial` means some EIA series were missing; `reason` lists them. |
 
 **Absent inputs never raise.** `build()` is written to run on whatever the lake has: with no price history at all
@@ -112,7 +138,7 @@ Rules for authors:
 - Renderers follow `if (!x || x.status !== 'fresh') { el.innerHTML = missing(x); return; }`. `missing()` prints
   `Unavailable: <reason>`, or plain `Unavailable` when the key is absent.
 - `/api/forecast` returns HTTP 404 with `status: "error"` when there is no snapshot or the forecast wrapper is `error`,
-  and HTTP 503 when the database has not been initialised (no pipeline run yet). Cards 10 and 11 are then unavailable
+  and HTTP 503 when the database has not been initialised (no pipeline run yet). Cards 10, 11 and 14 are then unavailable
   too, because the whole response is an error.
 
 Cards 4, 9 and 10 treat a block whose status is `error` or `missing` as unavailable and print its `reason`
