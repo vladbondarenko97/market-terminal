@@ -28,7 +28,8 @@ sys.path.insert(0, str(ROOT))
 def build_installation():
     DATA.mkdir(parents=True, exist_ok=True)
     for f in FIX.iterdir():
-        shutil.copy(f, DATA / f.name)
+        if f.is_file():           # sub-folders (fixtures/rss, fixtures/chaos) hold parser fixtures, not data files
+            shutil.copy(f, DATA / f.name)
     # a download-dated duplicate like the real archive has (same bytes, different name)
     shutil.copy(FIX / "daily_volume_20260819.xlsx", DATA / "daily_volume_20260820.xlsx")
     (DATA / "state.json").write_text('{"cookies": [{"name": "secret"}]}')
