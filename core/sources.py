@@ -17,7 +17,9 @@ from core import lake
 
 PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forexfactory": 1, "databento": 1, "goldapi": 1, "akshare": 1,
                    "ebay": 1, "cme": 1,
-                   "cboe": 1, "finra": 1, "treasury": 1, "rss": 6}
+                   "cboe": 1, "finra": 1, "treasury": 1, "rss": 6,
+                   "federalreserve": 1,
+                   "sec": 2}
 
 
 class SourceUnavailable(Exception):
@@ -726,6 +728,146 @@ def yf_long_history(s, symbol):
     df, _ = yf_history(s, symbol, "max", "1d")
     c = df["Close"].dropna()
     return pd.Series(c.values, index=pd.DatetimeIndex(c.index).tz_localize(None).normalize())
+
+
+def _stored_payload(s, kind, max_days):
+    """(payload_id, content) of the newest stored capture of `kind` that is under `max_days` old (offline: any age), else None."""
+    with lake._WRITE_LOCK:
+        row = s.conn.execute("SELECT payload_id, fetched_at FROM v2_payloads WHERE kind = ? ORDER BY fetched_at DESC LIMIT 1", (kind,)).fetchone()
+    if not row or not row["fetched_at"]:
+        return None
+    f = datetime.fromisoformat(row["fetched_at"])
+    if not s.offline and datetime.now(timezone.utc) - (f if f.tzinfo else f.replace(tzinfo=timezone.utc)) >= timedelta(days=max_days):
+        return None
+    with lake._WRITE_LOCK:
+        _, content = lake.load_payload(s.conn, row["payload_id"])
+    if not content:
+        return None
+    s._count(s.cache_hits, kind)
+    return row["payload_id"], content
+
+
+def fed_speeches(s):
+    """Every Federal Reserve speech since 2006 from the one JSON file the Fed publishes -> ([{date, speaker, title}], payload_id).
+    The list changes by a few entries a week, so a capture under 7 days old is reused (offline: any stored capture)."""
+    import requests
+    hit = _stored_payload(s, "fed_speeches", 7)
+    if hit:
+        pid, content = hit
+    else:
+        def call():
+            r = requests.get("https://www.federalreserve.gov/json/ne-speeches.json", timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                raise SourceUnavailable("federalreserve", f"http_{r.status_code}", "speeches")
+            return r.content
+        content, pid = s.fetch("federalreserve", {"page": "ne-speeches"}, call, kind="fed_speeches", fmt="json",
+                               capture=lambda c: (c, None, None))
+    try:
+        rows = json.loads(content.decode("utf-8-sig"))
+        out = [{"date": datetime.strptime(x["d"].strip(), "%m/%d/%Y %I:%M:%S %p").date().isoformat(), "speaker": x.get("s") or "",
+                "title": x.get("t") or ""} for x in rows if x.get("d")]
+    except (ValueError, TypeError, AttributeError, KeyError) as e:
+        raise SourceUnavailable("federalreserve", "parse", f"speeches list ({type(e).__name__})")
+    if not out:
+        raise SourceUnavailable("federalreserve", "empty", "no dated speeches")
+    return out, pid
+
+
+# ---------------------------------------------------------------- SEC EDGAR (insider filings)
+def _sec_headers():
+    import config
+    if not config.SEC_USER_AGENT.strip():
+        raise SourceUnavailable("sec", "not_configured", "SEC_USER_AGENT missing")
+    return {"User-Agent": config.SEC_USER_AGENT.strip(), "Accept-Encoding": "gzip, deflate"}
+
+
+def _sec_get(url):
+    import requests
+    r = requests.get(url, timeout=30, headers=_sec_headers())
+    if r.status_code != 200:
+        raise SourceUnavailable("sec", f"http_{r.status_code}", url.rsplit("/", 1)[-1])
+    return r.content
+
+
+def sec_company_tickers(s):
+    """ticker -> 10-digit CIK for every SEC registrant with a ticker. A capture under 30 days old is reused (offline: any stored capture)."""
+    hit = _stored_payload(s, "sec_company_tickers", 30)
+    if hit:
+        pid, content = hit
+    else:
+        _sec_headers()
+        content, pid = s.fetch("sec", {"fn": "company_tickers"}, lambda: _sec_get("https://www.sec.gov/files/company_tickers.json"),
+                               kind="sec_company_tickers", fmt="json", capture=lambda c: (c, None, None))
+    try:
+        return {v["ticker"].upper(): f"{int(v['cik_str']):010d}" for v in json.loads(content).values()}, pid
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
+        raise SourceUnavailable("sec", "parse", f"company tickers ({type(e).__name__})")
+
+
+def sec_submissions(s, cik, since="1900-01-01"):
+    """Form 4 filings of one issuer filed on or after `since` -> ([{accession, filing_date, primary_document}], payload_id).
+    `filings.recent` holds about the last 1,000 filings; the older ones sit in extra files, fetched only when `since` reaches back to them."""
+    cik = f"{int(cik):010d}"
+
+    def get(name):
+        content, pid = s.fetch("sec", {"fn": "submissions", "file": name}, lambda: _sec_get(f"https://data.sec.gov/submissions/{name}"),
+                               kind="sec_submissions", fmt="json", capture=lambda c: (c, None, None))
+        try:
+            return json.loads(content), pid
+        except ValueError as e:
+            raise SourceUnavailable("sec", "parse", f"{name} ({type(e).__name__})")
+    _sec_headers()
+    top, pid = get(f"CIK{cik}.json")
+    try:
+        parts = [top["filings"]["recent"]]
+        for f in top["filings"].get("files", []):
+            if f.get("filingTo", "9999") >= since:
+                parts.append(get(f["name"])[0])
+        rows = [{"accession": acc, "filing_date": d, "primary_document": doc}
+                for p in parts for form, d, acc, doc in zip(p["form"], p["filingDate"], p["accessionNumber"], p["primaryDocument"])
+                if form == "4" and d >= since]
+    except (KeyError, TypeError) as e:
+        raise SourceUnavailable("sec", "parse", f"submissions CIK{cik} ({type(e).__name__})")
+    return sorted(rows, key=lambda r: r["filing_date"]), pid
+
+
+def parse_form4(content):
+    """Ownership XML -> {issuer_cik, owner, is_officer, is_director, officer_title, transactions[{date, code, acquired, shares, price}]}.
+    Only non-derivative transaction rows are read. The first reporting owner describes the filing. A missing price stays None."""
+    def text(node, path):
+        n = node.find(path)
+        return n.text.strip() if n is not None and n.text and n.text.strip() else None
+
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    try:
+        root = ET.fromstring(content)
+        own = root.find("reportingOwner")
+        rel = own.find("reportingOwnerRelationship")
+        tx = []
+        for t in root.findall("nonDerivativeTable/nonDerivativeTransaction"):
+            tx.append({"date": text(t, "transactionDate/value"), "code": text(t, "transactionCoding/transactionCode"),
+                       "acquired": text(t, "transactionAmounts/transactionAcquiredDisposedCode/value") == "A",
+                       "shares": num(text(t, "transactionAmounts/transactionShares/value")),
+                       "price": num(text(t, "transactionAmounts/transactionPricePerShare/value"))})
+        return {"issuer_cik": text(root, "issuer/issuerCik"), "owner": text(own, "reportingOwnerId/rptOwnerName"),
+                "is_officer": text(rel, "isOfficer") in ("1", "true"), "is_director": text(rel, "isDirector") in ("1", "true"),
+                "officer_title": text(rel, "officerTitle"), "transactions": tx}
+    except (ET.ParseError, AttributeError) as e:
+        raise SourceUnavailable("sec", "parse", f"ownership XML ({type(e).__name__})")
+
+
+def sec_form4(s, cik, accession, primary_document):
+    """One Form 4 -> (parse_form4 dict, payload_id). `primaryDocument` may name the rendered view (xslF345X05/doc.xml): the raw XML is the file in the filing folder."""
+    doc = str(primary_document).rsplit("/", 1)[-1]
+    url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{str(accession).replace('-', '')}/{doc}"
+    _sec_headers()
+    content, pid = s.fetch("sec", {"fn": "form4", "accession": accession}, lambda: _sec_get(url), kind="sec_form4", fmt="xml",
+                           capture=lambda c: (c, None, {"accession": accession}))
+    return parse_form4(content), pid
 
 
 def tceq_feed(s):

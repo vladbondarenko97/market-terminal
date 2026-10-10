@@ -98,7 +98,8 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/news_feeds.json` | The RSS feed list (`name`, `category`, `url`, `enabled`); `NEWS_FEEDS_FILE` replaces it |
 | `THIRD_PARTY_NOTICES.md` | Credit and MIT notice for the MarketBrief ideas `core/news.py` adapts |
 | `core/watch.py` | Day Scanner: the dip-in-an-uptrend rule on live quotes, the saved watchlist, paper positions (`v2_watch_positions`) |
-| `core/edges.py` | Edge Lab: published edges tested on one ticker's own history, tracked list |
+| `core/edges.py` | Edge Lab: published edges tested on one ticker's own history (the insider cluster edge reads stored Form 4 filings), tracked list |
+| `core/backfill.py` | Shared frame of the `scripts/backfill_*.py` loaders: run lock, a `mode='backfill'` run row, a SourceSession |
 | `options_whale/assistant.py`, `options_whale/static/assistant.js` | Console engine v3: brief, read-only data sources, local model, console UI |
 | `core/market_calendar.py` | NYSE holidays and early closes, the scheduled-run gate (`scheduled_run_skip_reason()`), and the local fire times `setup.sh --schedule` installs (`launchd_intervals()`) |
 | `core/runlock.py` | `RunLock`, the exclusive run lock (`DATA_DIR/.v2_run.lock`), and `lock_is_held()`, a non-blocking probe that never keeps the lock |
@@ -140,6 +141,8 @@ These rules hold across the codebase. A change that breaks one needs a very good
 |---|---|
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
 | `scripts/backfill_crypto_metals.py` | Adds up to one year of BTC, silver and gold history to `crypto_metrics_history` |
+| `scripts/backfill_chaos_history.py` | Operator-run: loads 3 years of CBOE put/call and FINRA SPY short-volume days (the two Chaos / Peace components that need them). Takes the run lock; see [Backfills](operations.md#backfills) |
+| `scripts/backfill_form4.py` | Operator-run: loads SEC Form 4 filings for the Edge Lab's tracked symbols (needs `SEC_USER_AGENT`). Takes the run lock |
 | `scripts/record_demo.py` | Records `docs/demo.gif` from a terminal that is already running (Playwright video, then ffmpeg). Read-only. |
 | `scripts/dump_spy_wicks.py` | Downloads SPY one-minute candles (last 5 days) to `spy_wicks_1m.json` in the repository root, where `import-history` picks them up. Uses the network; manual only. |
 | `download_volume.py` | Manual, bounded CME volume backfill (needs a saved CME session) |

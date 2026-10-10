@@ -39,7 +39,8 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 Newest first, then the changes that came with the v2 pipeline.
 
 - **Forecast Lab card 7 (`forecast_v2`)**: `calendar.effects` gained `payrolls_day`, `ppi_day`, `gdp_day`, `pce_day`,
-  `retail_sales_day` and `fomc_minutes_day` rows (release-day close-to-close, each also graded with `core.watch.grade()`).
+  `retail_sales_day` and `fomc_minutes_day` rows (release-day close-to-close, each also graded with `core.watch.grade()`), and a
+  `fed_speaker_day` row (days with at least one speech by a Fed Board member: Chair, Vice Chair or Governor, from the Fed's speech list; same grading).
   Existing rows and `upcoming_7d` are computed as before; no existing value changed.
 - **News section and release calendar**: new snapshot key `news` and `calendar.upcoming_releases`; `/api/macro_news` now reads
   the stored `news` section instead of one live Yahoo feed. No existing stored value changed.

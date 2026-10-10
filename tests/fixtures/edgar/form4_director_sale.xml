@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+  <issuer><issuerCik>0000123456</issuerCik></issuer>
+  <reportingOwner>
+    <reportingOwnerId><rptOwnerName>Roe Richard</rptOwnerName></reportingOwnerId>
+    <reportingOwnerRelationship><isDirector>true</isDirector><isOfficer>false</isOfficer></reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-04-01</value></transactionDate>
+      <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>300</value></transactionShares>
+        <transactionPricePerShare><value>20</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>

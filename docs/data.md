@@ -86,16 +86,17 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 | Catalog metrics (`core/catalog.py METRICS`, one per report value) | `quote.SLV.price`, `flow.SLV.block_vwap`, `options.SPY.call_wall`, `fred.WALCL`, `sge.*`, `comex.*`, `ebay.*`, `execution.*`, `run.generated_at` |
 | CME facts | `cme.<product>.volume`, `cme.<product>.open_interest`, `cme.asset_class.row`, `comex.silver.registered`, `.eligible`, `.total`, `.depository`, `.reconciliation` and the change and adjustment fields |
 | Per-run records | `options.<SYM>.gex_profile`, `options.<SYM>.selection`, `flow.<SYM>.summary`, `trade.block` (one per block print), `execution.engine`, `vmri.components`, `ebay.listing`, `calendar.event` |
-| Stored series and events | `refinery.event` (TCEQ filings, one per event id), `slv.ounces_in_trust`, `chaos.equity_put_call` (CBOE equity put/call ratio, one per trading day) and `chaos.short_volume_spy` (FINRA SPY short volume / total volume, one per trading day; `observed_at` is the trading date; each run stores the last 5 trading days it lacks), `position.mark` (real mid-price of an open ticket contract, from the chains the run already downloaded) |
+| Stored series and events | `refinery.event` (TCEQ filings, one per event id), `slv.ounces_in_trust`, `chaos.equity_put_call` (CBOE equity put/call ratio, one per trading day) and `chaos.short_volume_spy` (FINRA SPY short volume / total volume, one per trading day; `observed_at` is the trading date; each run stores the last 5 trading days it lacks), `position.mark` (real mid-price of an open ticket contract, from the chains the run already downloaded), `edgar.form4` (one SEC Form 4 insider filing: `entity` is the accession number, `observed_at` the FILING date, dims `{"symbol"}`, `value_json` = `{issuer_cik, owner, is_officer, is_director, officer_title, transactions[{date, code, acquired, shares, price}]}` from the non-derivative rows; written only by `scripts/backfill_form4.py`) |
 | Imported history | `legacy.<table>.row` (a legacy ledger row, status `historical`) |
 
 `v2_payloads.kind` values: `ohlcv`, `option_expirations`, `option_chain`, `fred_series`, `fred_release_dates`,
 `calendar_xml`, `spot_quote`, `sge_benchmark`, `trades`, `listing`, `cot`, `etf_page`, `fomc_calendar`,
 `fund_info`, `eia_weekly`, `refinery_capacity`, `tceq_rss`, `tceq_event`, `cboe_daily_stats`, `finra_short_volume`, `treasury_auctions`,
-`treasury_buybacks`, `rss_xml` (one raw RSS or Atom feed); CME `volume_workbook`,
+`treasury_buybacks`, `rss_xml` (one raw RSS or Atom feed), `fed_speeches` (the Fed's one speech list, reused for 7 days),
+`sec_company_tickers` (reused for 30 days), `sec_submissions` and `sec_form4` (raw SEC XML); CME `volume_workbook`,
 `inventory_workbook`, `*_workbook_invalid` and `*_rejected`; run output `daily_market_report` and `email_mime`;
 imported files `ledger_csv`, the daily file name, `spy_wicks_1m`, `deployment_simulation`. The eBay OAuth token is
-never stored (kind `auth`). The FINRA daily file is 535 KB, so its capture keeps only the header line and the requested symbol's line, with coverage `{"rows_in_file": n, "kept": [symbol]}`; every other capture is the whole response. The `ohlcv` capture with `period=max` for ^GSPC and ^VIX (Chaos / Peace event study) is reused for 30 days.
+never stored (kind `auth`). The FINRA daily file is 535 KB, so its capture keeps only the header line and the requested symbol's line, with coverage `{"rows_in_file": n, "kept": [symbol]}`; every other capture is the whole response. `scripts/backfill_chaos_history.py` loads the `chaos.equity_put_call` and `chaos.short_volume_spy` history (3 years) in one go, which completes those two Chaos / Peace components. Backfill runs are `v2_runs` rows with `mode='backfill'` and never carry a snapshot. The `ohlcv` capture with `period=max` for ^GSPC and ^VIX (Chaos / Peace event study) is reused for 30 days.
 
 ## Legacy ledgers
 

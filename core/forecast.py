@@ -15,6 +15,7 @@ nothing here makes network requests. Outputs are plain dicts stored in the commi
 9 scorecard              logged forecasts graded after the fact + walk-forward backtests
 """
 import math
+import re
 from datetime import date, timedelta
 
 import numpy as np
@@ -579,7 +580,7 @@ def _third_friday(y, m):
     return d + timedelta(days=(4 - d.weekday()) % 7)
 
 
-def calendar_effects(df, fomc_dates, cpi_dates, today, releases=None):
+def calendar_effects(df, fomc_dates, cpi_dates, today, releases=None, speeches=None):
     c = _naive_index(_closes(df))
     if len(c) < 500:
         return {"status": "missing", "reason": "need >= 500 daily closes"}
@@ -619,6 +620,14 @@ def calendar_effects(df, fomc_dates, cpi_dates, today, releases=None):
         hit = r.index.normalize().isin(pd.to_datetime(list(dates)))
         eff[key] = {**stats(list(r[hit]), base_mean), "grade": grade(r[hit], r[~hit])["edge"],
                     "definition": f"{label} release day close-to-close" + (" (decision + 21 days, by rule)" if key == "fomc_minutes_day" else "")}
+    # days with at least one speech by a Board member (Chair, Vice Chair or Governor; regional bank presidents are not counted)
+    board = sorted({x["date"] for x in speeches or [] if re.search(r"\b(Governor|Chair|Chairman)\b", x.get("speaker") or "")})
+    if not board:
+        eff["fed_speaker_day"] = {"status": "missing", "reason": "no Fed Board speech dates"}
+    else:
+        hit = r.index.normalize().isin(pd.to_datetime(board))
+        eff["fed_speaker_day"] = {**stats(list(r[hit]), base_mean), "grade": grade(r[hit], r[~hit])["edge"],
+                                  "definition": "a day with at least one speech by a Fed Board member (Chair, Vice Chair, Governor), close-to-close"}
     # OPEX week (Mon-Fri week containing the 3rd Friday) vs all weeks
     wk = c.resample("W-FRI").last().pct_change().dropna()
     opex = [v for d, v in wk.items() if d.date() == _third_friday(d.year, d.month)]
@@ -738,7 +747,7 @@ def build(inputs):
                                    prior_spot=float(prior.iloc[-1]) if len(prior) else None)
         vol = vol_forecast(fr.get(key), imp, spot)
         tr = trend_model(fr.get(key))
-        cal = calendar_effects(fr.get(key), inputs.get("fomc"), inputs.get("cpi"), today, inputs.get("releases"))
+        cal = calendar_effects(fr.get(key), inputs.get("fomc"), inputs.get("cpi"), today, inputs.get("releases"), inputs.get("speeches"))
         flows = mechanical_flows(sym, fr.get(key), inputs.get("aum", {}), gx, tr, spot)
         out[sym] = {"spot": spot, "implied": imp, "vol_forecast": vol, "trend": tr, "calendar": cal, "flows": flows}
     out["positioning"] = positioning(inputs.get("cot", {}).get("silver"), inputs.get("cot", {}).get("sp"),

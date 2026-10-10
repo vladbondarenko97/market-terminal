@@ -457,7 +457,8 @@ function renderCalendar(j) {
     const c = j.data?.calendar, el = document.getElementById('fc7');
     if (!c || c.status !== 'fresh') { el.innerHTML = missing(c); return; }
     const names = { fomc_day: 'FOMC decision day', day_before_fomc: 'Day before FOMC', cpi_day: 'CPI release day', opex_week: 'Monthly OPEX week', turn_of_month: 'Turn of month (4d)',
-        payrolls_day: 'Payrolls release day', ppi_day: 'PPI release day', gdp_day: 'GDP release day', pce_day: 'PCE release day', retail_sales_day: 'Retail sales release day', fomc_minutes_day: 'FOMC minutes day' };
+        payrolls_day: 'Payrolls release day', ppi_day: 'PPI release day', gdp_day: 'GDP release day', pce_day: 'PCE release day', retail_sales_day: 'Retail sales release day', fomc_minutes_day: 'FOMC minutes day',
+        fed_speaker_day: 'Fed Board speech day' };
     const rows = Object.entries(c.effects).map(([k, e]) => `<tr><td title="${fcEsc(e.definition || e.reason)}">${names[k] || k}</td><td>${e.n ?? '—'}</td>
         <td class="${fcCls(e.mean_pct)}">${fcPct(e.mean_pct, 2)}</td><td>${fcPctF(e.hit_rate, 0)}</td><td>${fcPct(e.avg_abs_pct, 2, false)}</td>
         <td class="${Math.abs(e.t_vs_baseline || 0) >= 2 ? 'fc-warn' : 'fc-muted'}">${fcNum(e.t_vs_baseline, 1)}</td>

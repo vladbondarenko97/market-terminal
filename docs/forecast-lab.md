@@ -33,12 +33,15 @@ from. How the card looks in the browser is in [Terminal](terminal.md#forecast-la
 | 4 | Positioning | CFTC Commitments of Traders (3-year COT index) and SLV trust ounces | Is any trader group at an extreme? | shared; the card shows the silver groups for SLV and the S&P 500 groups for SPY | `forecast.positioning` |
 | 5 | Silver fair value | Weekly regression of silver on gold, 10-year TIPS real yield, DXY, copper and industrial production | Is silver above or below its model value, and how fast do gaps close? | shared, silver only (the SPY view shows a notice) | `forecast.silver_fair_value` |
 | 6 | Macro regime | NY Fed recession probit, NFCI, Sahm rule, high-yield spread | Expansion or stress? | shared | `forecast.macro_regime` |
-| 7 | Calendar & event drift | FOMC, CPI, payrolls, PPI, GDP, PCE, retail sales and FOMC-minutes days, OPEX, turn-of-month and weekday effects, with n, t-statistics and (release days) the Day Scanner's evidence `grade` | Does the calendar tilt the odds this week? | per ticker | `forecast[SYM].calendar` |
+| 7 | Calendar & event drift | FOMC, CPI, payrolls, PPI, GDP, PCE, retail sales, FOMC-minutes and Fed Board speech days, OPEX, turn-of-month and weekday effects, with n, t-statistics and (release days) the Day Scanner's evidence `grade` | Does the calendar tilt the odds this week? | per ticker | `forecast[SYM].calendar` |
 
 Card 7 release-day rows (`effects.payrolls_day`, `ppi_day`, `gdp_day`, `pce_day`, `retail_sales_day`, `fomc_minutes_day`) use the
 release dates of the FRED release calendars (and decision + 21 days for the minutes, a rule). Each is the release-day close-to-close
 return with `n`, `mean_pct`, `hit_rate`, `t_vs_baseline` and `grade`: `core.watch.grade()` of that day's returns against all other days
 (`tested`, `thin` under 30 cases, `none`; under 8 cases it is `none`). A release without dates is `{"status": "missing", "reason"}`.
+`effects.fed_speaker_day` is built the same way from `src.fed_speeches()` (the Fed's one JSON list of speeches since 2006, reused for 7 days): the
+days with at least one speech by the Chair, a Vice Chair or a Governor (regional bank presidents are not counted), close-to-close, graded the same way.
+It is `missing` with a reason when the list is unavailable.
 | 8 | Mechanical flows | Vol-control funds, leveraged-ETF rebalancing, dealer gamma, CTA sensitivity | Who is forced to buy or sell after a move of 1% to 5%? | per ticker | `forecast[SYM].flows` |
 | 9 | Forecast scorecard | Every logged forecast graded after its target date, plus walk-forward backtests | Were past forecasts right? Hit rate, 68% coverage, Brier score | per ticker | not in the snapshot: graded per request from `v2_forecasts` |
 | 10 | Diesel & refining | Crack spreads, EIA refinery runs and stocks, 10-year maintenance-season path, Texas refinery outage filings (TCEQ), CFTC ULSD positioning | Is refining tight, and is a major unit down? | shared | `ctx["refining"]` (`margins`, `fundamentals`, `maintenance`, `outages`, `ulsd_positioning`) |
@@ -77,7 +80,7 @@ return with `n`, `mean_pct`, `hit_rate`, `t_vs_baseline` and `grade`: `core.watc
     `stale: last observation DATE`. The block always says `components_used` of 12 and lists `components_missing`. With no
     usable component the whole block is `missing`.
   - Equity put/call (CBOE) and SPY short-sale share (FINRA) are published as one file per day, so each run stores the last 5 trading days it has not stored yet (observations `chaos.equity_put_call`
-    and `chaos.short_volume_spy`). Until 3 years have accumulated, or a backfill loads them, both are `missing` with the
+    and `chaos.short_volume_spy`). Until 3 years have accumulated, or `scripts/backfill_chaos_history.py` loads them (see [Backfills](operations.md#backfills)), both are `missing` with the
     `history shorter than 3y` reason. Policy uncertainty (FRED `USEPUINDXD`) is published 7 days a week and is noisy, so
     it enters as a 7-day mean.
   - `prev` is the previous trading day's score computed from the same histories; `regime_changed` is true when its regime

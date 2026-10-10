@@ -219,7 +219,8 @@ The lock is an exclusive `flock` on `.v2_run.lock` (`core/runlock.py`), so a cra
 Do not delete the file and do not work around the lock.
 
 These take the lock because they write to the lake or share the CME Chromium profile: `run`, `cme-login`,
-`import-history`, `backfill-positions`, `download_volume.py` and `update_inventory.py` (when it downloads). `replay`,
+`import-history`, `backfill-positions`, `download_volume.py`, `update_inventory.py` (when it downloads) and the two
+`scripts/backfill_*.py` history loaders (see [Backfills](#backfills)). `replay`,
 `resend`, `catalog`, `status`, `ntfy-test` and the terminal do not take it: they read stored data (`resend` sends a
 stored message). The terminal asks whether the lock is held (`lock_is_held()`) without taking it.
 
@@ -680,6 +681,27 @@ to `CME_Data`, and keeps the legacy ledger tables and CSV headers unchanged. See
   [Value changes](value-changes.md).
 - **Undo a schedule** with `./setup.sh --remove-schedule`.
 
+
+## Backfills
+
+Two one-off loaders fill history the pipeline would otherwise take years to accumulate. You read them and run them; the
+pipeline never does. Both take the run lock (exit 75 when a run or another job holds it), are idempotent (stored days and
+filings are skipped, so re-running only fetches what is missing), are bounded (`--limit`, `--sleep`), print what they
+stored, skipped and failed, store every response in `v2_payloads` through `SourceSession.fetch()`, and record a run row with
+`mode='backfill'` and no snapshot, so they can never be the latest run. Try either with a small `--limit` and, to see
+what they do first, a scratch `PORTFOLIO_DATA_DIR`.
+
+| Script | What it downloads | How long |
+|---|---|---|
+| `scripts/backfill_chaos_history.py [--years 3] [--limit N] [--sleep 0.25]` | For every NYSE trading day of the last `--years` years plus 45 days (newest first) not yet stored: the CBOE daily statistics file (small JSON, about 750 files for 3 years) and FINRA's consolidated short-volume file (about 0.5 MB text each, about 750 files, of which only the header and the SPY line are kept). Stores `chaos.equity_put_call` and `chaos.short_volume_spy`. A day with no file (HTTP 403 or 404) is counted and reported, not retried in that run. | Roughly 15 to 30 minutes for 3 years. Once both series span 3 years, the two Chaos / Peace components stop being `missing`; the pipeline keeps them current with its 5-day catch-up. |
+| `scripts/backfill_form4.py [--symbols A,B] [--years 5] [--limit N] [--sleep 0.3]` | For each Edge Lab tracked symbol (or `--symbols`): the symbol's CIK from SEC's ticker list, its EDGAR submissions file (older files only if `--years` reaches back to them) and one small Form 4 XML per filing not yet stored. Stores one `edgar.form4` observation per filing (see [data](data.md)). A symbol with no CIK (a fund) is reported and skipped. | A few minutes per symbol. Re-run it to pick up new filings; the pipeline does not fetch Form 4 itself. |
+
+`backfill_form4.py` needs `SEC_USER_AGENT` in `.env` (`Name email`, see [configuration](configuration.md)); without it the script stops before any
+request. It uses each company's submissions file instead of SEC's daily index files: one request per company instead of
+about 250 index files a year. SEC allows 10 requests a second; the script stays far below that.
+
+Fed speech days (Forecast Lab card 7) need no script: the Fed publishes every speech since 2006 in one JSON file, which the
+pipeline fetches (and reuses for 7 days).
 
 ## Other scripts
 

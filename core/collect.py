@@ -923,6 +923,10 @@ def build_forecast(conn, session, now, today, frames, options, prices, macro):
             out["fomc"], _ = src.fomc_calendar(session)
         except SourceUnavailable as e:
             errors["federalreserve"] = str(e)
+        try:
+            out["speeches"], _ = src.fed_speeches(session)
+        except SourceUnavailable as e:
+            errors["federalreserve:speeches"] = str(e)
         return out
 
     def aum_all():
@@ -945,7 +949,8 @@ def build_forecast(conn, session, now, today, frames, options, prices, macro):
               "gex": {k: (options.get(k) or {}).get("gex") or {} for k in ("SPY", "SLV")},
               "cot": {"silver": web.get("silver"), "sp": web.get("sp")}, "slv_trust": web.get("slv_trust"),
               "slv_trust_history": hist, "fomc": web.get("fomc"), "cpi": fred.pop("_cpi", None),
-              "releases": fred.pop("_releases", {})}
+              "releases": fred.pop("_releases", {}),
+              "speeches": web.get("speeches")}
     try:
         fc = F.build(inputs)
     except Exception as e:
@@ -1077,6 +1082,38 @@ def _guarded_chaos(conn, session, run_id, today, frames):
                 "trace": lake.redact(traceback.format_exc()[-1500:])}
 
 
+def fetch_daily_days(conn, session, run_id, name, days, *, limit=None, sleep=0.0):
+    """Fetch the CHAOS_DAILY series `name` for each date in `days` (in the order given) that is not stored yet and record one
+    observation per day, stopping after `limit` requests and pausing `sleep` seconds after each one. Never raises for a source failure. Returns {"errors": {key: text}, "stored", "skipped" (already stored),
+    "no_file" (days the provider answered 403/404 for), "failed" (other errors)}."""
+    metric, source, fetch = CHAOS_DAILY[name]
+    with lake._WRITE_LOCK:
+        have = {r[0][:10] for r in conn.execute("SELECT observed_at FROM v2_observations WHERE metric_id = ?", (metric,)).fetchall()}
+    out = {"errors": {}, "stored": 0, "skipped": 0, "no_file": 0, "failed": 0}
+    new, asked = [], 0
+    for d in days:
+        if d.isoformat() in have:
+            out["skipped"] += 1
+            continue
+        if limit is not None and asked >= limit:
+            break
+        asked += 1
+        if sleep and asked > 1:
+            time.sleep(sleep)
+        try:
+            val, pid = fetch(session, d)
+        except SourceUnavailable as e:
+            if e.outcome == "offline":
+                out["errors"][source] = str(e)
+                break
+            out["errors"][f"{source}:{d}"] = str(e)
+            out["no_file" if e.outcome in ("http_403", "http_404") else "failed"] += 1
+            continue
+        new.append(lake.obs(metric, d.isoformat(), value=val, source=source, payload_id=pid, time_quality="as_of_date"))
+    out["stored"] = lake.record_observations(conn, new, run_id=run_id)
+    return out
+
+
 def build_chaos(conn, session, run_id, today, frames):
     """Collect the Chaos / Peace inputs (each failure becomes an entry in `errors`, never an exception) and run core.chaos."""
     from core import chaos as CH
@@ -1132,28 +1169,12 @@ def build_chaos(conn, session, run_id, today, frames):
         except SourceUnavailable as e:
             errors["treasury:buybacks"] = str(e)
         for name, (metric, source, fetch) in CHAOS_DAILY.items():
-            with lake._WRITE_LOCK:
-                have = {r[0][:10] for r in conn.execute("SELECT observed_at FROM v2_observations WHERE metric_id = ?", (metric,)).fetchall()}
             days, d = [], today
             while len(days) < 5:      # today's files are published in the evening: take the 5 trading days before today
                 d -= timedelta(days=1)
                 if MC.is_trading_day(d):
                     days.append(d)
-            new = []
-            for d in days:
-                if d.isoformat() in have:
-                    continue
-                try:
-                    val, pid = fetch(session, d)
-                except SourceUnavailable as e:
-                    if e.outcome == "offline":
-                        errors[source] = str(e)
-                        break
-                    errors[f"{source}:{d}"] = str(e)
-                    continue
-                new.append(lake.obs(metric, d.isoformat(), value=val, source=source, payload_id=pid, time_quality="as_of_date"))
-            if new:
-                lake.record_observations(conn, new, run_id=run_id)
+            errors.update(fetch_daily_days(conn, session, run_id, name, days)["errors"])
             with lake._WRITE_LOCK:      # a revised value is a second row for the date: the later fetch wins
                 rows = {r[0][:10]: r[1] for r in conn.execute(
                     "SELECT observed_at, value_num FROM v2_observations WHERE metric_id = ? AND value_num IS NOT NULL ORDER BY observed_at, fetched_at",
