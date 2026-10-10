@@ -2,6 +2,8 @@
 
 Collectors return data only; nothing in here writes ledgers, renders reports or sends notifications.
 """
+import hashlib
+import json
 import os
 import re
 import tempfile
@@ -15,6 +17,7 @@ import pandas as pd
 
 import config
 from core import cme, history, importer, lake, metrics
+from core import news as newsmod
 from core import sources as src
 from core.sources import SourceUnavailable
 
@@ -293,6 +296,41 @@ def collect_flow(session, symbol, end, days, limit):
     return r, df
 
 
+RELEASE_TITLES = {"cpi": "CPI release", "payrolls": "Employment Situation (payrolls) release", "ppi": "PPI release",
+                  "gdp": "GDP release", "pce": "Personal Income and Outlays (PCE) release",
+                  "retail_sales": "Advance Retail Sales release"}
+MINUTES_TITLE = "FOMC minutes (decision + 3 weeks, scheduled by rule)"
+
+
+def collect_releases(session, today, after):
+    """Release dates after `after` (the Forex Factory coverage end) and within 45 days: FRED release calendars plus FOMC
+    minutes derived by rule (decision + 21 days; not a confirmed date). Kept apart from `upcoming`, which has its own
+    7-day, High/Medium semantics."""
+    horizon, errors, rows = (today + timedelta(days=45)).isoformat(), {}, []
+    start = (today - timedelta(days=5 * 365)).isoformat()    # the request build_forecast makes, so it is deduplicated
+    for name, rid in FRED_RELEASES.items():
+        try:
+            dates, _ = src.fred_release_dates(session, rid, config.FRED_API_KEY, start)
+        except SourceUnavailable as e:
+            errors[name] = str(e)
+            continue
+        rows += [{"title": RELEASE_TITLES[name], "release": name, "source": "fred", "country": "USD", "date_iso": d, "date_ct": d}
+                 for d in dates if after < d <= horizon]
+    try:
+        decisions, _ = src.fomc_calendar(session)
+        minutes = [(date.fromisoformat(x) + timedelta(days=21)).isoformat() for x in decisions]
+        rows += [{"title": MINUTES_TITLE, "release": "fomc_minutes", "source": "fed_rule", "country": "USD",
+                  "date_iso": d, "date_ct": d} for d in minutes if after < d <= horizon]
+    except SourceUnavailable as e:
+        errors["fomc_minutes"] = str(e)
+    rows.sort(key=lambda r: (r["date_ct"], r["release"]))
+    n = len(FRED_RELEASES) + 1
+    status = "fresh" if not errors else ("partial" if len(errors) < n else "missing")
+    return rows, {"status": status, "reason": "; ".join(f"{k}: {v}" for k, v in errors.items()) or None,
+                  "parts_answered": n - len(errors), "parts": n, "after": after, "to": horizon,
+                  "note": "dates only (no time); FRED release calendars; minutes are decision + 21 days by rule"}
+
+
 def collect_calendar(session, now):
     today = _today_local(now)
     week_start = today - timedelta(days=(today.weekday() + 1) % 7)       # FF weeks run Sunday..Saturday
@@ -311,9 +349,10 @@ def collect_calendar(session, now):
             if week == "thisweek":
                 break
     if "thisweek" not in feeds:
+        rel, rel_meta = collect_releases(session, today, (today - timedelta(days=1)).isoformat())
         return {"status": "missing", "reason": errors[0]['error'] if errors else 'no feed',
                 "events": [], "upcoming": [], "today_tier1": [], "coverage": None, "errors": errors,
-                "catalyst_status": "unavailable"}
+                "catalyst_status": "unavailable", "upcoming_releases": rel, "releases": rel_meta}
     seen, norm = set(), []
     for e in events:
         key = (e["date"], e["time"], e["title"], e["country"])
@@ -344,11 +383,87 @@ def collect_calendar(session, now):
     if covered_until < horizon:
         status, reason = "partial", (f"feed coverage ends {covered_until}; 7-day window runs to {horizon}"
                                      + (f" ({errors[0]['error']})" if errors else ""))
+    rel, rel_meta = collect_releases(session, today, covered_until.isoformat())
     return {"status": status, "reason": reason, "events": norm, "upcoming": upcoming, "today_tier1": tier1,
+            "upcoming_releases": rel, "releases": rel_meta,
             "coverage": {"from": week_start.isoformat(), "to": covered_until.isoformat(), "feeds": feeds},
             "errors": errors, "source": "forexfactory", "payloads": payloads,
             "time_zone_note": "feed times are UTC; displayed in Chicago (CT) and New York (ET)",
             "catalyst_status": "ARMED (Tier-1 Data Today)" if tier1 else "CLEAR (No Tier-1 Data Today)"}
+
+
+def _load_feeds():
+    path = Path(config.NEWS_FEEDS_FILE) if config.NEWS_FEEDS_FILE else Path(__file__).with_name("news_feeds.json")
+    try:
+        feeds = json.loads(path.read_text())
+        assert isinstance(feeds, list) and all(isinstance(f, dict) and f.get("name") and f.get("url") for f in feeds)
+    except (OSError, ValueError, AssertionError) as e:
+        return None, f"feed list unusable ({path.name}): {type(e).__name__}"
+    return [f for f in feeds if f.get("enabled", True)], None
+
+
+NEWS_CLUSTER_CAP = 120
+
+
+def collect_news(conn, session, run, now):
+    """Headlines from the RSS registry: per-feed status, windowed, de-duplicated into clusters, every item stored in
+    v2_news_items (INSERT OR IGNORE; a row inserted now is 'new this run'). Titles, links, sources, times only."""
+    win = {"news_hours": newsmod.NEWS_HOURS, "official_hours": newsmod.OFFICIAL_HOURS}
+    feeds, err = _load_feeds()
+    if err or not feeds:
+        return {"status": "missing", "reason": err or "no enabled feeds", "as_of": run["generated_at"], "window": win,
+                "feeds": {}, "coverage": {"enabled": len(feeds or []), "answered": 0, "priority_answered": 0}, "clusters": []}
+
+    def one(f):
+        try:
+            return f, src.rss_feed(session, f["name"], f["url"]), None
+        except SourceUnavailable as e:
+            return f, None, str(e)
+    with ThreadPoolExecutor(max_workers=config.MAX_PROVIDER_CONCURRENCY) as pool:
+        results = list(pool.map(one, feeds))
+    status, items, errors = {}, [], []
+    for f, got, e in results:
+        cat = f.get("category") or "other"
+        if got is None:
+            status[f["name"]] = {"status": "missing", "count": 0, "payload_id": None, "reason": e, "category": cat}
+            errors.append(e)
+            continue
+        status[f["name"]] = {"status": "fresh", "count": len(got[0]), "payload_id": got[1], "reason": None, "category": cat}
+        items += [dict(i, source=f["name"], category=cat) for i in got[0]]
+    answered = [n for n, v in status.items() if v["status"] == "fresh"]
+    pri = [n for n in answered if status[n]["category"] == newsmod.PRIORITY]
+    cov = {"enabled": len(feeds), "answered": len(answered), "priority_answered": len(pri)}
+    st = "fresh" if pri and 2 * len(answered) >= len(feeds) else ("partial" if answered else "missing")
+    reason = None if st == "fresh" else (errors[0] if not answered else f"{len(answered)} of {len(feeds)} feeds answered"
+                                          + ("" if pri else ", no official feed among them"))
+    kept, unknown = [], 0
+    for official in (True, False):
+        part = [i for i in items if (i["category"] == newsmod.PRIORITY) == official]
+        k, u = newsmod.window(part, now, newsmod.OFFICIAL_HOURS if official else newsmod.NEWS_HOURS)
+        kept, unknown = kept + k, unknown + u
+    clusters = newsmod.bucket(newsmod.dedup(kept))
+    key_of = {u["url"]: c["cluster_key"] for c in clusters for u in c["sources"]}
+    new_urls = set()
+    with lake._WRITE_LOCK, conn:
+        for i in items:
+            cur = conn.execute("INSERT OR IGNORE INTO v2_news_items (url_hash, title, url, source, category, published_at, "
+                               "first_seen_run, first_seen_at, cluster_key, sentiment) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                               (hashlib.sha256(i["url"].encode()).hexdigest(), i["title"], i["url"], i["source"], i["category"],
+                                i["published_at"], run["run_id"], run["generated_at"], key_of.get(i["url"]),
+                                newsmod.vader_score(i["title"])))
+            if cur.rowcount:
+                new_urls.add(i["url"])
+    for c in clusters:
+        c["official"], c["new"] = c["category"] == newsmod.PRIORITY, any(u["url"] in new_urls for u in c["sources"])
+    clusters.sort(key=lambda c: (not c["official"], -newsmod._ts(c["published_at"]).timestamp()))
+    dropped = max(0, len(clusters) - NEWS_CLUSTER_CAP)
+    clusters = sorted(clusters[:NEWS_CLUSTER_CAP], key=lambda c: (newsmod._ts(c["published_at"]), c["cluster_key"]), reverse=True)
+    for n, c in enumerate(clusters, 1):
+        c["id"] = f"S{n}"
+    return {"status": st, "reason": reason, "as_of": run["generated_at"], "window": win, "feeds": status, "coverage": cov,
+            "items": {"fetched": len(items), "in_window": len(kept), "unknown_date": unknown, "new_this_run": len(new_urls),
+                      "dropped_by_cap": dropped},
+            "clusters": clusters}
 
 
 def collect_macro(session):
@@ -554,6 +669,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
             "SPY": collect_flow(session, "SPY", db_end, 1, 50000),
             "SLV": collect_flow(session, "SLV", db_end, 1, 50000),
             "SPY_5d": collect_flow(session, "SPY", db_end, 7, 100000)})
+        f_news = pool.submit(timed, "news", lambda: collect_news(conn, session, run, now))
         prices = f_quotes.result()
         macro, calendar = f_misc.result()
         f_opts = pool.submit(timed, "options", lambda: {
@@ -565,6 +681,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
                                    "source": "yahoo", "observed_at": prices["silver_futures"].get("observed_at")}),
             _spot(session)))
         flows = f_flow.result()
+        news = f_news.result()
         cme_acq = f_cme.result()   # last: a CME login wait must not hold up quotes, options and flow
         options = f_opts.result()
         shanghai, ebay, silver_spot = f_side.result()
@@ -647,6 +764,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
         "technicals": technicals, "weather": weather, "breadth": breadth, "execution": engine, "ebay": ebay,
         "sources": {"cme": cme_acq}, "stage_seconds": stage_times, **extended, "position_marks": position_marks,
         "forecast": forecast, "refining": refining_ctx,
+        "news": news,
     }
     frames = {"trades": {k: v[1] for k, v in flows.items()}}
     return lake.clean_json(ctx), frames
@@ -750,6 +868,7 @@ def extended_features(conn, session, as_of, prices, options, cme_vol, inventory,
             "regime_context": regime}
 
 
+FRED_RELEASES = {"cpi": 10, "payrolls": 50, "ppi": 46, "gdp": 53, "pce": 54, "retail_sales": 9}
 FRED_FORECAST = {"DFII10": 1400, "INDPRO": 80, "T10Y3M": 400, "T10Y2Y": 30, "NFCI": 200, "SAHMREALTIME": 24}
 COT_SPECS = {"silver": ("72hh-3qpy", "084691"), "sp": ("gpe5-46if", "13874A")}
 
@@ -775,6 +894,14 @@ def build_forecast(conn, session, now, today, frames, options, prices, macro):
             out["_cpi"], _ = src.fred_release_dates(session, 10, config.FRED_API_KEY, (today - timedelta(days=5 * 365)).isoformat())
         except SourceUnavailable as e:
             errors["fred:cpi_dates"] = str(e)
+        out["_releases"] = {}
+        for name, rid in FRED_RELEASES.items():
+            if name != "cpi":
+                try:
+                    out["_releases"][name], _ = src.fred_release_dates(session, rid, config.FRED_API_KEY,
+                                                                      (today - timedelta(days=5 * 365)).isoformat())
+                except SourceUnavailable as e:
+                    errors[f"fred:{name}_dates"] = str(e)
         return out
 
     def web_all():
@@ -813,7 +940,8 @@ def build_forecast(conn, session, now, today, frames, options, prices, macro):
               "chains": {k: (options.get(k) or {}).get("_chains") or {} for k in ("SPY", "SLV")},
               "gex": {k: (options.get(k) or {}).get("gex") or {} for k in ("SPY", "SLV")},
               "cot": {"silver": web.get("silver"), "sp": web.get("sp")}, "slv_trust": web.get("slv_trust"),
-              "slv_trust_history": hist, "fomc": web.get("fomc"), "cpi": fred.pop("_cpi", None)}
+              "slv_trust_history": hist, "fomc": web.get("fomc"), "cpi": fred.pop("_cpi", None),
+              "releases": fred.pop("_releases", {})}
     try:
         fc = F.build(inputs)
     except Exception as e:

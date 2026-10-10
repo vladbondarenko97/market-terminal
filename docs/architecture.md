@@ -93,6 +93,9 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/forecast.py` | Forecast Lab models (cards 1–9), forecast logging and grading |
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
+| `core/news.py` | Headline clustering (title normalisation, Jaccard de-duplication, recency windows, priority bucketing); pure functions |
+| `core/news_feeds.json` | The RSS feed list (`name`, `category`, `url`, `enabled`); `NEWS_FEEDS_FILE` replaces it |
+| `THIRD_PARTY_NOTICES.md` | Credit and MIT notice for the MarketBrief ideas `core/news.py` adapts |
 | `core/watch.py` | Day Scanner: the dip-in-an-uptrend rule on live quotes, the saved watchlist, paper positions (`v2_watch_positions`) |
 | `core/edges.py` | Edge Lab: published edges tested on one ticker's own history, tracked list |
 | `options_whale/assistant.py`, `options_whale/static/assistant.js` | Console engine v3: brief, read-only data sources, local model, console UI |

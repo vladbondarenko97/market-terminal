@@ -1,0 +1,21 @@
+[
+  {"name": "fed_press", "category": "official", "url": "https://www.federalreserve.gov/feeds/press_all.xml", "enabled": true},
+  {"name": "fed_speeches", "category": "official", "url": "https://www.federalreserve.gov/feeds/speeches.xml", "enabled": true},
+  {"name": "bea", "category": "official", "url": "https://apps.bea.gov/rss/rss.xml", "enabled": true},
+  {"name": "sec_press", "category": "official", "url": "https://www.sec.gov/news/pressreleases.rss", "enabled": true},
+  {"name": "sec_speeches", "category": "official", "url": "https://www.sec.gov/news/speeches-statements.rss", "enabled": true},
+  {"name": "eia_press", "category": "official", "url": "https://www.eia.gov/rss/press_rss.xml", "enabled": true},
+  {"name": "eia_today", "category": "official", "url": "https://www.eia.gov/rss/todayinenergy.xml", "enabled": false},
+  {"name": "bloomberg_markets", "category": "markets", "url": "https://feeds.bloomberg.com/markets/news.rss", "enabled": true},
+  {"name": "wsj_markets", "category": "markets", "url": "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", "enabled": true},
+  {"name": "mw_bulletins", "category": "markets", "url": "https://feeds.content.dowjones.io/public/rss/mw_bulletins", "enabled": true},
+  {"name": "sa_currents", "category": "markets", "url": "https://seekingalpha.com/market_currents.xml", "enabled": true},
+  {"name": "cnbc_economy", "category": "markets", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258", "enabled": true},
+  {"name": "yahoo_spy", "category": "ticker", "url": "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US", "enabled": true},
+  {"name": "yahoo_slv", "category": "ticker", "url": "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SLV&region=US&lang=en-US", "enabled": true},
+  {"name": "breaking_the_news", "category": "world", "url": "https://breakingthenews.net/news-feed.xml", "enabled": true},
+  {"name": "tasnim_en", "category": "world", "url": "https://www.tasnimnews.ir/en/rss/feeds/1192/0/0/0", "enabled": true},
+  {"name": "coindesk_markets", "category": "crypto", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/?category=markets", "enabled": false},
+  {"name": "cointelegraph", "category": "crypto", "url": "https://cointelegraph.com/rss", "enabled": false},
+  {"name": "decrypt", "category": "crypto", "url": "https://decrypt.co/feed", "enabled": false}
+]

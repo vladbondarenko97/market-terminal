@@ -456,10 +456,12 @@ function renderMacro(j) {
 function renderCalendar(j) {
     const c = j.data?.calendar, el = document.getElementById('fc7');
     if (!c || c.status !== 'fresh') { el.innerHTML = missing(c); return; }
-    const names = { fomc_day: 'FOMC decision day', day_before_fomc: 'Day before FOMC', cpi_day: 'CPI release day', opex_week: 'Monthly OPEX week', turn_of_month: 'Turn of month (4d)' };
-    const rows = Object.entries(c.effects).map(([k, e]) => `<tr><td title="${fcEsc(e.definition)}">${names[k] || k}</td><td>${e.n ?? '—'}</td>
+    const names = { fomc_day: 'FOMC decision day', day_before_fomc: 'Day before FOMC', cpi_day: 'CPI release day', opex_week: 'Monthly OPEX week', turn_of_month: 'Turn of month (4d)',
+        payrolls_day: 'Payrolls release day', ppi_day: 'PPI release day', gdp_day: 'GDP release day', pce_day: 'PCE release day', retail_sales_day: 'Retail sales release day', fomc_minutes_day: 'FOMC minutes day' };
+    const rows = Object.entries(c.effects).map(([k, e]) => `<tr><td title="${fcEsc(e.definition || e.reason)}">${names[k] || k}</td><td>${e.n ?? '—'}</td>
         <td class="${fcCls(e.mean_pct)}">${fcPct(e.mean_pct, 2)}</td><td>${fcPctF(e.hit_rate, 0)}</td><td>${fcPct(e.avg_abs_pct, 2, false)}</td>
-        <td class="${Math.abs(e.t_vs_baseline || 0) >= 2 ? 'fc-warn' : 'fc-muted'}">${fcNum(e.t_vs_baseline, 1)}</td></tr>`).join('');
+        <td class="${Math.abs(e.t_vs_baseline || 0) >= 2 ? 'fc-warn' : 'fc-muted'}">${fcNum(e.t_vs_baseline, 1)}</td>
+        <td class="fc-muted">${e.status === 'missing' ? 'missing' : (e.grade || '')}</td></tr>`).join('');
     const up = c.upcoming_7d.length ? c.upcoming_7d.map(u => `<span class="fc-badge fc-warn">${fcEsc(u.event)} · ${u.date}</span>`).join(' ') : '<span class="fc-muted">No tracked events in the next 7 days.</span>';
     const dow = c.day_of_week;
     el.innerHTML = `
@@ -468,7 +470,7 @@ function renderCalendar(j) {
             ${kpi('Next FOMC', c.next.fomc || '—')}${kpi('Next CPI', c.next.cpi || '—')}${kpi('Next OPEX', c.next.opex || '—')}
             ${kpi('Calendar drift 7d', fcPct(c.calendar_drift_next_7d_pct, 2), 'sum of active effects vs baseline', fcCls(c.calendar_drift_next_7d_pct))}
         </div>
-        <table class="fc-table"><tr><th>Effect</th><th>n</th><th>Mean</th><th>Hit</th><th>|move|</th><th>t</th></tr>${rows}</table>
+        <table class="fc-table"><tr><th>Effect</th><th>n</th><th>Mean</th><th>Hit</th><th>|move|</th><th>t</th><th>Grade</th></tr>${rows}</table>
         <div class="fc-chart" style="height:110px"><canvas id="fc7Chart"></canvas></div>
         <div class="fc-note">${c.history_days} trading days; baseline daily mean ${fcPct(c.baseline_daily_mean_pct, 3)}. |t| ≥ 2 is highlighted; smaller effects are within noise. ${fcEsc(c.note)}.</div>`;
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].filter(d => dow[d]);

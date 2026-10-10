@@ -17,6 +17,7 @@ from core import lake
 
 PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forexfactory": 1, "databento": 1, "goldapi": 1, "akshare": 1,
                    "ebay": 1, "cme": 1}
+PROVIDER_LIMITS["rss"] = 6
 
 
 class SourceUnavailable(Exception):
@@ -642,6 +643,36 @@ def tceq_feed(s):
         items.append({"event_id": m.group(1) if m else None, "rn": m.group(2) if m else None,
                       "name": (m.group(3) if m else title).strip(), "link": it.findtext("link"),
                       "published": it.findtext("pubDate")})
+    return items, pid
+
+
+def rss_feed(s, name, url):
+    """One RSS/Atom feed -> ([{title, url, published_at}], payload_id). Titles, links and timestamps only; an entry
+    without a parseable date has published_at None (never invented)."""
+    import calendar
+    import feedparser
+    import requests
+
+    def entries(content):
+        d = feedparser.parse(content)
+        if d.bozo and not d.entries:
+            raise SourceUnavailable("rss", "invalid", name)
+        out = []
+        for e in d.entries:
+            title, link = (e.get("title") or "").strip(), (e.get("link") or "").strip()
+            t = e.get("published_parsed") or e.get("updated_parsed")
+            if title and link:
+                out.append({"title": title, "url": link, "published_at":
+                            datetime.fromtimestamp(calendar.timegm(t), timezone.utc).isoformat() if t else None})
+        return out
+
+    def call():
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if r.status_code != 200:
+            raise SourceUnavailable("rss", f"http_{r.status_code}", name)
+        return r.content, entries(r.content)
+    (content, items), pid = s.fetch("rss", {"feed": name, "url": url}, call, kind="rss_xml", fmt="xml",
+                                    capture=lambda r: (r[0], None, {"items": len(r[1])}))
     return items, pid
 
 
