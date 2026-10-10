@@ -30,8 +30,6 @@ INVENTORY_LINES = [("crude_stocks", "Crude (commercial)"), ("dist_stocks", "Dist
                    ("propane_stocks", "Propane / propylene"), ("resid_stocks", "Residual fuel oil")]
 # days of supply = stocks / 4-week average of this flow (products: demand; crude: refinery crude runs, as EIA defines it)
 DEMAND_FOR = {"crude_stocks": "crude_runs", "dist_stocks": "dist_supplied", "gas_stocks": "gas_supplied", "jet_stocks": "jet_supplied"}
-PADD_NAMES = {"util_p1": "East Coast (PADD 1)", "util_p2": "Midwest (PADD 2)", "util_p3": "Gulf Coast (PADD 3)",
-              "util_p4": "Rockies (PADD 4)", "util_p5": "West Coast (PADD 5)"}
 
 
 def _f(x):

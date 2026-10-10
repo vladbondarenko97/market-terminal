@@ -3,7 +3,6 @@ from datetime import date, datetime, timezone
 
 from core import lake
 
-DDL = lake.SIGNALS_DDL
 
 # Version of the horizon (+1D/+1W/+2W) values. Positions are priced when the terminal asks, not stored in a
 # snapshot, so the version travels in the horizons dict (`_version`). Bump it when a value's meaning changes and add

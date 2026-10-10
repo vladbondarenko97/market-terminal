@@ -4,7 +4,7 @@ import math
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime
 from config import DATA_DIR, PROJECT_ROOT
 
 # --- CONSTANTS & CONFIG ---

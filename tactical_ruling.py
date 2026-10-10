@@ -18,13 +18,6 @@ def _latest_ctx():
     return ctx
 
 
-def calculate_vmri(dxy, tnx, oas, vix):
-    """Legacy signature kept; formula owned by core.metrics (vmri_v1)."""
-    from core.metrics import vmri
-    r = vmri(dxy, tnx, oas, vix)
-    return r["score"], r["tier"]
-
-
 def print_tactical_ruling(inventory_df=None):
     """Returns the tactical ruling XML (string) for the latest committed run."""
     return render.tactical_xml(_latest_ctx())

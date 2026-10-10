@@ -95,17 +95,6 @@ def _first_env(name, alt_name=None):
     return None
 
 
-def required_env(name, alt_name=None):
-    value = _first_env(name, alt_name)
-    if value is None:
-        if alt_name:
-            raise EnvironmentError(
-                f"Missing required environment variable '{name}' (or fallback '{alt_name}')"
-            )
-        raise EnvironmentError(f"Missing required environment variable '{name}'")
-    return value
-
-
 def optional_env(name, default=None, alt_name=None):
     """The setting, or `default` when it is unset or blank (`NAME=` in .env counts as not configured)."""
     value = _first_env(name, alt_name)
@@ -167,10 +156,3 @@ MAX_PROVIDER_CONCURRENCY = 3
 CME_MAX_ATTEMPTS_PER_URL = 2
 CME_429_COOLDOWN_SECONDS = 20
 CME_BACKFILL_MAX_ATTEMPTS = 40
-
-
-def require_databento_key():
-    """The Databento key, or EnvironmentError. For code that cannot run without it (the terminal server)."""
-    if not DATABENTO_API_KEY:
-        raise EnvironmentError("Missing required environment variable 'DATABENTO_API_KEY' (or fallback 'DB_API_KEY')")
-    return DATABENTO_API_KEY

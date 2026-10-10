@@ -4,7 +4,6 @@ Collectors return data only; nothing in here writes ledgers, renders reports or 
 """
 import os
 import re
-import shutil
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor

@@ -3,7 +3,7 @@ import io
 import re
 import time
 import warnings
-from datetime import datetime, date
+from datetime import date
 
 import pandas as pd
 
@@ -13,10 +13,6 @@ PARSER_VERSION_INVENTORY = "inventory_v2"
 PARSER_VERSION_VOLUME = "volume_v2"
 
 SILVER_STOCKS_URL = "https://www.cmegroup.com/delivery_reports/Silver_stocks.xls"
-VOLUME_LATEST_URL = "https://www.cmegroup.com/ftp/daily_volume/daily_volume.xlsx"
-VOLUME_ARCHIVE_URL = "https://www.cmegroup.com/ftp/daily_volume/daily_volume_{yyyymmdd}.xlsx"
-
-TROY_OZ_PER_CONTRACT = {"SI": 5000, "SIL": 1000}
 
 # Products used by the dashboard. Matched first by legacy description, then by code + F/O + side.
 TARGET_PRODUCTS = {

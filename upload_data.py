@@ -88,11 +88,6 @@ def upload_report_result(report_path, name):
         return {"status": "failed", "detail": lake.redact(f"{type(e).__name__}: {e}")[:300]}
 
 
-def upload_report(report_path, name):
-    """The permanent URL of the uploaded report, or None (not enabled, not configured or failed)."""
-    return upload_report_result(report_path, name).get("url")
-
-
 def upload_files(daily_dir=None):
     """Upload the legacy database copy and the dashboard XML. Returns (status, detail):
     uploaded (the receiver answered `ok` for every file) | skipped (not configured) | failed."""

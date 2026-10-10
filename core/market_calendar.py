@@ -15,7 +15,6 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 NEW_YORK = ZoneInfo("America/New_York")
-OPEN_ET = time(9, 30)
 CLOSE_ET = time(16, 0)
 EARLY_CLOSE_ET = time(13, 0)
 

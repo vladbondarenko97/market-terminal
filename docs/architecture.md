@@ -155,7 +155,6 @@ Thin wrappers kept so old entry points still work. Each reads the latest snapsho
 | `alphaflow/` | AlphaFlow: separate Flask app on port 5001 that scans OPRA trades for small-cap call sweeps. It reads its settings through `config.py` and keeps its results in `alphaflow/alphaflow.db` across restarts. Docs at `/documentation` (`alphaflow/templates/documentation.html`). The email appends its top results when the database exists. |
 | `deployment_engine.py`, `deployment_dashboard.html` | Capital-deployment sizing prototype (half-Kelly). Reads `deployment_state.json` and writes `deployment_payload.json`/`.js` for the static page. An input it cannot read is `null` with a reason under `missing`; the page shows it as a dash. |
 | `index.html`, `index.keys.example.js` | Static multi-asset price board that polls public APIs from the browser. Keys go in `index.keys.js` (not committed). |
-| `options_api.py`, `find_options.py` | Older option-lookup server (port 5002) and CLI. Both fetch live from Yahoo Finance. |
 
 ## Documentation map
 

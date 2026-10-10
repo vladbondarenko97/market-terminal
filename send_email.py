@@ -12,7 +12,7 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import formatdate
 
-from config import (DATA_DIR, EMAIL_PASSWORD, EMAIL_SENDER, NTFY_URL, PROJECT_ROOT, RECIPIENT_EMAIL, SMTP_PORT,
+from config import (EMAIL_PASSWORD, EMAIL_SENDER, NTFY_URL, PROJECT_ROOT, RECIPIENT_EMAIL, SMTP_PORT,
                     SMTP_SERVER)
 
 EMAIL_PAIRS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]

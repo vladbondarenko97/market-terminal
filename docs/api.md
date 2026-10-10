@@ -141,20 +141,9 @@ The cards themselves are described in [Forecast Lab](forecast-lab.md).
 | `GET /api/forecast` | `ticker` (SPY): `SPY` or `SLV`; anything else is 400 `{"status": "error", "message": "ticker must be SPY or SLV"}` | JSON `{status, ticker, run, horizons, data, consensus, positioning, silver_fair_value, macro_regime, source_errors, refining, scorecard}`. `data` holds the ticker's cards. **503** `{"status": "error", "message": "database not initialised: run the pipeline once"}` before the first run has created the database; 404 `{"status": "error", "message", "run"}` when the database has no committed snapshot yet or the latest one has no forecast. | Stored + Live. Stored: the latest committed snapshot (`v2_latest_snapshot`), cached in memory by run id for 60 seconds. Live: the scorecard grades logged forecasts against two years of daily closes from yfinance (cached 60 seconds). The database is opened read-only; the scorecard runs no schema statements. |
 | `GET /api/eia_history` | none | JSON `{status: "success", version, dates, start, as_of, series, note}`. Each `series` item has `key`, `label`, `first`, `mbbl`, `vs_5y_pct` and, where a matching flow exists, `days_of_supply` and `supply_basis`. Arrays line up with `dates`; `null` where a series had not started. 404 `{"status": "error", "message"}` when no EIA data exists; 503 before the first run; 500 on other errors. | Stored: rebuilt from the raw EIA payloads the pipeline captured, through a read-only database connection. Cached in memory until the payloads change. |
 
-## Other servers in this repo
+## Other server in this repo
 
-These are standalone. The terminal and `setup.sh` do not use or start them.
-
-### `options_api.py` (legacy)
-
-A single route: `GET /api/find_options`.
-
-| Item | Detail |
-|---|---|
-| Parameters | `ticker` (required; missing gives 400 XML `<error>`). `exp` or `expiration` (all expirations): `MM/DD/YYYY` or `MM/DD/YY`. |
-| Response | XML `<options_scan ticker scan_type timestamp>` (plus `target_date` when an expiration is given) with `<calls>` and `<puts>`, each holding a `<highest_volume>` and a `<highest_open_interest>` contract (`symbol`, `expiration`, `strike`, `volume`, `open_interest`, `last_price`, `implied_volatility`). |
-| Source | Live: yfinance. Changes nothing. No CORS, no write routes. |
-| Binding | `0.0.0.0:5002`, hard-coded. It does not clash with the terminal (8080 by default) or AlphaFlow (5001). |
+AlphaFlow is standalone. The terminal and `setup.sh` do not use or start it.
 
 ### `alphaflow/server.py`
 

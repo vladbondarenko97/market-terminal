@@ -20,7 +20,6 @@ from core import cme, lake
 
 PARSER_VERSION_LEDGER = "ledger_csv_v1"
 PARSER_VERSION_XML = "daily_xml_v2"
-PARSER_VERSION_DB = "legacy_db_v1"
 PARSER_VERSION_JSON = "json_v1"
 
 # Never captured: browser session cookies / credentials.
@@ -272,7 +271,7 @@ def import_json_file(conn, path, report, kind):
     try:
         json.loads(data)
         status = "imported"
-    except ValueError as e:
+    except ValueError:
         status = "invalid"
     pid = lake.store_payload(conn, source="legacy_json", kind=kind, content=data, fmt="json", origin_path=path,
                              status="ok" if status == "imported" else "invalid")

@@ -72,21 +72,11 @@ class ConfigParsing(unittest.TestCase):
     def test_alias_is_used_when_the_primary_is_unset_or_blank(self):
         with mock.patch.dict(os.environ, {"DATABENTO_API_KEY": "", "DB_API_KEY": "alias-key"}):
             self.assertEqual(config.optional_env("DATABENTO_API_KEY", default="", alt_name="DB_API_KEY"), "alias-key")
-            self.assertEqual(config.required_env("DATABENTO_API_KEY", alt_name="DB_API_KEY"), "alias-key")
         with mock.patch.dict(os.environ, {"DATABENTO_API_KEY": "primary", "DB_API_KEY": "alias-key"}):
             self.assertEqual(config.optional_env("DATABENTO_API_KEY", default="", alt_name="DB_API_KEY"), "primary")
         env = {k: v for k, v in os.environ.items() if k not in ("DATABENTO_API_KEY", "DB_API_KEY")}
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(config.optional_env("DATABENTO_API_KEY", default="", alt_name="DB_API_KEY"), "")
-            with self.assertRaises(EnvironmentError):
-                config.required_env("DATABENTO_API_KEY", alt_name="DB_API_KEY")
-
-    def test_require_databento_key(self):
-        with mock.patch.object(config, "DATABENTO_API_KEY", ""):
-            with self.assertRaises(EnvironmentError):
-                config.require_databento_key()
-        with mock.patch.object(config, "DATABENTO_API_KEY", "k"):
-            self.assertEqual(config.require_databento_key(), "k")
 
     def test_flags_need_exactly_one(self):
         with mock.patch.dict(os.environ, {"T_FLAG": "1"}):
@@ -278,7 +268,7 @@ class UploadReplies(unittest.TestCase):
         with mock.patch.object(upload_data, "REPORT_UPLOAD", False), \
                 mock.patch.object(upload_data.requests, "post", side_effect=AssertionError("request sent")):
             self.assertEqual(upload_data.upload_report_result(report, name)["status"], "skipped")
-            self.assertIsNone(upload_data.upload_report(report, name))
+            self.assertIsNone(upload_data.upload_report_result(report, name).get("url"))
         with mock.patch.object(upload_data, "REPORT_UPLOAD", True):
             ok = Resp(200, {"report": {"status": "ok", "url": "https://up.invalid/reports/x.txt"}})
             with mock.patch.object(upload_data.requests, "post", return_value=ok):

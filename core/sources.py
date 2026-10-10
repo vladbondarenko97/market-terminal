@@ -420,7 +420,7 @@ def ishares_slv(s):
         d = re.search(r'"formattedAsOfDate":"([^"]+)"', t[m.end():m.end() + 600])
         return float(m.group(1).replace(",", "")), (d.group(1) if d else None)
     oz, oz_date = field("Ounces in Trust")
-    prem, prem_date = field("Premium/Discount")
+    prem, _ = field("Premium/Discount")
     if oz is None:
         raise SourceUnavailable("ishares", "parse", "ounces in trust not found")
     from datetime import datetime as _dt

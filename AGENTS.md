@@ -80,7 +80,7 @@ Breaking one of these is a bug, even if the tests pass.
 
 Leave the legacy compatibility scripts (`tactical_ruling.py`, `dump_data.py`, `market_reader.py`,
 `institutional_scanner.py`, `parse_volume.py`, `update_inventory.py`) as thin wrappers. Standalone tools
-(`alphaflow/`, `deployment_engine.py`, `index.html`, `options_api.py`, `find_options.py`) are outside
+(`alphaflow/`, `deployment_engine.py`, `index.html`) are outside
 the pipeline; do not wire them in. The full list is in
 [docs/architecture.md](docs/architecture.md#repository-map).
 

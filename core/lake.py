@@ -6,7 +6,6 @@ data: migrate() replaces it when its stored definition differs from LATEST_SNAPS
 through one process-wide lock and short transactions; no transaction is held open across network requests.
 """
 import hashlib
-import io
 import json
 import math
 import sqlite3
@@ -330,15 +329,6 @@ def load_payload(conn, payload_id):
         return None, None
     content = decompress(row["content"]) if row["compression"] == "zlib" else row["content"]
     return row, content
-
-
-def load_payload_frame(conn, payload_id):
-    """Rebuild a captured CSV payload (options chains, trades, OHLCV) as a DataFrame."""
-    import pandas as pd
-    row, content = load_payload(conn, payload_id)
-    if row is None:
-        return None
-    return pd.read_csv(io.BytesIO(content))
 
 
 def log_fetch(conn, *, run_id, source, request, started_at, elapsed_ms, outcome, http_status=None,

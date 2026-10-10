@@ -76,7 +76,7 @@ means `main_pipeline.py`; "terminal" means `options_whale/api_router.py`.
 
 | Variable | Default / alias | Read by | When empty |
 |---|---|---|---|
-| `DATABENTO_API_KEY` | `""`. Legacy alias: `DB_API_KEY` (used when this is unset or blank) | `config.DATABENTO_API_KEY` for the pipeline (`core/collect.py`, `core/sources.py databento_trades()`); `config.require_databento_key()` in `options_whale/api_router.py` (first dark pool request); `setup.sh`; `alphaflow/engine.py` | Pipeline: the SPY and SLV block-trade flow sections report `missing`; the run continues. Terminal: the server starts, and `/api/darkpool` answers 503 naming the missing key. `setup.sh` warns. |
+| `DATABENTO_API_KEY` | `""`. Legacy alias: `DB_API_KEY` (used when this is unset or blank) | `config.DATABENTO_API_KEY` for the pipeline (`core/collect.py`, `core/sources.py databento_trades()`); `config.DATABENTO_API_KEY` in `options_whale/api_router.py` `databento_client()` (first dark pool request); `setup.sh`; `alphaflow/engine.py` | Pipeline: the SPY and SLV block-trade flow sections report `missing`; the run continues. Terminal: the server starts, and `/api/darkpool` answers 503 naming the missing key. `setup.sh` warns. |
 | `FRED_API_KEY` | `""` | `core/collect.py` (macro series, Forecast Lab inputs, CPI dates) | Every FRED series reports `missing`. This includes the high-yield spread, so **VMRI shows `INCOMPLETE DATA`** (its credit input comes from FRED). Forecast Lab cards 5 and 6 lose their FRED inputs, and card 7 loses the CPI dates. |
 | `EIA_API_KEY` | `""` | `core/sources.py eia_weekly()` | The public EIA `.xls` history file is used instead. Nothing is lost. |
 | `GOLD_API_KEY` | `""` | `core/collect.py _spot()` (goldapi.io spot silver) | `prices.silver_spot` reports `missing`; the futures-minus-spot basis is empty. |
@@ -85,8 +85,7 @@ means `main_pipeline.py`; "terminal" means `options_whale/api_router.py`.
 **Databento key.** Fill `DATABENTO_API_KEY`. `DB_API_KEY` is the name an older version used; it still works. Every
 reader (the pipeline, the terminal, AlphaFlow, `setup.sh`) goes through `config.DATABENTO_API_KEY`, which takes the
 alias whenever `DATABENTO_API_KEY` is unset or blank, so a `.env` copied from the template with
-`DATABENTO_API_KEY=` blank and only `DB_API_KEY` filled works everywhere. `config.require_databento_key()` returns the
-key or raises `EnvironmentError`. The terminal creates its Databento client on the first `/api/darkpool` request.
+`DATABENTO_API_KEY=` blank and only `DB_API_KEY` filled works everywhere. The terminal creates its Databento client on the first `/api/darkpool` request.
 
 `ALPHA_VANTAGE_KEY` was removed: nothing read it. A leftover line in `.env` is ignored.
 
@@ -213,8 +212,8 @@ empty. Every run tries the import again.
   `int_env("NAME", default, minimum=, maximum=)` (a number) or `flag_env("NAME")` (a switch that needs exactly `1`),
   add the variable to `.env.example` with a comment, and add a row to the table above. Other code imports the
   constant (`config.NAME`); tests patch it on the module that uses it.
-- Importing `config` must stay free of side effects: no folders, no network, no credential checks. Code that cannot
-  run without a key asks for it when it starts (`config.require_databento_key()`).
+- Importing `config` must stay free of side effects: no folders, no network, no credential checks. Code that needs a key
+  checks the constant when it needs it and reports it missing (the terminal's `databento_client()`).
 - Never hardcode a data path or a key. Use `config.DATA_DIR`, `config.DB_PATH` and `config.daily_dir()`.
 - A missing optional key must give `status: "missing"` with a reason, never a made-up value.
 

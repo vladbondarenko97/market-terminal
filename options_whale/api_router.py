@@ -906,7 +906,7 @@ def api_war_room():
     if len(scores) >= 20:
         when = pd.to_datetime(df.loc[scores.index, 'Datetime'], errors='coerce', format='mixed').dropna()
         lo, hi = math.floor(scores.min() / 10) * 10, math.ceil(max(scores.max(), 360) / 10) * 10
-        counts, edges = np.histogram(scores, bins=30, range=(lo, hi))
+        counts, _ = np.histogram(scores, bins=30, range=(lo, hi))
         history = {
             "n": int(len(scores)), "start": when.min().date().isoformat() if len(when) else None,
             "end": when.max().date().isoformat() if len(when) else None,

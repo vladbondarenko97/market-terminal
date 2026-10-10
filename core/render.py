@@ -1065,7 +1065,7 @@ def _v(x, rnd=None, na="N/A"):
 
 
 def ledger_rows(ctx):
-    P, local = ctx["prices"], ctx["run"]["generated_local"]
+    P = ctx["prices"]
     ts_min = datetime.fromisoformat(ctx["run"]["generated_at"]).astimezone(
         __import__("zoneinfo").ZoneInfo("America/Chicago"))
     stamp = ts_min.strftime("%Y-%m-%d %H:%M")

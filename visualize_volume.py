@@ -5,9 +5,7 @@ Design: one y-scale per panel (no dual axes). Two measures of different scale ar
 the date axis. Light surface for email; categorical slots 1-3 of the validated reference palette.
 """
 import os
-import sys
 import traceback
-from datetime import date, timedelta
 
 import matplotlib
 matplotlib.use("Agg")
