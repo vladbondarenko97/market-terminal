@@ -239,6 +239,7 @@ def _narrative_stage(conn, ctx, run_id, mode, stages):
         stages["narrative"] = {"status": "skipped", "reason": "ASSISTANT_LOCAL_URL is not set"}
         return None, {}
     set_status(stage="narrative")
+    print(f"📝 Briefing: asking the local model {model} (up to {NARRATIVE_BUDGET_S} s; the run continues without it if it does not answer)...", flush=True)
     result = narrative.write(ctx, narrative.chat_local, engine="local", model=model, budget_s=NARRATIVE_BUDGET_S)
     files, path = save_narrative(conn, result)
     stages["narrative"] = {"status": result["status"], "reason": result["reason"], "seconds": result["seconds"], "model": model,
