@@ -41,6 +41,12 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **Chaos / Peace long history** (`chaos_v1`, October 2026): new key `chaos.long` (history span, eras, stress episodes, the regime study,
+  chart markers) and new observations `chaos.score`, one per day back to 1930. `chaos.election` now follows the next general election
+  and carries `kind` (it reads 2026-11-03 until 60 trading days after it, as before); `chaos.event_study` gained presidential rows, rows
+  for the score itself and the keys `kind` and `unit`, with the midterm rows unchanged. The score formula and every existing value are
+  unchanged, so the version stays `chaos_v1`. The run makes up to nine more requests when its long captures are over 30 days old
+  (full daily histories of SPY and seven volatility indices, and FRED `USEPUINDXD` and `USREC`).
 - **Card statistics moved into the run** (`eagle_premium_v1`, `paper_physical_history_v1`, October 2026): the Silver Eagle premium statistics,
   the units-sold flow, the dealer-book summary and the paper:physical history statistics are computed by the pipeline and stored
   (`ebay.premium`, `ebay.flow`, `ebay.book`, `paper_physical.history`). They were worked out per request by `/api/arbitrage_history` and in the browser. Same definitions and the same

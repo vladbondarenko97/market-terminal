@@ -720,12 +720,217 @@ function renderInventories(j) {
 // ---------------------------------------------------------------- full screen
 // ---------------------------------------------------------------- 14. Chaos / Peace (ctx["chaos"]: stored, nothing live)
 const CH_COL = { peace: '#199e70', neutral: '#a1a1aa', stress: '#c98500', chaos: '#d95926' };
+// History (GET /api/chaos/history, loaded once per page) as a zoomable linear-time chart. The helpers up to CH_PURE_END are pure
+// data shaping with no DOM, so they can be run under node; the chart, its plugin and the pointer handling follow them.
+const CH_DAY = 864e5, CH_MIN_SPAN = 30 * CH_DAY;
+const CH_RANGES = { '6M': 183, '1Y': 365, '5Y': 1826, '20Y': 7305, 'MAX': null };
+const CH_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const chRegime = v => (v === null || v === undefined) ? null : v <= -30 ? 'peace' : v <= 30 ? 'neutral' : v <= 60 ? 'stress' : 'chaos';
+const chPoints = h => h.t.map((d, i) => ({ x: d * CH_DAY, y: h.score[i] }));
+const chDate = ms => { const d = new Date(ms); return `${CH_MON[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`; };
+// keep [min, max] inside [lo, hi] with a span of at least 30 days (or the whole data, when it is shorter)
+function chClamp(min, max, lo, hi) {
+    const span = Math.min(Math.max(max - min, CH_MIN_SPAN), hi - lo), m = Math.min(Math.max(min, lo), hi - span);
+    return [m, m + span];
+}
+const chRange = (key, lo, hi) => CH_RANGES[key] == null ? [lo, hi] : chClamp(hi - CH_RANGES[key] * CH_DAY, hi, lo, hi);
+// k < 1 zooms in; the point under `at` stays where it is
+const chZoom = (min, max, at, k, lo, hi) => {
+    const ns = Math.min(Math.max((max - min) * k, CH_MIN_SPAN), hi - lo), f = (at - min) / (max - min);
+    return chClamp(at - f * ns, at - f * ns + ns, lo, hi);
+};
+const chPan = (min, max, d, lo, hi) => chClamp(min + d, max + d, lo, hi);
+// index of the stored day nearest to `day` (t is ascending)
+function chIndex(t, day) {
+    let a = 0, b = t.length - 1;
+    while (a < b) { const m = (a + b) >> 1; if (t[m] < day) a = m + 1; else b = m; }
+    return a > 0 && day - t[a - 1] < t[a] - day ? a - 1 : a;
+}
+const chFind = (items, ms) => items.find(x => ms >= x.a && ms <= x.b) || null;
+// episodes, recessions and elections as millisecond ranges; an ongoing episode runs to the end of the data
+function chMarks(long, hi) {
+    const m = (long && long.markers) || {};
+    return { ep: ((long && long.episodes) || []).map(e => ({ a: Date.parse(e.start), b: e.end ? Date.parse(e.end) : hi, start: e.start, reg: e.peak_regime })),
+             rc: (m.recessions || []).map(r => ({ a: Date.parse(r[0]), b: Date.parse(r[1]) })),
+             el: (m.elections || []).map(e => ({ x: Date.parse(e.date), kind: e.kind })) };
+}
+// about six ticks, on year / month / day starts (the axis is linear on milliseconds)
+function chTicks(min, max) {
+    const span = max - min, out = [], put = v => { if (v >= min && v <= max) out.push(v); };
+    if (span > 3 * 365 * CH_DAY) {
+        const step = [1, 2, 5, 10, 20, 25, 50].find(s => span / (s * 365.25 * CH_DAY) <= 7) || 100;
+        for (let y = Math.floor(new Date(min).getUTCFullYear() / step) * step; Date.UTC(y, 0, 1) <= max; y += step) put(Date.UTC(y, 0, 1));
+    } else if (span > 122 * CH_DAY) {
+        const step = [1, 2, 3, 6].find(s => span / (s * 30.44 * CH_DAY) <= 7) || 12, d = new Date(min);
+        for (let k = Math.floor((d.getUTCFullYear() * 12 + d.getUTCMonth()) / step) * step; Date.UTC(Math.floor(k / 12), k % 12, 1) <= max; k += step) put(Date.UTC(Math.floor(k / 12), k % 12, 1));
+    } else {
+        const step = ([1, 2, 5, 7, 14, 21].find(s => span / (s * CH_DAY) <= 7) || 30) * CH_DAY;
+        for (let v = Math.ceil(min / step) * step; v <= max; v += step) put(v);
+    }
+    return out;
+}
+function chTickLabel(v, span) {
+    const d = new Date(v);
+    return span > 3 * 365 * CH_DAY ? String(d.getUTCFullYear()) : span > 122 * CH_DAY ? `${CH_MON[d.getUTCMonth()]} ${d.getUTCFullYear()}` : `${CH_MON[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+// ---- CH_PURE_END
+
+const CH = { state: 'idle', msg: '', hist: null, range: '5Y', show: { ep: true, el: true, rc: true }, marks: { ep: [], rc: [], el: [] }, view: null };
+async function chLoad() {
+    CH.state = 'loading';
+    try {
+        const json = await fetchJson(`${API_BASE}/api/chaos/history`);
+        const d = json.data;
+        if (json.status !== 'success' || !d || !(d.t || []).length) throw new Error(json.message || 'no rows');
+        CH.hist = { t: d.t, used: d.used || [], pts: chPoints(d), lo: d.t[0] * CH_DAY, hi: d.t[d.t.length - 1] * CH_DAY, first: d.first };
+        CH.state = 'ok';
+    } catch (err) { CH.state = 'failed'; CH.msg = err.message; CH.at = Date.now(); }
+    if (FC.data && FC.data.chaos) renderChaos(FC.data);
+}
+
+// Backgrounds (recessions, stress episodes, election days) and the regime names, drawn around the line. Reads CH live, so the
+// checkboxes only need chart.update().
+const chPlugin = {
+    id: 'chBands',
+    beforeDatasetsDraw(chart) {
+        const { ctx, chartArea: a, scales: { x } } = chart, px = v => x.getPixelForValue(v), M = CH.marks;
+        ctx.save(); ctx.beginPath(); ctx.rect(a.left, a.top, a.width, a.height); ctx.clip();
+        const band = (r, col) => { const l = px(r.a), w = Math.max(px(r.b) - l, 1); ctx.fillStyle = col; ctx.fillRect(l, a.top, w, a.height); };
+        if (CH.show.rc) M.rc.forEach(r => band(r, 'rgba(161,161,170,0.10)'));
+        if (CH.show.ep) M.ep.forEach(r => band(r, r.reg === 'chaos' ? 'rgba(217,89,38,0.12)' : 'rgba(201,133,0,0.10)'));
+        const vis = M.el.filter(e => e.x >= x.min && e.x <= x.max);
+        if (CH.show.el && vis.length < 40) {
+            ctx.font = '8px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.lineWidth = 1;
+            vis.forEach(e => {
+                const p = Math.round(px(e.x)) + 0.5, pres = e.kind === 'presidential';
+                ctx.strokeStyle = pres ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.14)'; ctx.setLineDash(pres ? [] : [3, 3]);
+                ctx.beginPath(); ctx.moveTo(p, a.top); ctx.lineTo(p, a.bottom); ctx.stroke();
+                ctx.setLineDash([]); ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fillText(pres ? 'P' : 'M', p, a.top + 2);
+            });
+        }
+        ctx.restore();
+    },
+    afterDraw(chart) {
+        const { ctx, chartArea: a, scales: { y } } = chart;
+        ctx.save(); ctx.font = '8px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'top'; ctx.fillStyle = 'rgba(161,161,170,0.75)';
+        [['chaos', 100], ['stress', 60], ['neutral', 30], ['peace', -30]].forEach(([n, top]) => ctx.fillText(n, a.right - 4, y.getPixelForValue(top) + 2));
+        ctx.restore();
+    },
+};
+function chApply(chart, view) {
+    CH.view = view;
+    chart.options.scales.x.min = view[0]; chart.options.scales.x.max = view[1];
+    chart.update('none');
+}
+function chBuild() {
+    const H = CH.hist;
+    fcChart('fc14Chart', { type: 'line',
+        data: { datasets: [{ label: 'Chaos / Peace score', data: H.pts, parsing: false, normalized: true, borderColor: CH_COL.neutral, borderWidth: 1.25,
+                             pointRadius: 0, pointHoverRadius: 3, spanGaps: false,
+                             segment: { borderColor: s => (CH_COL[chRegime(s.p1.parsed.y)] || CH_COL.neutral) + ((H.used[chIndex(H.t, s.p1.parsed.x / CH_DAY)] ?? 9) < 4 ? '73' : '') } }] },
+        plugins: [chPlugin],
+        options: { parsing: false, interaction: { mode: 'nearest', axis: 'x', intersect: false },     // decimation needs parsing off on the chart too
+            plugins: { legend: { display: false }, decimation: { enabled: true, algorithm: 'min-max' },
+                tooltip: { mode: 'nearest', axis: 'x', intersect: false, displayColors: false, callbacks: {
+                    title: c => c[0] ? chDate(c[0].parsed.x) : '',
+                    label: c => { const i = chIndex(H.t, c.parsed.x / CH_DAY), tot = FC.data?.chaos?.components_total ?? 12;
+                        return [`Score ${fcNum(c.parsed.y, 1)} · ${chRegime(c.parsed.y)}`, `${H.used[i] ?? '—'} of ${tot} components`]; },
+                    afterBody: c => { const ms = c[0].parsed.x, e = chFind(CH.marks.ep, ms), r = chFind(CH.marks.rc, ms);
+                        return [e ? `Stress episode since ${e.start}` : '', r ? 'US recession (NBER)' : ''].filter(Boolean); } } } },
+            scales: { x: axis({ type: 'linear', min: CH.view[0], max: CH.view[1], bounds: 'data',
+                                afterBuildTicks: s => { s.ticks = chTicks(s.min, s.max).map(value => ({ value })); },
+                                ticks: { color: FC_COL.ink2, font: { size: 9 }, autoSkip: false, maxRotation: 0, callback: function (v) { return chTickLabel(v, this.max - this.min); } } }),
+                      y: axis({ min: -100, max: 100, afterBuildTicks: s => { s.ticks = [-100, -30, 0, 30, 60, 100].map(value => ({ value })); } }) } } });
+}
+// wheel zooms around the cursor, one pointer pans, two pointers pinch, double-click goes back to the selected range
+function chWire(el) {
+    const cv = document.getElementById('fc14Chart'), chart = FC.charts.fc14Chart, H = CH.hist;
+    if (!cv || !chart) return;
+    const at = cx => chart.scales.x.getValueForPixel(cx - cv.getBoundingClientRect().left);
+    const zoom = (cx, k) => chApply(chart, chZoom(CH.view[0], CH.view[1], at(cx), k, H.lo, H.hi));
+    cv.addEventListener('wheel', e => { e.preventDefault(); zoom(e.clientX, Math.pow(1.25, Math.max(-3, Math.min(3, e.deltaY / 100)))); }, { passive: false });
+    const ptr = new Map();
+    cv.addEventListener('pointerdown', e => { ptr.set(e.pointerId, e.clientX); cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener('pointermove', e => {
+        if (!ptr.has(e.pointerId)) return;
+        const before = [...ptr.values()], prev = ptr.get(e.pointerId);
+        ptr.set(e.pointerId, e.clientX);
+        const now = [...ptr.values()], span = CH.view[1] - CH.view[0];
+        if (now.length === 1) chApply(chart, chPan(CH.view[0], CH.view[1], -(e.clientX - prev) * span / chart.chartArea.width, H.lo, H.hi));
+        else if (now.length === 2 && before[0] !== before[1] && now[0] !== now[1]) zoom((now[0] + now[1]) / 2, Math.abs(before[0] - before[1]) / Math.abs(now[0] - now[1]));
+    });
+    ['pointerup', 'pointercancel'].forEach(t => cv.addEventListener(t, e => ptr.delete(e.pointerId)));
+    cv.addEventListener('dblclick', () => chApply(chart, chRange(CH.range, H.lo, H.hi)));
+    el.querySelectorAll('[data-r]').forEach(b => b.onclick = () => {
+        CH.range = b.dataset.r;
+        el.querySelectorAll('[data-r]').forEach(x => x.classList.toggle('active', x === b));
+        chApply(chart, chRange(CH.range, H.lo, H.hi));
+    });
+    el.querySelectorAll('[data-k]').forEach(b => b.onchange = () => { CH.show[b.dataset.k] = b.checked; chart.update('none'); });
+    el.querySelectorAll('[data-ea]').forEach(r => r.onclick = () => chApply(chart, chClamp(+r.dataset.ea - 60 * CH_DAY, +r.dataset.eb + 60 * CH_DAY, H.lo, H.hi)));
+}
+// the section above the tables: the long chart once it is stored, else the 60-day line with a one-line reason
+function chHistory(c) {
+    const lg = c.long && c.long.status === 'fresh' ? c.long : null, mk = (lg && lg.markers) || {};
+    if (CH.state !== 'ok') {
+        const note = CH.state === 'failed' ? `Long history not stored yet: ${fcEsc(CH.msg)}` : 'Loading the long history…';
+        return `${(c.history || []).length > 1 ? '<div class="fc-chart"><canvas id="fc14Chart"></canvas></div>' : ''}<div class="fc-muted">${note}</div>`;
+    }
+    const eras = (lg && lg.eras) || [], four = eras.find(e => e.used >= 4);
+    const btn = Object.keys(CH_RANGES).map(k => `<button data-r="${k}" class="${k === CH.range ? 'active' : ''}">${k}</button>`).join('');
+    const tog = (k, l, off, why) => `<label class="ch-tog" ${off ? `title="${fcEsc(why)}"` : ''}><input type="checkbox" data-k="${k}" ${CH.show[k] && !off ? 'checked' : ''} ${off ? 'disabled' : ''}> ${l}</label>`;
+    return `<div class="fc-sub">HISTORY · ${fcEsc(String(CH.hist.first).slice(0, 4))} to today · wheel or pinch to zoom, drag to pan, double-click to reset</div>
+        <div class="ch-ctl"><div class="fc-seg">${btn}</div>${tog('ep', 'Episodes')}${tog('el', 'Elections')}${tog('rc', 'Recessions', !mk.recessions, mk.recessions_reason || 'not available')}</div>
+        <div class="ch-chart"><canvas id="fc14Chart"></canvas></div>
+        ${eras.length ? `<div class="fc-note">Components over time: ${eras.map(e => `${e.used} from ${fcEsc(String(e.from).slice(0, 4))}`).join(' · ')}.
+            ${four ? `Before ${fcEsc(String(four.from).slice(0, 4))}, the score has fewer than four components (S&amp;P 500 realised volatility and drawdown first), so it swings to the extremes more easily; those years are drawn fainter.` : ''}</div>` : ''}`;
+}
+const chGradeRank = { tested: 2, thin: 1, none: 0 };
+const chGradeCls = g => g === 'tested' ? 'fc-pos' : g === 'thin' ? 'fc-warn' : 'fc-muted';
+// regime watch: where the score stands against the stress-episode rule, and what history says about it
+function chWatch(c) {
+    const lg = c.long;
+    if (!lg) return '';
+    const st = lg.study;
+    if (fcFailed(lg) || fcFailed(st)) return `<div class="fc-muted">Regime watch unavailable${(st && (st.reason || st.message)) || lg.reason ? ': ' + fcEsc((st && (st.reason || st.message)) || lg.reason) : ''}</div>`;
+    const s = st.state || {}, d = st.durations || {}, per = st.period || {}, yr = String(per.first || '').slice(0, 4);
+    const sgn = v => v == null ? '—' : `${v > 0 ? '+' : ''}${fcNum(v, 1)} pts`;
+    const cell = (x, bold) => { const t = !x || x.p == null ? '—' : `${fcPctF(x.p, 0)} (n ${fcNum(x.n, 0)})`; return `<td>${bold ? `<b>${t}</b>` : t}</td>`; };
+    const calm = !s.in_episode;
+    const rates = (st.base_rates || []).map(r => `<tr><td style="text-align:left">within ${r.horizon} trading days</td>${cell(r.peace, calm && s.regime === 'peace')}${cell(r.neutral, calm && s.regime === 'neutral')}${cell(r.all, false)}</tr>`).join('');
+    const hz = h => !h || h.hit == null ? '—' : `${fcPctF(h.hit, 0)} vs ${fcPctF(h.base, 0)} · n ${fcNum(h.n, 0)} · t ${fcNum(h.t, 1)}`;
+    const sig = (st.signals || []).map(x => {
+        const g = [x.h20, x.h60].map(h => (h && h.grade) || 'none').sort((p, q) => chGradeRank[q] - chGradeRank[p])[0];
+        return `<tr title="${fcEsc(x.definition)}"><td style="text-align:left">${fcEsc(x.label)}</td>
+            <td>${x.active == null ? '—' : x.active ? '<span class="fc-neg">ON</span>' : '<span class="fc-muted">off</span>'}</td><td>${hz(x.h20)}</td><td>${hz(x.h60)}</td><td class="${chGradeCls(g)}">${fcEsc(g)}</td></tr>`;
+    }).join('');
+    const eps = (lg.episodes || []).filter(e => !per.first || e.start >= per.first);
+    const top = eps.filter(e => e.end).sort((p, q) => q.peak - p.peak).slice(0, 12).concat(eps.filter(e => !e.end)).sort((p, q) => q.start < p.start ? -1 : 1);
+    const epRows = top.map(e => `<tr data-ea="${Date.parse(e.start)}" data-eb="${e.end ? Date.parse(e.end) : (CH.hist ? CH.hist.hi : Date.parse(lg.last))}">
+        <td style="text-align:left">${fcEsc(e.start)}</td><td>${e.end ? fcEsc(e.end) : 'ongoing'}</td><td>${fcNum(e.days, 0)}</td>
+        <td style="color:${CH_COL[e.peak_regime] || 'inherit'}">${fcNum(e.peak, 0)}</td><td>${fcEsc(e.peak_date)}</td></tr>`).join('');
+    return `<div class="fc-sub" style="margin-top:6px">REGIME WATCH · a stress episode starts when the score is above 30 for 3 days in a row</div>
+        <div class="fc-kpis">
+            ${kpi('State', `<span style="color:${calm ? CH_COL.peace : CH_COL.stress}">${calm ? 'CALM' : 'STRESS EPISODE'}</span>`, `since ${fcEsc(s.since)} · ${fcNum(s.days, 0)} trading days`)}
+            ${kpi('Room to the stress line', calm ? `${fcNum(s.to_stress, 1)} pts` : '—', `score ${fcNum(s.score, 1)} · stress starts above 30 for 3 days`)}
+            ${kpi('20-day change', sgn(s.change_20d), '', fcCls(s.change_20d == null ? null : -s.change_20d))}
+            ${kpi('Typical lengths', `${fcNum(d.median_episode_days, 0)} d episode · ${fcNum(d.median_calm_days, 0)} d calm`, `${fcNum(d.episodes, 0)} episodes since ${fcEsc(yr)}`)}
+        </div>
+        <div class="fc-sub">HOW OFTEN A STRESS EPISODE BEGAN (calm days since ${fcEsc(yr)})</div>
+        <table class="fc-table"><tr><th style="text-align:left">Horizon</th><th>From peace</th><th>From neutral</th><th>Any calm day</th></tr>${rates}</table>
+        <div class="fc-sub">EARLY-WARNING CONDITIONS · fixed in advance, tested on the same history</div>
+        <table class="fc-table"><tr><th style="text-align:left">Condition</th><th>Now</th><th>Within 20 days</th><th>Within 60 days</th><th>Evidence</th></tr>${sig}</table>
+        <div class="fc-note">${fcEsc(st.note || '')}</div>
+        <div class="fc-sub">STRESS EPISODES · the 12 highest peaks, plus any ongoing one · click a row to zoom the chart to it</div>
+        <table class="fc-table ch-ep"><tr><th style="text-align:left">Start</th><th>End</th><th>Days</th><th>Peak</th><th>Peak date</th></tr>${epRows}</table>`;
+}
 function renderChaos(j) {
     const c = j.chaos, el = document.getElementById('fc14');
     if (!c) { el.innerHTML = missing({ reason: 'no chaos data in this run yet (runs after the next pipeline run)' }); return; }
     const miss = fcFailed(c);
     const e = c.election || {}, n = e.trading_days_to;
-    const mid = n === undefined || n === null ? '—' : n >= 0 ? `${n} trading days to the midterm` : `${-n} trading days after the midterm`;
+    const what = e.kind === 'presidential' ? 'the presidential election' : 'the midterm';
+    const mid = n === undefined || n === null ? '—' : n >= 0 ? `${n} trading days to ${what}` : `${-n} trading days after ${what}`;
     const comps = Object.values(c.components || {});
     const compRows = Object.entries(c.components || {}).map(([k, x]) => x.status === 'fresh'
         ? `<tr><td style="text-align:left">${fcEsc(x.label)}</td><td>${fcNum(x.value, 3)}</td><td class="${fcCls(x.z)}">${fcNum(x.z, 2)}</td><td>${fcEsc(x.as_of)}</td></tr>`
@@ -735,22 +940,28 @@ function renderChaos(j) {
         ? `<tr><td style="text-align:left">${fcEsc(x.label)}</td><td>${fcNum(x.level, 1)} <span class="fc-muted">${fcEsc(x.unit)}</span></td><td class="${fcCls(x.change_20d)}">${fcNum(x.change_20d, 1)}</td><td>${fcEsc(x.as_of)}</td></tr>`
         : `<tr><td style="text-align:left">${fcEsc(x.label)}</td><td colspan="3" class="fc-muted" style="text-align:left">missing: ${fcEsc(x.reason)}</td></tr>`).join('');
     const es = c.event_study || {};
-    const esRows = (es.rows || []).map(x => `<tr><td style="text-align:left">${fcEsc(x.series)}</td><td>${fcEsc(x.window)}</td><td>${x.n}</td><td>${fcPct(x.mean_pct, 2)}</td><td>${fcPct(x.base_mean_pct, 2)}</td>
+    // rows for both kinds and the score series (unit pts); an old snapshot has midterm rows only
+    const kindOf = x => x.kind || 'midterm', series = [];
+    (es.rows || []).forEach(x => series.includes(x.series) || series.push(x.series));
+    const mean = (v, u) => u === 'pts' ? (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(2)} pts`) : fcPct(v, 2);
+    const esRows = (es.rows || []).map((x, i) => [x, i]).sort((a, b) => series.indexOf(a[0].series) - series.indexOf(b[0].series)
+        || (kindOf(a[0]) === 'midterm' ? 0 : 1) - (kindOf(b[0]) === 'midterm' ? 0 : 1) || a[1] - b[1]).map(([x]) => `<tr><td style="text-align:left">${fcEsc(kindOf(x))}</td><td>${fcEsc(x.series)}</td><td>${fcEsc(x.window)}</td><td>${x.n}</td><td>${mean(x.mean_pct, x.unit)}</td><td>${mean(x.base_mean_pct, x.unit)}</td>
         <td>${x.hit_rate == null ? '—' : fcPctF(x.hit_rate, 0)} / ${x.base_hit_rate == null ? '—' : fcPctF(x.base_hit_rate, 0)}</td><td>${fcNum(x.t, 2)}</td><td>${fcEsc(x.grade)}</td></tr>`).join('');
     const ls = c.lever_study || {};
     const lsRows = (ls.rows || []).map(x => x.status === 'fresh'
         ? `<tr title="${fcEsc(x.definition)}"><td style="text-align:left">${fcEsc(x.lever)}</td><td>${x.n} / ${x.n_base}</td><td>${fcPct(x.median_pct, 1)} / ${fcPct(x.base_median_pct, 1)}</td><td>${fcPct(x.mean_pct, 1)} / ${fcPct(x.base_mean_pct, 1)}</td><td>${fcNum(x.t, 2)}</td><td>${fcEsc(x.grade)}</td></tr>`
         : `<tr><td style="text-align:left">${fcEsc(x.lever)}</td><td colspan="5" class="fc-muted" style="text-align:left">missing: ${fcEsc(x.reason)}</td></tr>`).join('');
-    const head = miss ? `<div class="fc-kpis">${kpi('Chaos / Peace', '—', fcEsc(c.reason || c.status))}${kpi('Components', `0 of ${c.components_total ?? 12}`)}${kpi('Midterm', fcEsc(mid))}</div>`
+    const head = miss ? `<div class="fc-kpis">${kpi('Chaos / Peace', '—', fcEsc(c.reason || c.status))}${kpi('Components', `0 of ${c.components_total ?? 12}`)}${kpi('Election', fcEsc(mid))}</div>`
         : `<div class="fc-kpis">
             ${kpi('Score', `<span style="color:${CH_COL[c.regime] || 'inherit'}">${fcNum(c.score, 0)}</span>`, `${fcEsc(c.regime)} · mean z ${fcNum(c.mean_z, 2)} · as of ${fcEsc(c.as_of)}`)}
             ${kpi('Components', `${c.components_used} of ${c.components_total}`, Object.keys(c.components_missing || {}).length ? fcEsc(Object.keys(c.components_missing).length + ' missing, listed below') : 'all present')}
-            ${kpi('Midterm', fcEsc(mid), `election ${fcEsc(e.date)} · ${e.tracking ? 'tracking' : 'not tracking'} until ${fcEsc(e.track_until)}`)}
+            ${kpi('Election', fcEsc(mid), `election ${fcEsc(e.date)} · ${e.tracking ? 'tracking' : 'not tracking'} until ${fcEsc(e.track_until)}`)}
             ${c.prev ? kpi('Previous day', fcNum(c.prev.score, 0), `${fcEsc(c.prev.regime)}${c.regime_changed ? ' · REGIME CHANGED' : ''}`, c.regime_changed ? 'fc-neg' : '') : ''}
             ${(c.drivers || []).map(d => kpi(fcEsc(d.label), `${d.z > 0 ? '+' : ''}${fcNum(d.z, 1)}z`, `value ${fcNum(d.value, 3)} · largest moves`, fcCls(d.z))).join('')}
         </div>
-        ${(c.history || []).length > 1 ? '<div class="fc-chart"><canvas id="fc14Chart"></canvas></div>' : ''}`;
+        ${chHistory(c)}`;
     el.innerHTML = `${head}
+        ${miss ? '' : chWatch(c)}
         <div class="fc-note">${fcEsc(c.model || '')}</div>
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
             <div><div class="fc-sub">COMPONENTS (${comps.filter(x => x.status === 'fresh').length} used) · z = distance from its own 3-year average</div>
@@ -759,15 +970,21 @@ function renderChaos(j) {
                 <table class="fc-table"><tr><th style="text-align:left">Lever</th><th>Level</th><th>4w change</th><th>As of</th></tr>${lvRows || '<tr><td colspan="4" class="fc-muted">none</td></tr>'}</table>
                 <div class="fc-note">${fcEsc(lv.note || '')}</div></div>
         </div>
-        <div class="fc-sub" style="margin-top:2px">MIDTERM ELECTION WINDOWS · day 0 = first trading day on or after election day · mean return, other windows, up-rate (midterm / other), t</div>
-        ${esRows ? `<table class="fc-table"><tr><th style="text-align:left">Series</th><th>Window</th><th>n</th><th>Mean</th><th>Other windows</th><th>Up-rate</th><th>t</th><th>Grade</th></tr>${esRows}</table>`
+        <div class="fc-sub" style="margin-top:2px">ELECTION WINDOWS · day 0 = first trading day on or after election day · mean return, other windows, up-rate (midterm / other), t</div>
+        ${esRows ? `<table class="fc-table"><tr><th style="text-align:left">Kind</th><th>Series</th><th>Window</th><th>n</th><th>Mean</th><th>Other windows</th><th>Up-rate</th><th>t</th><th>Grade</th></tr>${esRows}</table>`
                  : missing(es)}
         <div class="fc-note">${fcEsc(es.note || '')}</div>
         <div class="fc-sub" style="margin-top:2px">LEVERS BEFORE ELECTIONS · 60 days to election day, election years vs the same dates in odd years (n = years) · hover for the definition</div>
         ${lsRows ? `<table class="fc-table"><tr><th style="text-align:left">Lever</th><th>n / odd</th><th>Median / odd</th><th>Mean / odd</th><th>t</th><th>Grade</th></tr>${lsRows}</table>` : missing(ls)}
         <div class="fc-note">${fcEsc(ls.note || '')} ${Object.keys(c.source_errors || {}).length ? '⚠ source issues: ' + fcEsc(Object.keys(c.source_errors).join(', ')) : ''}</div>`;
     const h = c.history || [];
-    if (!miss && h.length > 1) fcChart('fc14Chart', { type: 'line', data: { labels: h.map(x => x[0]), datasets: [
+    if (!miss && (CH.state === 'idle' || (CH.state === 'failed' && Date.now() - CH.at > 60000))) chLoad();     // a failed load is retried a minute later
+    if (!miss && CH.state === 'ok') {
+        const lo = CH.hist.lo, hi = CH.hist.hi;
+        CH.marks = chMarks(c.long && c.long.status === 'fresh' ? c.long : null, hi);
+        CH.view = chRange(CH.range, lo, hi);
+        chBuild(); chWire(el);
+    } else if (!miss && h.length > 1) fcChart('fc14Chart', { type: 'line', data: { labels: h.map(x => x[0]), datasets: [
         { label: 'Chaos / Peace score', data: h.map(x => x[1]), borderColor: FC_COL.blue, pointRadius: 0, borderWidth: 2 }] },
         options: { scales: { x: axis({ ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 6 } }), y: axis({ suggestedMin: -100, suggestedMax: 100 }) } } });
 }
@@ -815,10 +1032,16 @@ const FC_FAQ = {
                '<b>Components x of 12</b>: a reading with under 3 years of history, or no observation in the last 10 days, is left out and listed with its reason. The score always says how many it used. Equity put/call and SPY short-sale share start from the day they were first stored, so they are listed as missing until 3 years have accumulated.',
                '<b>z</b>: how many standard deviations the latest value is from its own 3-year average, limited to ±3. Positive = more stress for every reading.',
                '<b>Levers</b>: liquidity, reserves, the Strategic Petroleum Reserve and Treasury issuance and buybacks. They sit beside the score and are not part of it.',
-               '<b>Midterm tables</b>: how the S&amp;P 500 and the VIX behaved in windows around past midterm elections compared with all other windows of the same length. Only about 19 midterms exist (9 for the VIX), so the best grade is "thin". The lever table compares the 60 days before November elections in election years with the same dates in odd years.'],
+               '<b>Election tables</b>: how the S&amp;P 500, the VIX and the score itself behaved in windows around past midterm and presidential elections compared with all other windows of the same length. Only about 19 midterms and 19 presidential elections exist (fewer for the VIX), so the best grade is "thin". The lever table compares the 60 days before November elections in election years with the same dates in odd years.',
+               '<b>History chart</b>: the score since the first stored day, line coloured by regime. Grey bands are US recessions (NBER), amber bands are stress episodes (orange when the episode peaked in chaos). Dashed lines are midterm elections (M), solid lines presidential ones (P); they appear once fewer than 40 are in view. Wheel or pinch zooms, drag pans, double-click or a range button resets. The number of components grows over the decades (shown under the chart), so early years are not comparable with recent ones.',
+               '<b>Regime watch</b>: a stress episode begins when the score is above 30 for 3 days in a row. The base-rate table counts, over calm days, how often one began within 20, 60 and 120 trading days, split by whether the day was peace or neutral. The early-warning table gives four conditions and how often an episode began after them compared with any calm day; it says how often, not that one will begin now. Click an episode to zoom to it.'],
         caveats: ['The thresholds are conventions, not calibrated. A high score is a description of the readings, not a prediction.',
                   'The policy-uncertainty series is noisy and is published every day including weekends; it enters as a 7-day mean.',
-                  'Election-window statistics come from few years, overlap each other and say nothing about why prices moved.'] },
+                  'Election-window statistics come from few years, overlap each other and say nothing about why prices moved.',
+                  'Before the 1990s the score has two or three components (S&amp;P 500 realised volatility and drawdown alone at first); it swings to the extremes more easily than in recent years.',
+                  'The episode rule and the four early-warning conditions are fixed in advance, not fitted to this history.',
+                  'Consecutive days overlap, so the t-values of the early-warning table are optimistic; treat "tested" as a description of the past, not a forecast.',
+                  'There are few elections and few episodes, so every election or episode statistic rests on a small count.'] },
     fc13: { title: '13 · Edge lab — FAQ',
         what: 'Runs the published edges (short-term reversal, post-earnings drift, turn of the month, trend, 12-month momentum, volatility premium, overnight vs intraday) against any ticker\'s own price history. For each one it says whether it is active now and whether it actually worked on that ticker. QUERY analyses any symbol without saving it; + TRACK adds it to the matrix.',
         read: ['<b>Matrix glyphs</b>: ▲ active and bullish, ▼ active and bearish, ● active with no direction, · inactive, – cannot be tested. Green/red/amber = the edge is active and measured on this ticker; grey = it is on but has no measured edge.',

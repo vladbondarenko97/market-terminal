@@ -21,7 +21,12 @@ CLIP = 3.0
 # ponytail: fixed, uncalibrated cut-offs. score = 50 * mean z (clipped to +-100); regimes split it at -30 / 30 / 60. Not fitted to any outcome.
 SCALE = 50.0
 REGIMES = ((-30, "peace"), (30, "neutral"), (60, "stress"))      # score <= bound -> name; above the last bound -> "chaos"
-ELECTION = date(2026, 11, 3)
+# ponytail: fixed episode rules, not fitted to any outcome: an episode starts on the 3rd consecutive day above 30 and ends on the 5th consecutive day below 15.
+EPISODE_START_BOUND, EPISODE_START_DAYS = 30, 3
+EPISODE_END_BOUND, EPISODE_END_DAYS = 15, 5
+STUDY_MIN_COMPONENTS = 4          # study period: the days on which at least this many components counted
+STUDY_MIN_DAYS = 500
+HORIZONS = (20, 60, 120)
 TRACK_TRADING_DAYS = 60
 HISTORY_DAYS = 60
 LABELS = {
@@ -195,31 +200,37 @@ def election_day(year):
     return d + timedelta(days=1)
 
 
-def _event_study(gspc, vix):
-    gspc, vix = _clean(gspc), _clean(vix)
+def _event_study(gspc, vix, score=None):
+    gspc, vix, score = _clean(gspc), _clean(vix), _clean(score)
     windows = {"-30..-1": (-31, -1), "0..+5": (-1, 5), "+6..+60": (5, 60), "0..+250": (-1, 250)}
     rows = []
-    for name, ser, first in (("S&P 500", gspc, 1950), ("VIX", vix, 1990)):
-        if ser is None or (ser := ser[ser.index >= f"{first}-01-01"]).empty:
-            continue
-        mids = []
-        for y in range(first, ser.index[-1].year + 1):
-            if y % 4 == 2:
-                p = ser.index.searchsorted(pd.Timestamp(election_day(y)))
-                if p < len(ser) and (ser.index[p] - pd.Timestamp(election_day(y))).days < 7:
-                    mids.append(ser.index[p])
-        for wname, (a, b) in windows.items():
-            ret = (ser.shift(-b) / ser.shift(-a) - 1).dropna()
-            sig = ret[ret.index.isin(mids)]
-            g = grade(sig, ret[~ret.index.isin(mids)])
-            rows.append({"series": name, "window": wname, "n": g["n"], "mean_pct": g["avg"], "base_mean_pct": g["bavg"], "hit_rate": g["p"],
-                         "base_hit_rate": g["base"], "t": g["t"], "grade": g["edge"]})
+    for kind, mod in (("midterm", 2), ("presidential", 0)):
+        for name, ser, first in (("S&P 500", gspc, 1950), ("VIX", vix, 1990), ("Chaos / Peace score", score, 0)):
+            if ser is None or (ser := ser[ser.index >= f"{max(first, 1900)}-01-01"]).empty:
+                continue
+            pts = name == "Chaos / Peace score"
+            elect = []
+            for y in range(max(first, ser.index[0].year), ser.index[-1].year + 1):
+                if y % 4 == mod:
+                    p = ser.index.searchsorted(pd.Timestamp(election_day(y)))
+                    if p < len(ser) and (ser.index[p] - pd.Timestamp(election_day(y))).days < 7:
+                        elect.append(ser.index[p])
+            for wname, (a, b) in windows.items():
+                ret = (ser.shift(-b) - ser.shift(-a)).dropna() if pts else (ser.shift(-b) / ser.shift(-a) - 1).dropna()
+                sig = ret[ret.index.isin(elect)]
+                g = grade(sig, ret[~ret.index.isin(elect)])
+                sc = (lambda v: None if v is None else v / 100) if pts else (lambda v: v)     # grade() scales means by 100
+                rows.append({"series": name, "window": wname, "n": g["n"], "mean_pct": sc(g["avg"]), "base_mean_pct": sc(g["bavg"]),
+                             "hit_rate": g["p"], "base_hit_rate": g["base"], "t": g["t"], "grade": g["edge"], "kind": kind,
+                             "unit": "pts" if pts else "pct"})
     if not rows:
         return {"status": "missing", "reason": "long ^GSPC / ^VIX history not available", "rows": []}
-    n = max(r["n"] for r in rows)
-    return {"status": "fresh", "rows": rows, "midterms": n,
-            "note": f"Descriptive. {n} midterm elections at most, so the best grade possible is 'thin'. Day 0 is the first trading day on or after "
-                    "election day; windows are returns of the close in trading days. Only a higher mean than the other windows can earn a grade, "
+    nmax = lambda k: max([r["n"] for r in rows if r["kind"] == k] or [0])
+    n, npres = nmax("midterm"), nmax("presidential")
+    return {"status": "fresh", "rows": rows, "midterms": n, "presidentials": npres,
+            "note": f"Descriptive. {n} midterm and {npres} presidential elections at most, so the best grade possible is 'thin'. Day 0 is the first "
+                    "trading day on or after election day; windows are changes of the close in trading days (percent returns for prices, points "
+                    "for the Chaos / Peace score). Only a higher mean than the other windows can earn a grade, "
                     "and neighbouring windows overlap, so the t-values are optimistic. It says nothing about why."}
 
 
@@ -260,17 +271,190 @@ def _lever_study(inp):
                     "It says nothing about why a lever moved."}
 
 
-def _election(today):
-    d = ELECTION
-    if today <= d:
-        n = sum(1 for i in range(1, (d - today).days + 1) if MC.is_trading_day(today + timedelta(days=i)))
-    else:
-        n = -sum(1 for i in range(1, (today - d).days + 1) if MC.is_trading_day(d + timedelta(days=i)))
+def _track_until(d):
     until, k = d, 0
     while k < TRACK_TRADING_DAYS:
         until += timedelta(days=1)
         k += MC.is_trading_day(until)
-    return {"date": d.isoformat(), "trading_days_to": n, "track_until": until.isoformat(), "tracking": today <= until}
+    return until
+
+
+def _election(today):
+    """The US general election whose tracking window (TRACK_TRADING_DAYS after it) has not ended yet."""
+    d = next(election_day(y) for y in range(today.year - today.year % 2 - 2, today.year + 6, 2) if _track_until(election_day(y)) >= today)
+    if today <= d:
+        n = sum(1 for i in range(1, (d - today).days + 1) if MC.is_trading_day(today + timedelta(days=i)))
+    else:
+        n = -sum(1 for i in range(1, (today - d).days + 1) if MC.is_trading_day(d + timedelta(days=i)))
+    until = _track_until(d)
+    return {"date": d.isoformat(), "kind": "presidential" if d.year % 4 == 0 else "midterm", "trading_days_to": n,
+            "track_until": until.isoformat(), "tracking": today <= until}
+
+
+def election_markers(first_year, today):
+    """Every general election day from first_year up to and including the next one after `today`."""
+    out, y = [], first_year + first_year % 2
+    while True:
+        d = election_day(y)
+        out.append({"date": d.isoformat(), "kind": "presidential" if y % 4 == 0 else "midterm"})
+        if d > today:
+            return out
+        y += 2
+
+
+def long_history(series):
+    """The score on every day SPY traded: same formula as build(), each component counted only from SPAN_DAYS after its series begins
+    and while its last observation is at most STALE_DAYS old. -> DataFrame[score, used, hot, inverted] indexed by date."""
+    raw = {k: _clean(v) for k, v in (series or {}).items()}
+    if raw.get("SPY") is None:
+        return pd.DataFrame(columns=["score", "used", "hot", "inverted"])
+    idx, tol = raw["SPY"].index, pd.Timedelta(days=STALE_DAYS)
+    zs = {}
+    for key, (needs, build_) in SPECS.items():
+        if any(raw.get(n) is None for n in needs):
+            continue
+        s = build_(raw).dropna()
+        if s.empty:
+            continue
+        z = _zscore(s).dropna().reindex(idx, method="ffill", tolerance=tol)
+        zs[key] = z.where(idx >= s.index[0] + pd.Timedelta(days=SPAN_DAYS))
+    z = pd.DataFrame(zs, index=idx)
+    used = z.notna().sum(axis=1)
+    inv = None
+    if raw.get("VIX") is not None and raw.get("VIX3M") is not None:
+        inv = (_ratio(raw["VIX"], raw["VIX3M"]) >= 1).astype(float).reindex(idx, method="ffill", tolerance=tol)
+    out = pd.DataFrame({"score": (SCALE * z.mean(axis=1)).clip(-100, 100), "used": used, "hot": (z >= 1).sum(axis=1),
+                        "inverted": pd.Series([None if inv is None or pd.isna(v) else bool(v) for v in (inv if inv is not None else idx)], index=idx, dtype=object)})
+    return out[out["used"] > 0].astype({"used": int, "hot": int})
+
+
+def _episode_spans(sc):
+    """-> [(start_i, end_i or None)] by the fixed rules above."""
+    spans, above, below, cur = [], 0, 0, None
+    for i, v in enumerate(sc):
+        if cur is None:
+            above = above + 1 if v > EPISODE_START_BOUND else 0
+            if above == EPISODE_START_DAYS:
+                cur, below = i, 0
+        else:
+            below = below + 1 if v < EPISODE_END_BOUND else 0
+            if below == EPISODE_END_DAYS:
+                spans.append((cur, i))
+                cur, above = None, 0
+    if cur is not None:
+        spans.append((cur, None))
+    return spans
+
+
+def _episode_rows(hist, spans):
+    sc, last, rows = hist["score"].to_numpy(), len(hist) - 1, []
+    for s, e in spans:
+        stop = last if e is None else e
+        pk = s + int(np.argmax(sc[s:stop + 1]))
+        rows.append({"start": hist.index[s].date().isoformat(), "end": None if e is None else hist.index[e].date().isoformat(),
+                     "days": stop - s + 1, "peak": round(float(sc[pk]), 1), "peak_date": hist.index[pk].date().isoformat(),
+                     "peak_regime": regime_of(sc[pk]), "used": int(hist["used"].iloc[s])})
+    return rows
+
+
+def episodes(hist):
+    return _episode_rows(hist, _episode_spans(hist["score"].to_numpy()))
+
+
+SIGNALS = (
+    ("momentum", "Score rose 15 points or more over 20 trading days"),
+    ("near_bound", "Score between 15 and 30 (the upper half of neutral)"),
+    ("breadth", "A third or more of the available components at z >= 1"),
+    ("term_inversion", "VIX at or above VIX3M (front of the volatility curve inverted)"),
+)
+
+
+def regime_study(hist):
+    h = hist[hist["used"] >= STUDY_MIN_COMPONENTS]
+    n = len(h)
+    if n < STUDY_MIN_DAYS:
+        return {"status": "missing", "reason": f"under {STUDY_MIN_DAYS} days with {STUDY_MIN_COMPONENTS} or more components"}
+    sc = h["score"]
+    spans = _episode_spans(sc.to_numpy())
+    in_ep = np.zeros(n, bool)
+    starts = np.zeros(n)
+    for s, e in spans:
+        in_ep[s:(n if e is None else e + 1)] = True
+        starts[s] = 1
+    calm = ~in_ep
+    cs = np.concatenate([[0], np.cumsum(starts)])
+
+    def outcome(hz):          # 1 when an episode starts within the next hz days; NaN where that is not known yet
+        out = np.full(n, np.nan)
+        i = np.arange(n - hz)
+        out[i] = (cs[i + hz + 1] - cs[i + 1] > 0)
+        return pd.Series(out, index=h.index)
+    regime = sc.map(regime_of)
+    base_rates = []
+    for hz in HORIZONS:
+        o = outcome(hz)
+        row = {"horizon": hz}
+        for name, m in (("all", calm), ("peace", calm & (regime == "peace").to_numpy()), ("neutral", calm & (regime == "neutral").to_numpy())):
+            v = o[m].dropna()
+            row[name] = {"p": round(float(v.mean()), 3) if len(v) else None, "n": len(v)}
+        base_rates.append(row)
+    chg = sc - sc.shift(20)
+    conds = {"momentum": (chg >= 15).where(chg.notna()),
+             "near_bound": ((sc >= EPISODE_END_BOUND) & (sc <= EPISODE_START_BOUND)).astype(float),
+             "breadth": (h["hot"] / h["used"] >= 1 / 3).astype(float),
+             "term_inversion": h["inverted"].map(lambda v: np.nan if pd.isna(v) else float(v)).astype(float)}
+    isc = pd.Series(calm, index=h.index)
+    signals = []
+    for key, label in SIGNALS:
+        c = conds[key].astype(float)
+        onset = (c == 1) & (c.shift(1).rolling(20).max() == 0) & isc
+        today = None if not calm[-1] or pd.isna(c.iloc[-1]) else bool(c.iloc[-1] == 1)
+        sg = {"key": key, "label": label, "definition": label, "active": today}
+        for hz in HORIZONS[:2]:
+            o = outcome(hz)
+            ok = o.notna() & isc & c.notna()
+            g = grade(o[ok & onset], o[ok])
+            sg[f"h{hz}"] = {"n": g["n"], "hit": g["p"], "base": g["base"], "t": g["t"], "grade": g["edge"]}
+        signals.append(sg)
+    ends = [e for _, e in spans if e is not None]
+    gaps = [spans[i + 1][0] - spans[i][1] for i in range(len(spans) - 1)]
+    med = lambda x: float(np.median(x)) if len(x) else None
+    ep_in = bool(in_ep[-1])
+    si = spans[-1][0] if ep_in else (min(spans[-1][1] + 1, n - 1) if spans else 0)
+    now = float(sc.iloc[-1])
+    state = {"in_episode": ep_in, "since": h.index[si].date().isoformat(), "days": n - si, "score": round(now, 1), "regime": regime_of(now),
+             "change_20d": round(now - float(sc.iloc[-21]), 1) if n > 20 else None, "to_stress": None if ep_in else round(EPISODE_START_BOUND - now, 1)}
+    return {"status": "fresh", "reason": None,
+            "period": {"first": h.index[0].date().isoformat(), "last": h.index[-1].date().isoformat(), "days": n, "min_components": STUDY_MIN_COMPONENTS},
+            "state": state,
+            "durations": {"episodes": len(ends), "median_episode_days": med([e - s + 1 for s, e in spans if e is not None]),
+                          "median_calm_days": med(gaps)},
+            "base_rates": base_rates, "signals": signals,
+            "note": "Descriptive counts over one history. The conditions were fixed in advance and not fitted to it, neighbouring days overlap "
+                    "so a t-value is optimistic, and none of it says why an episode began. A score that is already near the line, or already has "
+                    "several components elevated, needs less to cross it, so part of those two hit rates is arithmetic. A hit rate of 50% "
+                    "also means the other half were false alarms."}
+
+
+def _long_block(inp, today):
+    """-> (block, frame, study-period score). Never raises: this block must not take the rest of the chaos block down."""
+    L = inp.get("long")
+    if not L:
+        return {"status": "missing", "reason": "no long history inputs"}, None, None
+    try:
+        hist = long_history(L.get("series"))
+        if hist.empty:
+            return {"status": "missing", "reason": "SPY history not available: " + str((L.get("errors") or {}).get("yahoo:SPY:max") or "no data")}, None, None
+        eras = hist["used"].cummax()
+        eras = [{"from": d.date().isoformat(), "used": int(k)} for d, k in eras[eras.diff().fillna(1) > 0].items()]
+        rec = L.get("recessions")
+        return ({"status": "fresh", "reason": None, "first": hist.index[0].date().isoformat(), "last": hist.index[-1].date().isoformat(),
+                 "days": len(hist), "eras": eras, "episodes": episodes(hist), "study": regime_study(hist),
+                 "markers": {"elections": election_markers(hist.index[0].year, today), "recessions": rec,
+                             "recessions_reason": None if rec else (L.get("errors") or {}).get("fred:USREC") or "recession ranges not available"}},
+                hist, hist["score"][hist["used"] >= STUDY_MIN_COMPONENTS])
+    except Exception as e:
+        return {"status": "missing", "reason": f"{type(e).__name__}: {e}"}, None, None
 
 
 def build(inp):
@@ -286,7 +470,9 @@ def build(inp):
            "components_missing": {k: c["reason"] for k, c in comps.items() if c["status"] != "fresh"},
            "election": _election(today), "source_errors": dict(inp.get("errors") or {})}
     fresh = {k: c for k, c in comps.items() if c["status"] == "fresh"}
-    study = _event_study(inp.get("gspc"), inp.get("vix_long"))
+    lg, frame, lscore = _long_block(inp, today)
+    out["long"], out["_long_frame"] = lg, frame
+    study = _event_study(inp.get("gspc"), inp.get("vix_long"), lscore)
     if not fresh or not zday.iloc[-1].notna().any():
         first = next(iter(out["components_missing"].items()), None)
         return {"status": "missing", "reason": "no component has 3 years of recent data (0 of 12 usable" + (f"; {first[0]}: {first[1]}" if first else "") + ")",

@@ -212,6 +212,28 @@ def fred_series(s, series_id, api_key, limit=300):
     return obs, pid
 
 
+def fred_long_series(s, series_id, api_key):
+    """Full history of a FRED series as a date-indexed Series (the API's page limit is 100000 rows). Built on fred_series, so it goes
+    through SourceSession.fetch(); a stored capture of the same request under 30 days old is reused (offline: any stored capture)."""
+    if not api_key and not s.offline:
+        raise SourceUnavailable("fred", "not_configured", "FRED_API_KEY missing")
+    with lake._WRITE_LOCK:
+        row = s.conn.execute("""SELECT payload_id, fetched_at FROM v2_payloads WHERE kind = 'fred_series' AND request_json LIKE ? AND request_json LIKE ?
+                                ORDER BY fetched_at DESC LIMIT 1""", (f'%"series_id": "{series_id}"%', '%"limit": 100000%')).fetchone()
+    obs = None
+    if row and row["fetched_at"]:
+        f = datetime.fromisoformat(row["fetched_at"])
+        if s.offline or datetime.now(timezone.utc) - (f if f.tzinfo else f.replace(tzinfo=timezone.utc)) < timedelta(days=30):
+            with lake._WRITE_LOCK:
+                _, content = lake.load_payload(s.conn, row["payload_id"])
+            if content:
+                s._count(s.cache_hits, "fred")
+                obs = [{"date": o["date"], "value": float(o["value"])} for o in json.loads(content).get("observations", []) if o["value"] != "."]
+    if obs is None:
+        obs, _ = fred_series(s, series_id, api_key, limit=100000)
+    return pd.Series({pd.Timestamp(o["date"]): o["value"] for o in obs}, dtype=float).sort_index()
+
+
 def fred_deltas(obs, divisor=1.0):
     """Legacy offsets in valid observations (1D=1, 1W=5, 1M=21, 1Y=252). Missing history -> None."""
     if not obs:

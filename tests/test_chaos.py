@@ -99,7 +99,7 @@ class Scoring(unittest.TestCase):
         self.assertEqual(e["trading_days_to"], 17)                    # Oct 12..Nov 3 less no holiday: NYSE is open on Columbus Day
         self.assertTrue(e["tracking"])
         self.assertLess(CH._election(date(2026, 11, 5))["trading_days_to"], 0)
-        self.assertFalse(CH._election(date(2027, 3, 1))["tracking"])
+        self.assertEqual(CH._election(date(2027, 3, 1))["date"], "2028-11-07")      # the 2026 tracking window has ended
 
 
 class Studies(unittest.TestCase):
@@ -126,7 +126,7 @@ class Studies(unittest.TestCase):
 
     def test_event_study_with_no_effect_is_not_graded(self):
         st = CH._event_study(self.prices("1950-01-02", 11), self.prices("1990-01-02", 12))
-        self.assertEqual([r["grade"] for r in st["rows"] if r["window"] == "0..+5"], ["none", "none"])
+        self.assertEqual([r["grade"] for r in st["rows"] if r["window"] == "0..+5" and r["kind"] == "midterm"], ["none", "none"])
 
     def test_event_study_without_history_is_missing(self):
         self.assertEqual(CH._event_study(None, None)["status"], "missing")

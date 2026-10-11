@@ -1253,9 +1253,86 @@ def build_chaos(conn, session, run_id, today, frames):
     with ThreadPoolExecutor(max_workers=3) as pool:
         f1, f2, f3 = pool.submit(yahoo), pool.submit(fred_all), pool.submit(others)
         long, _, rest = f1.result(), f2.result(), f3.result()
-    return CH.build({"today": today, "series": series, "series_errors": serr, "fred": fred, "spr": rest.get("spr"),
-                     "auctions": rest.get("auctions"), "buybacks": rest.get("buybacks"), "gspc": long.get("gspc"),
-                     "vix_long": long.get("vix_long"), "errors": {k: lake.redact(v) for k, v in errors.items()}})
+    lerr = {}
+    try:
+        lsr, lrec = _chaos_long_inputs(session, series, long.get("gspc"), lerr)
+    except Exception as e:              # the long history must never take the 3-year block down
+        lsr, lrec, lerr["long"] = {}, None, f"{type(e).__name__}: {e}"
+    out = CH.build({"today": today, "series": series, "series_errors": serr, "fred": fred, "spr": rest.get("spr"),
+                    "auctions": rest.get("auctions"), "buybacks": rest.get("buybacks"), "gspc": long.get("gspc"),
+                    "vix_long": long.get("vix_long"), "errors": {k: lake.redact(v) for k, v in errors.items()},
+                    "long": {"series": lsr, "recessions": lrec, "errors": {k: lake.redact(v) for k, v in lerr.items()}} if lsr else None})
+    frame = out.pop("_long_frame", None)
+    if frame is not None and len(frame):
+        try:
+            _record_chaos_scores(conn, run_id, frame)
+        except Exception as e:          # a failed write must not cost the run its chaos block; the next run stores the days again
+            out["source_errors"]["lake:chaos.score"] = lake.redact(f"{type(e).__name__}: {e}")
+    return out
+
+
+def _overlay(long, fresh):
+    """The run's fresh series wins on shared dates and extends the (possibly 30 days old) long capture to today."""
+    if fresh is None or not len(fresh):
+        return long
+    fresh = pd.Series(fresh.values, index=pd.DatetimeIndex(fresh.index).tz_localize(None).normalize()) if pd.DatetimeIndex(fresh.index).tz is not None \
+        else pd.Series(fresh.values, index=pd.DatetimeIndex(fresh.index).normalize())
+    return fresh if long is None else pd.concat([long[~long.index.isin(fresh.index)], fresh]).sort_index()
+
+
+def _chaos_long_inputs(session, series, gspc, errors):
+    """-> (full-history series for CH.long_history, recession ranges or None). Failures land in `errors`."""
+    out = {}
+    for name, sym in {**CHAOS_YAHOO, "SPY": "SPY"}.items():
+        try:
+            out[name] = _overlay(src.yf_long_history(session, sym), series.get(name))
+        except SourceUnavailable as e:
+            errors[f"yahoo:{sym}:max"] = str(e)
+    if out.get("SPY") is not None and gspc is not None:        # S&P 500 closes scaled onto SPY before SPY began (1993)
+        spy = out["SPY"]
+        g = gspc[gspc.index < spy.index[0]]
+        before = gspc[gspc.index <= spy.index[0]]
+        if len(g) and len(before):
+            out["SPY"] = pd.concat([g * (spy.iloc[0] / before.iloc[-1]), spy])
+    try:
+        out["EPU"] = _overlay(src.fred_long_series(session, "USEPUINDXD", config.FRED_API_KEY), series.get("EPU"))
+    except SourceUnavailable as e:
+        errors["fred:USEPUINDXD:max"] = str(e)
+    for name in ("HY", "PUTCALL", "SHORTVOL"):
+        if series.get(name) is not None:
+            out[name] = series[name]
+    rec = None
+    try:
+        usrec = src.fred_long_series(session, "USREC", config.FRED_API_KEY)
+        rec, start = [], None
+        for d, v in usrec.items():
+            if v >= 0.5 and start is None:
+                start = d
+            elif v < 0.5 and start is not None:
+                rec.append([start.date().isoformat(), (d - pd.Timedelta(days=1)).date().isoformat()])
+                start = None
+        if start is not None:
+            rec.append([start.date().isoformat(), (usrec.index[-1] + pd.offsets.MonthEnd(0)).date().isoformat()])
+    except SourceUnavailable as e:
+        errors["fred:USREC"] = str(e)
+    return out, rec
+
+
+def _record_chaos_scores(conn, run_id, frame):
+    """One `chaos.score` observation per day. dims {"used"} and the value are part of the observation identity, so an unchanged day is a
+    no-op and a day whose score changed becomes a second row (readers take the newest row per date)."""
+    from core import chaos as CH
+    with lake._WRITE_LOCK:
+        have = {r[0][:10]: (r[1], r[2]) for r in conn.execute(
+            "SELECT observed_at, value_num, dims_json FROM v2_observations WHERE metric_id = 'chaos.score' AND derivation = ? "
+            "ORDER BY observed_at, fetched_at", (CH.CHAOS_VERSION,)).fetchall()}
+    recs = []
+    for d, sc, used in zip(frame.index, frame["score"], frame["used"]):
+        iso, sc = d.date().isoformat(), round(float(sc), 2)
+        if have.get(iso) != (sc, lake.dumps({"used": int(used)})):
+            recs.append(lake.obs("chaos.score", iso, value=sc, dims={"used": int(used)}, source="derived", derivation=CH.CHAOS_VERSION,
+                                 time_quality="as_of_date"))
+    lake.record_observations(conn, recs, run_id=run_id)
 
 
 def _spot(session):

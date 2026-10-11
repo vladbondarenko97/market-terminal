@@ -10,7 +10,7 @@ import threading
 import time
 import warnings
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 from xml.dom import minidom
 from xml.sax.saxutils import escape as xml_escape
@@ -29,6 +29,7 @@ if ROOT_DIR not in sys.path:
 
 import config
 from config import DATA_DIR as _DATA_DIR, DB_PATH as _V2_DB_PATH, PROJECT_ROOT as _PROJECT_ROOT
+from core.chaos import CHAOS_VERSION
 from core import forecast as _v2fc, lake as _v2lake, metrics, positions as _v2pos, runlock
 from quant_engine import QuantEngine
 
@@ -1749,6 +1750,12 @@ def api_help():
         <param name="ticker" type="string" default="SPY" description="SPY or SLV; anything else returns 400" />
       </parameters>
     </endpoint>
+    <endpoint method="GET" path="/api/chaos/history" format="json" source="stored">
+      <description>The backdated daily Chaos / Peace score: the newest stored observation per day for the current model version, oldest first, as parallel arrays (t = days since 1970-01-01, score, used = components counted). 503 until a pipeline run has created the database; 404 until a run has stored the history.</description>
+      <parameters>
+        <param name="from" type="string" default="" description="First date to return, YYYY-MM-DD; a bad date is a 400" />
+      </parameters>
+    </endpoint>
     <endpoint method="GET" path="/api/eia_history" format="json" source="stored">
       <description>Weekly EIA stock and days-of-supply history behind Forecast Lab card 11, built from files the pipeline captured.</description>
       <parameters />
@@ -2925,6 +2932,44 @@ def api_chaos():
     if not run or not fc or not fc.get("chaos"):
         return json_error("no Chaos / Peace data yet: run the pipeline", 404)
     return jsonify({"status": "success", "run": run, "as_of": fc["chaos"].get("as_of"), "data": fc["chaos"]})
+
+
+@app.route('/api/chaos/history', methods=['GET'])
+@guarded("Chaos history")
+def api_chaos_history():
+    """The newest stored `chaos.score` observation per date for the current model version, oldest first."""
+    since = request.args.get("from")
+    if since:
+        try:
+            since = date.fromisoformat(since).isoformat()
+        except ValueError:
+            return json_error("from must be a date as YYYY-MM-DD", 400)
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    key = f"chaos_history:{since}"
+    data = data_cache.get(key)
+    if data is None:
+        try:
+            rows = conn.execute("SELECT observed_at, value_num, dims_json FROM v2_observations WHERE metric_id = 'chaos.score' AND derivation = ? "
+                                "AND value_num IS NOT NULL AND observed_at >= ? ORDER BY observed_at, fetched_at",
+                                (CHAOS_VERSION, since or "")).fetchall()
+        except sqlite3.OperationalError as exc:
+            if _uninitialised(exc):
+                return _not_initialised()
+            raise
+        finally:
+            conn.close()
+        newest = {r[0][:10]: (r[1], json.loads(r[2]).get("used")) for r in rows}
+        if not newest:
+            return json_error("no Chaos / Peace history yet: run the pipeline", 404)
+        days = sorted(newest)
+        data = {"version": CHAOS_VERSION, "t": [(date.fromisoformat(d) - date(1970, 1, 1)).days for d in days],
+                "score": [newest[d][0] for d in days], "used": [newest[d][1] for d in days], "first": days[0], "last": days[-1], "n": len(days)}
+        data_cache.set(key, data)
+    else:
+        conn.close()
+    return jsonify({"status": "success", "data": data})
 
 
 _EIA_HISTORY_CACHE = {}
