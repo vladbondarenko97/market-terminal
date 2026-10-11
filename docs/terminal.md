@@ -370,9 +370,19 @@ Three cards are plain rules on stored runs and live Yahoo quotes: no model outpu
 and only a row with tested evidence can say "Buy"; hover any cell for what it means and where it comes from.
 
 - **14 · Chaos / Peace** (`core/chaos.py`, in `/api/forecast` and `/api/chaos`): score from -100 to +100 with regime, components
-  "x of 12", trading days to or after the 2026-11-03 midterm, the three largest z-scores, a 60-day score line, the components table
-  (missing ones show their reason), the lever panel (labelled as outside the score), the midterm event-study table (with n and
-  grade) and the lever-study table. Evidence is thin by construction. Nothing on it is computed in the browser.
+  "x of 12", trading days to or after the next general election (midterm or presidential), the three largest z-scores, the
+  history chart, the regime watch, the components table (missing ones show their reason), the lever panel (labelled as outside
+  the score), the election event-study table (both kinds, with n and grade) and the lever-study table. Nothing on it is
+  computed in the browser.
+  - **History chart** (`/api/chaos/history`): the daily score back to 1930. Range buttons 6M, 1Y, 5Y (default), 20Y, MAX; − and +
+    zoom buttons; ⌘/Ctrl + scroll or a pinch zooms around the cursor, dragging pans, double-click returns to the selected
+    range. A plain scroll still scrolls the page. Three switches turn the stress-episode bands, the election lines (P / M) and
+    the NBER recession bands on and off. Years with fewer than four components are drawn fainter, and a line under the chart
+    says how many components the score had from which year. Until a run has stored the history, the 60-day line is shown.
+  - **Regime watch**: whether the market is calm or in a stress episode and since when, the room to the stress line, the 20-day
+    change, typical episode and calm lengths, how often an episode began within 20, 60 and 120 trading days of a calm day, and
+    four early-warning conditions with whether each is on now (and for how many days), its hit rate against the base rate and
+    its evidence grade. The episode table lists the twelve highest peaks and any ongoing episode; clicking a row zooms the chart.
 - **0 · Signal Watch** (`core/forecast.py: signal_watch`): the triggers the model cards compute (fair value, momentum
   flip, positioning, option pricing, dealer gamma, macro, engine ticket), fired or waiting, with the action. The
   "Chaos/Peace regime" row (from card 14) fires on the run where the regime differs from the previous trading day's; its action

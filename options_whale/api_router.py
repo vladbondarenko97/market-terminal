@@ -2952,7 +2952,7 @@ def api_chaos_history():
     if data is None:
         try:
             rows = conn.execute("SELECT observed_at, value_num, dims_json FROM v2_observations WHERE metric_id = 'chaos.score' AND derivation = ? "
-                                "AND value_num IS NOT NULL AND observed_at >= ? ORDER BY observed_at, fetched_at",
+                                "AND value_num IS NOT NULL AND observed_at >= ? ORDER BY observed_at, obs_id",
                                 (CHAOS_VERSION, since or "")).fetchall()
         except sqlite3.OperationalError as exc:
             if _uninitialised(exc):

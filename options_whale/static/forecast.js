@@ -773,18 +773,39 @@ function chTickLabel(v, span) {
     const d = new Date(v);
     return span > 3 * 365 * CH_DAY ? String(d.getUTCFullYear()) : span > 122 * CH_DAY ? `${CH_MON[d.getUTCMonth()]} ${d.getUTCFullYear()}` : `${CH_MON[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
+// one step of the - / + buttons: dir -1 zooms out, +1 in, around the centre of the visible range
+const chStep = (view, dir, lo, hi) => chZoom(view[0], view[1], (view[0] + view[1]) / 2, dir > 0 ? 1 / 1.25 : 1.25, lo, hi);
+// reload when the snapshot (c.long.last, c.as_of) is newer than the loaded history; never more than once a minute
+function chStale(hi, longLast, asOf, tried, now) {
+    const newer = [longLast, asOf].some(d => d && Date.parse(d) > hi);
+    return newer && !(tried && now - tried < 60000);
+}
+// new data extends the history: a view that ended at the old last day follows to the new one
+const chFollow = (view, oldHi, newHi, lo) => view[1] >= oldHi && newHi > oldHi ? chClamp(view[0], newHi, lo, newHi) : chClamp(view[0], view[1], lo, newHi);
+// the Now cell of an early-warning row; days_on / since may be absent in older data
+function chNow(x) {
+    if (x.active == null) return '—';
+    if (!x.active) return '<span class="fc-muted">off</span>';
+    if (x.days_on == null) return '<span class="fc-neg">ON</span>';
+    if (x.days_on <= 20) return `<span class="fc-neg">ON · day ${x.days_on}</span>`;
+    const d = x.since ? new Date(Date.parse(x.since)) : null;
+    return `<span class="fc-warn">on since ${d ? `${CH_MON[d.getUTCMonth()]} ${d.getUTCDate()}` : '—'} · ${x.days_on} d</span>`;
+}
 // ---- CH_PURE_END
 
 const CH = { state: 'idle', msg: '', hist: null, range: '5Y', show: { ep: true, el: true, rc: true }, marks: { ep: [], rc: [], el: [] }, view: null };
 async function chLoad() {
-    CH.state = 'loading';
+    const old = CH.hist;
+    CH.tried = Date.now();
+    if (!old) CH.state = 'loading';       // with data on screen, keep drawing it until the new arrives
     try {
         const json = await fetchJson(`${API_BASE}/api/chaos/history`);
         const d = json.data;
         if (json.status !== 'success' || !d || !(d.t || []).length) throw new Error(json.message || 'no rows');
         CH.hist = { t: d.t, used: d.used || [], pts: chPoints(d), lo: d.t[0] * CH_DAY, hi: d.t[d.t.length - 1] * CH_DAY, first: d.first };
+        if (old && CH.view) CH.view = chFollow(CH.view, old.hi, CH.hist.hi, CH.hist.lo);
         CH.state = 'ok';
-    } catch (err) { CH.state = 'failed'; CH.msg = err.message; CH.at = Date.now(); }
+    } catch (err) { if (old) CH.hist = old; else { CH.state = 'failed'; CH.msg = err.message; } CH.at = Date.now(); }
     if (FC.data && FC.data.chaos) renderChaos(FC.data);
 }
 
@@ -842,24 +863,28 @@ function chBuild() {
                                 ticks: { color: FC_COL.ink2, font: { size: 9 }, autoSkip: false, maxRotation: 0, callback: function (v) { return chTickLabel(v, this.max - this.min); } } }),
                       y: axis({ min: -100, max: 100, afterBuildTicks: s => { s.ticks = [-100, -30, 0, 30, 60, 100].map(value => ({ value })); } }) } } });
 }
-// wheel zooms around the cursor, one pointer pans, two pointers pinch, double-click goes back to the selected range
+// ctrl/cmd + wheel (or a trackpad pinch) zooms around the cursor, - / + around the centre, one pointer pans, two pointers pinch, double-click goes back to the selected range
 function chWire(el) {
     const cv = document.getElementById('fc14Chart'), chart = FC.charts.fc14Chart, H = CH.hist;
     if (!cv || !chart) return;
     const at = cx => chart.scales.x.getValueForPixel(cx - cv.getBoundingClientRect().left);
     const zoom = (cx, k) => chApply(chart, chZoom(CH.view[0], CH.view[1], at(cx), k, H.lo, H.hi));
-    cv.addEventListener('wheel', e => { e.preventDefault(); zoom(e.clientX, Math.pow(1.25, Math.max(-3, Math.min(3, e.deltaY / 100)))); }, { passive: false });
-    const ptr = new Map();
-    cv.addEventListener('pointerdown', e => { ptr.set(e.pointerId, e.clientX); cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener('wheel', e => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); zoom(e.clientX, Math.pow(1.25, Math.max(-3, Math.min(3, e.deltaY / 100)))); }, { passive: false });
+    const ptr = new Map();       // id -> { x, y, x0, y0, pan }; a pan starts once the move is mostly horizontal
+    cv.addEventListener('pointerdown', e => { ptr.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, pan: false }); cv.setPointerCapture(e.pointerId); });
     cv.addEventListener('pointermove', e => {
-        if (!ptr.has(e.pointerId)) return;
-        const before = [...ptr.values()], prev = ptr.get(e.pointerId);
-        ptr.set(e.pointerId, e.clientX);
-        const now = [...ptr.values()], span = CH.view[1] - CH.view[0];
-        if (now.length === 1) chApply(chart, chPan(CH.view[0], CH.view[1], -(e.clientX - prev) * span / chart.chartArea.width, H.lo, H.hi));
-        else if (now.length === 2 && before[0] !== before[1] && now[0] !== now[1]) zoom((now[0] + now[1]) / 2, Math.abs(before[0] - before[1]) / Math.abs(now[0] - now[1]));
+        const p = ptr.get(e.pointerId);
+        if (!p) return;
+        const before = [...ptr.values()].map(q => q.x), prev = p.x;
+        p.x = e.clientX; p.y = e.clientY;
+        const now = [...ptr.values()].map(q => q.x), span = CH.view[1] - CH.view[0];
+        if (now.length === 1) {
+            if (!p.pan) { const dx = Math.abs(p.x - p.x0), dy = Math.abs(p.y - p.y0); if (dx < 4 || dx <= dy) return; p.pan = true; }
+            chApply(chart, chPan(CH.view[0], CH.view[1], -(e.clientX - prev) * span / chart.chartArea.width, H.lo, H.hi));
+        } else if (now.length === 2 && before[0] !== before[1] && now[0] !== now[1]) zoom((now[0] + now[1]) / 2, Math.abs(before[0] - before[1]) / Math.abs(now[0] - now[1]));
     });
     ['pointerup', 'pointercancel'].forEach(t => cv.addEventListener(t, e => ptr.delete(e.pointerId)));
+    el.querySelectorAll('[data-z]').forEach(b => b.onclick = () => chApply(chart, chStep(CH.view, +b.dataset.z, H.lo, H.hi)));
     cv.addEventListener('dblclick', () => chApply(chart, chRange(CH.range, H.lo, H.hi)));
     el.querySelectorAll('[data-r]').forEach(b => b.onclick = () => {
         CH.range = b.dataset.r;
@@ -879,8 +904,8 @@ function chHistory(c) {
     const eras = (lg && lg.eras) || [], four = eras.find(e => e.used >= 4);
     const btn = Object.keys(CH_RANGES).map(k => `<button data-r="${k}" class="${k === CH.range ? 'active' : ''}">${k}</button>`).join('');
     const tog = (k, l, off, why) => `<label class="ch-tog" ${off ? `title="${fcEsc(why)}"` : ''}><input type="checkbox" data-k="${k}" ${CH.show[k] && !off ? 'checked' : ''} ${off ? 'disabled' : ''}> ${l}</label>`;
-    return `<div class="fc-sub">HISTORY · ${fcEsc(String(CH.hist.first).slice(0, 4))} to today · wheel or pinch to zoom, drag to pan, double-click to reset</div>
-        <div class="ch-ctl"><div class="fc-seg">${btn}</div>${tog('ep', 'Episodes')}${tog('el', 'Elections')}${tog('rc', 'Recessions', !mk.recessions, mk.recessions_reason || 'not available')}</div>
+    return `<div class="fc-sub">HISTORY · ${fcEsc(String(CH.hist.first).slice(0, 4))} to today </div>
+        <div class="ch-ctl"><div class="fc-seg">${btn}</div><div class="fc-seg"><button data-z="-1" title="zoom out">−</button><button data-z="1" title="zoom in">+</button></div>${tog('ep', 'Episodes')}${tog('el', 'Elections')}${tog('rc', 'Recessions', !mk.recessions, mk.recessions_reason || 'not available')}<span class="fc-muted ch-hint">drag to pan · ⌘/Ctrl + scroll or pinch to zoom · double-click to reset</span></div>
         <div class="ch-chart"><canvas id="fc14Chart"></canvas></div>
         ${eras.length ? `<div class="fc-note">Components over time: ${eras.map(e => `${e.used} from ${fcEsc(String(e.from).slice(0, 4))}`).join(' · ')}.
             ${four ? `Before ${fcEsc(String(four.from).slice(0, 4))}, the score has fewer than four components (S&amp;P 500 realised volatility and drawdown first), so it swings to the extremes more easily; those years are drawn fainter.` : ''}</div>` : ''}`;
@@ -902,7 +927,7 @@ function chWatch(c) {
     const sig = (st.signals || []).map(x => {
         const g = [x.h20, x.h60].map(h => (h && h.grade) || 'none').sort((p, q) => chGradeRank[q] - chGradeRank[p])[0];
         return `<tr title="${fcEsc(x.definition)}"><td style="text-align:left">${fcEsc(x.label)}</td>
-            <td>${x.active == null ? '—' : x.active ? '<span class="fc-neg">ON</span>' : '<span class="fc-muted">off</span>'}</td><td>${hz(x.h20)}</td><td>${hz(x.h60)}</td><td class="${chGradeCls(g)}">${fcEsc(g)}</td></tr>`;
+            <td>${chNow(x)}</td><td>${hz(x.h20)}</td><td>${hz(x.h60)}</td><td class="${chGradeCls(g)}">${fcEsc(g)}</td></tr>`;
     }).join('');
     const eps = (lg.episodes || []).filter(e => !per.first || e.start >= per.first);
     const top = eps.filter(e => e.end).sort((p, q) => q.peak - p.peak).slice(0, 12).concat(eps.filter(e => !e.end)).sort((p, q) => q.start < p.start ? -1 : 1);
@@ -919,6 +944,7 @@ function chWatch(c) {
         <div class="fc-sub">HOW OFTEN A STRESS EPISODE BEGAN (calm days since ${fcEsc(yr)})</div>
         <table class="fc-table"><tr><th style="text-align:left">Horizon</th><th>From peace</th><th>From neutral</th><th>Any calm day</th></tr>${rates}</table>
         <div class="fc-sub">EARLY-WARNING CONDITIONS · fixed in advance, tested on the same history</div>
+        <div class="fc-muted" style="font-size:9px">rates are for the first day a condition turns on</div>
         <table class="fc-table"><tr><th style="text-align:left">Condition</th><th>Now</th><th>Within 20 days</th><th>Within 60 days</th><th>Evidence</th></tr>${sig}</table>
         <div class="fc-note">${fcEsc(st.note || '')}</div>
         <div class="fc-sub">STRESS EPISODES · the 12 highest peaks, plus any ongoing one · click a row to zoom the chart to it</div>
@@ -978,11 +1004,12 @@ function renderChaos(j) {
         ${lsRows ? `<table class="fc-table"><tr><th style="text-align:left">Lever</th><th>n / odd</th><th>Median / odd</th><th>Mean / odd</th><th>t</th><th>Grade</th></tr>${lsRows}</table>` : missing(ls)}
         <div class="fc-note">${fcEsc(ls.note || '')} ${Object.keys(c.source_errors || {}).length ? '⚠ source issues: ' + fcEsc(Object.keys(c.source_errors).join(', ')) : ''}</div>`;
     const h = c.history || [];
+    if (!miss && CH.state === 'ok' && chStale(CH.hist.hi, c.long && c.long.status === 'fresh' ? c.long.last : null, c.as_of, CH.tried, Date.now())) chLoad();
     if (!miss && (CH.state === 'idle' || (CH.state === 'failed' && Date.now() - CH.at > 60000))) chLoad();     // a failed load is retried a minute later
     if (!miss && CH.state === 'ok') {
         const lo = CH.hist.lo, hi = CH.hist.hi;
         CH.marks = chMarks(c.long && c.long.status === 'fresh' ? c.long : null, hi);
-        CH.view = chRange(CH.range, lo, hi);
+        CH.view = CH.view ? chClamp(CH.view[0], CH.view[1], lo, hi) : chRange(CH.range, lo, hi);
         chBuild(); chWire(el);
     } else if (!miss && h.length > 1) fcChart('fc14Chart', { type: 'line', data: { labels: h.map(x => x[0]), datasets: [
         { label: 'Chaos / Peace score', data: h.map(x => x[1]), borderColor: FC_COL.blue, pointRadius: 0, borderWidth: 2 }] },
@@ -1033,7 +1060,7 @@ const FC_FAQ = {
                '<b>z</b>: how many standard deviations the latest value is from its own 3-year average, limited to ±3. Positive = more stress for every reading.',
                '<b>Levers</b>: liquidity, reserves, the Strategic Petroleum Reserve and Treasury issuance and buybacks. They sit beside the score and are not part of it.',
                '<b>Election tables</b>: how the S&amp;P 500, the VIX and the score itself behaved in windows around past midterm and presidential elections compared with all other windows of the same length. Only about 19 midterms and 19 presidential elections exist (fewer for the VIX), so the best grade is "thin". The lever table compares the 60 days before November elections in election years with the same dates in odd years.',
-               '<b>History chart</b>: the score since the first stored day, line coloured by regime. Grey bands are US recessions (NBER), amber bands are stress episodes (orange when the episode peaked in chaos). Dashed lines are midterm elections (M), solid lines presidential ones (P); they appear once fewer than 40 are in view. Wheel or pinch zooms, drag pans, double-click or a range button resets. The number of components grows over the decades (shown under the chart), so early years are not comparable with recent ones.',
+               '<b>History chart</b>: the score since the first stored day, line coloured by regime. Grey bands are US recessions (NBER), amber bands are stress episodes (orange when the episode peaked in chaos). Dashed lines are midterm elections (M), solid lines presidential ones (P); they appear once fewer than 40 are in view. ⌘/Ctrl + scroll (or pinch) and the − / + buttons zoom, drag pans, double-click or a range button resets. The number of components grows over the decades (shown under the chart), so early years are not comparable with recent ones.',
                '<b>Regime watch</b>: a stress episode begins when the score is above 30 for 3 days in a row. The base-rate table counts, over calm days, how often one began within 20, 60 and 120 trading days, split by whether the day was peace or neutral. The early-warning table gives four conditions and how often an episode began after them compared with any calm day; it says how often, not that one will begin now. Click an episode to zoom to it.'],
         caveats: ['The thresholds are conventions, not calibrated. A high score is a description of the readings, not a prediction.',
                   'The policy-uncertainty series is noisy and is published every day including weekends; it enters as a 7-day mean.',

@@ -102,7 +102,8 @@ def chaos_rows(block):
             f"{k}: {v}" for k, v in block["components_missing"].items())))
     if el.get("trading_days_to") is not None:
         n = el["trading_days_to"]
-        rows.append(("Midterm", f"Midterm election {el['date']}: " + (f"{n} trading days away" if n >= 0 else f"{-n} trading days ago")))
+        kind = "Presidential" if el.get("kind") == "presidential" else "Midterm"
+        rows.append((kind, f"{kind} election {el['date']}: " + (f"{n} trading days away" if n >= 0 else f"{-n} trading days ago")))
     rec = block.get("record") or {}
     if rec.get("high") and rec.get("low"):
         rows.append(("Chaos 60-day record", f"Chaos/Peace stored {rec['days']}-day record: high {rec['high']['score']:+.1f} on "
@@ -115,12 +116,13 @@ def chaos_rows(block):
     if es.get("status") == "missing":
         rows.append(("Midterm event study", f"Midterm event study missing ({es.get('reason')})"))
     for r in es.get("rows") or []:
+        lab = f"{'Presidential-year' if r.get('kind') == 'presidential' else 'Midterm'} event study {r['series']}"
         if r.get("mean_pct") is None or r.get("base_mean_pct") is None or r.get("hit_rate") is None:      # under 8 cases: grade() gives no stats
-            rows.append((f"Midterm event study {r['series']} {r['window']}",
-                         f"Midterm event study {r['series']} days {r['window']}: too few cases for statistics, n {r['n']}"))
+            rows.append((f"{lab} {r['window']}", f"{lab} days {r['window']}: too few cases for statistics, n {r['n']}"))
             continue
-        rows.append((f"Midterm event study {r['series']} {r['window']}",
-                     f"Midterm event study {r['series']} days {r['window']}: mean {r['mean_pct']:+.1f}% vs {r['base_mean_pct']:+.1f}% "
+        f = (lambda v: f"{v:+.1f} pts") if r.get("unit") == "pts" else (lambda v: f"{v:+.1f}%")
+        rows.append((f"{lab} {r['window']}",
+                     f"{lab} days {r['window']}: mean {f(r['mean_pct'])} vs {f(r['base_mean_pct'])} "
                      f"in other windows, up in {r['hit_rate'] * 100:.0f}% of cases, n {r['n']}, evidence grade {r['grade']}"))
     return rows
 

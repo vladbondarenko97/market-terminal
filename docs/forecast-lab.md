@@ -94,8 +94,13 @@ It is `missing` with a reason when the list is unavailable.
     S&P 500 closes stand in for SPY before 1993 (scaled to join at SPY's first day), so the history starts at the end of
     1930 with one component, has two from 1931, and gains the others as their series begin (`long.eras`). Before the
     early 1990s the score therefore rests on S&P 500 realised volatility and drawdown and reaches the limits easily; the
-    card draws those years fainter. Each run stores the days it has not stored yet, and a day whose score changed
-    because a component arrived late becomes a second row (the newest row per date is the one served).
+    card draws those years fainter. Each run stores the days it has not stored yet. Only the last 10 trading days can be
+    revised (a component that arrives late becomes a new row; the newest row per date is the one served); older days are
+    frozen, so a failed fetch or a sliding 3-year input cannot rewrite the past. For the same reason the first write waits
+    for a run in which every full price history was fetched (`source_errors` says so until then). The three inputs that only ever exist
+    as a 3-year fetch (high-yield spread, equity put/call, SPY short-sale share) therefore join the stored history from
+    about two months before its first run and stay in it from then on. Episodes, eras and the regime study are computed
+    from the stored series, the same one the chart draws.
     The history's newest point is computed from the full series and the card's score from the run's 3-year fetches, so
     the two can differ by a tenth of a point.
   - **Episodes and the regime study** (`long.episodes`, `long.study`). A stress episode starts on the third trading day
@@ -112,12 +117,16 @@ It is `missing` with a reason when the list is unavailable.
     the 60-day line as before.
   - `levers` (net liquidity, bank reserves, Strategic Petroleum Reserve, Treasury bills and coupons offered and
     buybacks accepted over the last 28 days) sit beside the score and are not part of it.
-  - `event_study` compares S&P 500 (1950 on) and VIX (1990 on) returns in four windows around past midterm election days
-    with all other windows of the same length, through `core.watch.grade`. About 19 midterms (9 for the VIX) means the
-    best grade is `thin`. `lever_study` compares the 60 days before November elections in even and odd years, with the
+  - `event_study` compares S&P 500 (1950 on) and VIX (1990 on) returns, and the change of the score itself in points
+    (since it has 4 components), in four windows around past election days with all other windows of the same length,
+    through `core.watch.grade`. Each row carries `kind` (`midterm` or `presidential`) and `unit` (`pct` or `pts`). About
+    19 elections of each kind (9 for the VIX) means the best grade is `thin`. `lever_study` compares the 60 days before November elections in even and odd years, with the
     median beside the mean because one extreme year (a percent change of a small balance) can dominate a mean. Both are
     descriptive and say nothing about why anything moved.
-  - The long ^GSPC and ^VIX histories are reused for 30 days (`yf_long_history()` in `core/sources.py`).
+  - The full daily histories (^GSPC, SPY and the seven volatility indices from Yahoo, `USEPUINDXD` and `USREC` from FRED) are
+    reused for 30 days (`yf_long_history()` and `fred_long_series()` in `core/sources.py`); the run's own 3-year fetches
+    extend them to today. If one of them cannot be fetched, the component still counts on recent days from the 3-year
+    series and the error is listed in `source_errors`.
 - **Card 11.**
   - Eight lines: crude (commercial), distillate/diesel, gasoline, jet fuel, Strategic Petroleum Reserve, Cushing OK,
     propane/propylene and **residual fuel oil**.

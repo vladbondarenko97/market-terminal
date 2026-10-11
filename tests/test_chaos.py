@@ -328,6 +328,12 @@ class Rendering(unittest.TestCase):
         line = render.chaos_line({"chaos": block(series={"VIX": series(last_z=1.0)})})
         self.assertRegex(line, r"^Chaos/Peace: \+\d+ \w+ \(1 of 12 components\); top: VIX \+[\d.]+z; midterm in 17 trading days$")
 
+    def test_the_word_before_the_countdown_follows_the_election_kind(self):
+        from core import render
+        mk = lambda el: {"chaos": {"score": 5.0, "regime": "neutral", "components_used": 3, "components_total": 12, "election": el}}
+        self.assertTrue(render.chaos_line(mk({"trading_days_to": 5})).endswith("; midterm in 5 trading days"))
+        self.assertTrue(render.chaos_line(mk({"kind": "presidential", "trading_days_to": -3})).endswith("; 3 trading days after the presidential"))
+
     def test_signal_watch_row_fires_on_a_regime_change_and_recommends_nothing(self):
         from core import forecast as F
         s = series(last_z=0.0)

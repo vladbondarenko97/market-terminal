@@ -1258,15 +1258,24 @@ def build_chaos(conn, session, run_id, today, frames):
         lsr, lrec = _chaos_long_inputs(session, series, long.get("gspc"), lerr)
     except Exception as e:              # the long history must never take the 3-year block down
         lsr, lrec, lerr["long"] = {}, None, f"{type(e).__name__}: {e}"
+    red = lambda d: {k: lake.redact(v) for k, v in d.items()}
     out = CH.build({"today": today, "series": series, "series_errors": serr, "fred": fred, "spr": rest.get("spr"),
                     "auctions": rest.get("auctions"), "buybacks": rest.get("buybacks"), "gspc": long.get("gspc"),
-                    "vix_long": long.get("vix_long"), "errors": {k: lake.redact(v) for k, v in errors.items()},
-                    "long": {"series": lsr, "recessions": lrec, "errors": {k: lake.redact(v) for k, v in lerr.items()}} if lsr else None})
+                    "vix_long": long.get("vix_long"), "errors": {**red(errors), **red(lerr)},
+                    "long": {"series": lsr, "recessions": lrec, "errors": red(lerr)}})
     frame = out.pop("_long_frame", None)
     if frame is not None and len(frame):
         try:
-            _record_chaos_scores(conn, run_id, frame)
-        except Exception as e:          # a failed write must not cost the run its chaos block; the next run stores the days again
+            # Stored days older than two weeks are never rewritten, so the first write must not happen on a run where a
+            # full price history could not be fetched: every older day would be stored without that component for good.
+            failed = sorted(k for k in lerr if k.startswith("yahoo:"))
+            stored = _record_chaos_scores(conn, run_id, frame, first_write=not failed)
+            if stored is None:
+                out["source_errors"]["lake:chaos.score"] = "history not stored yet: " + ", ".join(failed) + " failed; the next run with all of them stores it"
+            else:
+                out["long"] = CH.long_block(stored, today, lrec, lerr.get("fred:USREC"))
+                out["event_study"] = CH.event_study(long.get("gspc"), long.get("vix_long"), CH.study_score(stored))
+        except Exception as e:          # a failed write or read-back must not cost the run its chaos block; the fresh block stays
             out["source_errors"]["lake:chaos.score"] = lake.redact(f"{type(e).__name__}: {e}")
     return out
 
@@ -1288,6 +1297,8 @@ def _chaos_long_inputs(session, series, gspc, errors):
             out[name] = _overlay(src.yf_long_history(session, sym), series.get(name))
         except SourceUnavailable as e:
             errors[f"yahoo:{sym}:max"] = str(e)
+            if series.get(name) is not None:        # the fresh 3-year series alone keeps the component on recent days
+                out[name] = _overlay(None, series[name])
     if out.get("SPY") is not None and gspc is not None:        # S&P 500 closes scaled onto SPY before SPY began (1993)
         spy = out["SPY"]
         g = gspc[gspc.index < spy.index[0]]
@@ -1298,6 +1309,8 @@ def _chaos_long_inputs(session, series, gspc, errors):
         out["EPU"] = _overlay(src.fred_long_series(session, "USEPUINDXD", config.FRED_API_KEY), series.get("EPU"))
     except SourceUnavailable as e:
         errors["fred:USEPUINDXD:max"] = str(e)
+        if series.get("EPU") is not None:
+            out["EPU"] = _overlay(None, series["EPU"])
     for name in ("HY", "PUTCALL", "SHORTVOL"):
         if series.get(name) is not None:
             out[name] = series[name]
@@ -1318,21 +1331,43 @@ def _chaos_long_inputs(session, series, gspc, errors):
     return out, rec
 
 
-def _record_chaos_scores(conn, run_id, frame):
-    """One `chaos.score` observation per day. dims {"used"} and the value are part of the observation identity, so an unchanged day is a
-    no-op and a day whose score changed becomes a second row (readers take the newest row per date)."""
+def _stored_chaos(conn):
+    """-> {date: [(score, dims), ...]} oldest row first, current model version."""
     from core import chaos as CH
     with lake._WRITE_LOCK:
-        have = {r[0][:10]: (r[1], r[2]) for r in conn.execute(
-            "SELECT observed_at, value_num, dims_json FROM v2_observations WHERE metric_id = 'chaos.score' AND derivation = ? "
-            "ORDER BY observed_at, fetched_at", (CH.CHAOS_VERSION,)).fetchall()}
-    recs = []
-    for d, sc, used in zip(frame.index, frame["score"], frame["used"]):
-        iso, sc = d.date().isoformat(), round(float(sc), 2)
-        if have.get(iso) != (sc, lake.dumps({"used": int(used)})):
-            recs.append(lake.obs("chaos.score", iso, value=sc, dims={"used": int(used)}, source="derived", derivation=CH.CHAOS_VERSION,
-                                 time_quality="as_of_date"))
+        rows = conn.execute("SELECT observed_at, value_num, dims_json FROM v2_observations WHERE metric_id = 'chaos.score' AND derivation = ? "
+                            "AND value_num IS NOT NULL ORDER BY observed_at, obs_id", (CH.CHAOS_VERSION,)).fetchall()
+    out = {}
+    for at, v, dj in rows:
+        out.setdefault(at[:10], []).append((v, json.loads(dj)))
+    return out
+
+
+def _record_chaos_scores(conn, run_id, frame, first_write=True):
+    """Store the computed days, then return the stored series (newest row per date) shaped like long_history's frame.
+    A date with no row is written as computed. A date with rows is rewritten (next `rev`) only inside the last
+    REVISE_TRADING_DAYS of the frame and only when its (score, used, hot, inv) differ from the newest row; older days are frozen.
+    With nothing stored yet and `first_write` false, nothing is written and None is returned."""
+    from core import chaos as CH
+    have, recent, recs = _stored_chaos(conn), set(frame.index[-CH.REVISE_TRADING_DAYS:]), []
+    if not have and not first_write:
+        return None
+    for d, sc, used, hot, inv in zip(frame.index, frame["score"], frame["used"], frame["hot"], frame["inverted"]):
+        iso, sc, used, hot = d.date().isoformat(), round(float(sc), 2), int(used), int(hot)
+        inv = None if inv is None or pd.isna(inv) else bool(inv)
+        rows = have.get(iso) or []
+        if rows:
+            v, dm = rows[-1]
+            if d not in recent or (v, dm.get("used"), dm.get("hot"), dm.get("inv")) == (sc, used, hot, inv):
+                continue
+        recs.append(lake.obs("chaos.score", iso, value=sc, dims={"used": used, "hot": hot, "inv": inv, "rev": len(rows)}, source="derived",
+                             derivation=CH.CHAOS_VERSION, time_quality="as_of_date"))
     lake.record_observations(conn, recs, run_id=run_id)
+    newest = {d: r[-1] for d, r in _stored_chaos(conn).items()}
+    days = sorted(newest)
+    return pd.DataFrame({"score": [newest[d][0] for d in days], "used": [int(newest[d][1].get("used") or 0) for d in days],
+                         "hot": [int(newest[d][1].get("hot") or 0) for d in days], "inverted": [newest[d][1].get("inv") for d in days]},
+                        index=pd.DatetimeIndex(days), dtype=object).astype({"score": float, "used": int, "hot": int})
 
 
 def _spot(session):

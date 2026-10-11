@@ -29,6 +29,8 @@ STUDY_MIN_DAYS = 500
 HORIZONS = (20, 60, 120)
 TRACK_TRADING_DAYS = 60
 HISTORY_DAYS = 60
+REVISE_TRADING_DAYS = 10          # a stored day may be rewritten only this close to the end of the frame: late components arrive within days,
+                                  # while older days must not move when an input fetch fails or a 3-year window slides
 LABELS = {
     "vix": "VIX", "vix_vix3m": "VIX / VIX3M", "vvix": "VVIX", "skew": "SKEW", "move": "MOVE", "hy_spread": "High-yield spread",
     "spy_rv20": "SPY realised vol 20d", "spy_drawdown": "SPY drawdown from 252d high", "epu": "Policy uncertainty (EPU, 7d mean)",
@@ -234,6 +236,9 @@ def _event_study(gspc, vix, score=None):
                     "and neighbouring windows overlap, so the t-values are optimistic. It says nothing about why."}
 
 
+event_study = _event_study
+
+
 def _lever_study(inp):
     fred = {k: _clean(v) for k, v in (inp.get("fred") or {}).items()}
     w, tga, rrp = fred.get("WALCL"), fred.get("WTREGEN"), fred.get("RRPONTSYD")
@@ -409,7 +414,12 @@ def regime_study(hist):
         c = conds[key].astype(float)
         onset = (c == 1) & (c.shift(1).rolling(20).max() == 0) & isc
         today = None if not calm[-1] or pd.isna(c.iloc[-1]) else bool(c.iloc[-1] == 1)
-        sg = {"key": key, "label": label, "definition": label, "active": today}
+        on = (c == 1).to_numpy()
+        k = 0
+        while today and k < n and on[n - 1 - k]:
+            k += 1
+        sg = {"key": key, "label": label, "definition": label, "active": today, "days_on": None if today is None else k,
+              "since": h.index[n - k].date().isoformat() if k else None}
         for hz in HORIZONS[:2]:
             o = outcome(hz)
             ok = o.notna() & isc & c.notna()
@@ -417,7 +427,7 @@ def regime_study(hist):
             sg[f"h{hz}"] = {"n": g["n"], "hit": g["p"], "base": g["base"], "t": g["t"], "grade": g["edge"]}
         signals.append(sg)
     ends = [e for _, e in spans if e is not None]
-    gaps = [spans[i + 1][0] - spans[i][1] for i in range(len(spans) - 1)]
+    gaps = [spans[i + 1][0] - spans[i][1] - 1 for i in range(len(spans) - 1)]
     med = lambda x: float(np.median(x)) if len(x) else None
     ep_in = bool(in_ep[-1])
     si = spans[-1][0] if ep_in else (min(spans[-1][1] + 1, n - 1) if spans else 0)
@@ -433,26 +443,35 @@ def regime_study(hist):
             "note": "Descriptive counts over one history. The conditions were fixed in advance and not fitted to it, neighbouring days overlap "
                     "so a t-value is optimistic, and none of it says why an episode began. A score that is already near the line, or already has "
                     "several components elevated, needs less to cross it, so part of those two hit rates is arithmetic. A hit rate of 50% "
-                    "also means the other half were false alarms."}
+                    "also means the other half were false alarms. The rates describe the first day of a stretch, so a "
+                    "condition that has been on for weeks is past the point they measure."}
+
+
+def long_block(hist, today, rec, rec_reason):
+    """The snapshot's `long` block from a long_history-shaped frame (fresh, or read back from the lake)."""
+    eras = hist["used"].cummax()
+    eras = [{"from": d.date().isoformat(), "used": int(k)} for d, k in eras[eras.diff().fillna(1) > 0].items()]
+    return {"status": "fresh", "reason": None, "first": hist.index[0].date().isoformat(), "last": hist.index[-1].date().isoformat(),
+            "days": len(hist), "eras": eras, "episodes": episodes(hist), "study": regime_study(hist),
+            "markers": {"elections": election_markers(hist.index[0].year, today), "recessions": rec,
+                        "recessions_reason": None if rec else rec_reason or "recession ranges not available"}}
+
+
+def study_score(hist):
+    return hist["score"][hist["used"] >= STUDY_MIN_COMPONENTS]
 
 
 def _long_block(inp, today):
     """-> (block, frame, study-period score). Never raises: this block must not take the rest of the chaos block down."""
     L = inp.get("long")
-    if not L:
-        return {"status": "missing", "reason": "no long history inputs"}, None, None
+    errs = (L or {}).get("errors") or {}
+    if not L or not L.get("series"):
+        return {"status": "missing", "reason": errs.get("long") or "no long history inputs"}, None, None
     try:
         hist = long_history(L.get("series"))
         if hist.empty:
-            return {"status": "missing", "reason": "SPY history not available: " + str((L.get("errors") or {}).get("yahoo:SPY:max") or "no data")}, None, None
-        eras = hist["used"].cummax()
-        eras = [{"from": d.date().isoformat(), "used": int(k)} for d, k in eras[eras.diff().fillna(1) > 0].items()]
-        rec = L.get("recessions")
-        return ({"status": "fresh", "reason": None, "first": hist.index[0].date().isoformat(), "last": hist.index[-1].date().isoformat(),
-                 "days": len(hist), "eras": eras, "episodes": episodes(hist), "study": regime_study(hist),
-                 "markers": {"elections": election_markers(hist.index[0].year, today), "recessions": rec,
-                             "recessions_reason": None if rec else (L.get("errors") or {}).get("fred:USREC") or "recession ranges not available"}},
-                hist, hist["score"][hist["used"] >= STUDY_MIN_COMPONENTS])
+            return {"status": "missing", "reason": "SPY history not available: " + str(errs.get("yahoo:SPY:max") or "no data")}, None, None
+        return long_block(hist, today, L.get("recessions"), errs.get("fred:USREC")), hist, study_score(hist)
     except Exception as e:
         return {"status": "missing", "reason": f"{type(e).__name__}: {e}"}, None, None
 

@@ -74,8 +74,8 @@ SOURCES = OrderedDict([
         "other_sources; each line has the time (Chicago), the feed, a sentiment score and the title. Plus how many feeds answered and the "
         "run time. Says what was published, never why markets moved.")),
     ("chaos", ("/api/chaos", (), "Chaos / Peace index (card 14) of the latest run as labelled rows: score, regime, previous day, components "
-        "used and missing, the three largest drivers, liquidity and Treasury-supply lever rows with level and 4-week change, the midterm event "
-        "study (n and evidence grade), the stored 60-day record high and low, trading days to the midterm.")),
+        "used and missing, the three largest drivers, liquidity and Treasury-supply lever rows with level and 4-week change, the midterm and "
+        "presidential-year event studies (n and evidence grade), the stored 60-day record high and low, trading days to the next election.")),
     ("macro_ledger", ("/api/macro_ledger_full", ("limit",), "Macro ledger rows per run: VMRI, DXY, yields, OAS, VIX, crude, gold, ratios. limit=N rows.")),
     ("institutional_history", ("/api/institutional_history", ("ticker", "limit"), "Per-run dark-pool and GEX history for SPY or SLV. limit=N rows.")),
     ("arbitrage_history", ("/api/arbitrage_history", ("limit",), "Physical silver vs spot premium history (eBay Silver Eagles). limit=N rows.")),
@@ -453,8 +453,9 @@ def brief(app):
                      f"{macro.get('real_yield_10y')}%, high-yield spread {macro.get('hy_oas')}%.")
         ch = fc.get("chaos") or {}
         if ch.get("score") is not None:
-            n = (ch.get("election") or {}).get("trading_days_to")
-            lines.append(f"Chaos / Peace (card 14): {ch['score']:+.1f}, regime {ch['regime']}" + (f", {n} trading days to the midterm" if n is not None else "") + ".")
+            el = ch.get("election") or {}
+            n, kind = el.get("trading_days_to"), "presidential election" if el.get("kind") == "presidential" else "midterm"
+            lines.append(f"Chaos / Peace (card 14): {ch['score']:+.1f}, regime {ch['regime']}" + (f", {n} trading days to the {kind}" if n is not None else "") + ".")
         day = lambda d: datetime.fromisoformat(d).strftime("%A %B %-d, %Y") if d else "not known"
         lines += ["Next scheduled events:", f"- CPI inflation report: {day(nxt.get('cpi'))}", f"- Fed (FOMC) rate decision: {day(nxt.get('fomc'))}",
                   f"- Monthly options expiry (OPEX): {day(nxt.get('opex'))}"]

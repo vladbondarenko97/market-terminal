@@ -99,13 +99,33 @@ class Study(unittest.TestCase):
         self.assertEqual((r20["all"]["n"], r20["all"]["p"]), (662, round(60 / 662, 3)))      # 680 usable days less 18 episode days
         self.assertEqual((r20["peace"]["n"], r20["peace"]["p"]), (656, round(54 / 656, 3)))  # the 2 'stress' days before each start are not peace
         self.assertEqual((r20["neutral"]["n"], r20["neutral"]["p"]), (0, None))
-        self.assertEqual(st["durations"], {"episodes": 3, "median_episode_days": 6.0, "median_calm_days": 195.0})
+        self.assertEqual(st["durations"], {"episodes": 3, "median_episode_days": 6.0, "median_calm_days": 194.0})
         mom = next(s for s in st["signals"] if s["key"] == "momentum")
         self.assertEqual(mom["h20"]["n"], 3)                                                # true on 7 days in a row, counted once per spike
         self.assertIs(mom["active"], False)
         self.assertIsNone(next(s for s in st["signals"] if s["key"] == "term_inversion")["active"])     # no VIX / VIX3M input
         self.assertFalse(st["state"]["in_episode"])
         self.assertEqual(st["state"]["to_stress"], 70.0)
+
+    def test_calm_gap_counts_the_days_between_two_episodes(self):
+        sc = np.full(700, -40.0)
+        sc[100:103] = 40                      # starts on day 102, ends 5 days below the end bound later
+        e1 = CH._episode_spans(sc)[0][1]
+        sc[e1 + 56:e1 + 59] = 40              # the next episode starts on its third day: 57 calm days lie between
+        spans = CH._episode_spans(sc)
+        self.assertEqual(spans[1][0] - spans[0][1] - 1, 57)
+        self.assertEqual(CH.regime_study(frame(sc))["durations"]["median_calm_days"], 57.0)
+
+    def test_days_on_and_since(self):
+        sc = np.full(700, -40.0)
+        sc[-5:] = 20.0                        # near_bound for 5 days, no episode
+        sg = {s["key"]: s for s in CH.regime_study(frame(sc))["signals"]}
+        self.assertEqual((sg["near_bound"]["active"], sg["near_bound"]["days_on"]), (True, 5))
+        self.assertEqual(sg["near_bound"]["since"], frame(sc).index[-5].date().isoformat())
+        self.assertEqual((sg["momentum"]["days_on"], sg["momentum"]["since"]), (5, frame(sc).index[-5].date().isoformat()))
+        self.assertEqual((sg["breadth"]["days_on"], sg["breadth"]["since"]), (0, None))
+        self.assertEqual((sg["term_inversion"]["active"], sg["term_inversion"]["days_on"]), (None, None))
+        self.assertIn("first day of a stretch", CH.regime_study(frame(sc))["note"])
 
     def test_inside_an_episode_nothing_is_active(self):
         st = CH.regime_study(self.build(tail=1))
@@ -164,6 +184,7 @@ class Wiring(unittest.TestCase):
         conn = lake_conn(self)
         c = collect.build_chaos(conn, SourceSession(conn, "t", offline=True), "t", TODAY, {})
         self.assertEqual(c["long"]["status"], "missing")
+        self.assertIn("yahoo:SPY:max", c["source_errors"])                  # long-fetch errors reach the snapshot
         self.assertNotIn("_long_frame", c)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM v2_observations WHERE metric_id = 'chaos.score'").fetchone()[0], 0)
         json.dumps(c, allow_nan=False)
@@ -188,6 +209,70 @@ class Wiring(unittest.TestCase):
         self.assertEqual(count(), 4)
         collect._record_chaos_scores(conn, "t", h2)
         self.assertEqual(count(), 4)
+
+    def test_stored_days_revise_only_recently_with_a_new_identity_each_time(self):
+        conn = lake_conn(self)
+        h = frame(list(range(20)))
+        count = lambda: conn.execute("SELECT COUNT(*) FROM v2_observations WHERE metric_id = 'chaos.score'").fetchone()[0]
+        collect._record_chaos_scores(conn, "t", h)
+        self.assertEqual(count(), 20)
+        a = h.copy()
+        a.iloc[-1, 0], a.iloc[0, 0] = 99.0, 77.0                       # the newest day moves; a day 19 days back moves too
+        collect._record_chaos_scores(conn, "t", a)
+        st = collect._record_chaos_scores(conn, "t", h)                 # the newest day goes back to its first value
+        self.assertEqual(count(), 22)
+        self.assertEqual((st["score"].iloc[0], st["score"].iloc[-1]), (0.0, 19.0))      # old day frozen, recent day latest
+        revs = [json.loads(r[0])["rev"] for r in conn.execute(
+            "SELECT dims_json FROM v2_observations WHERE metric_id = 'chaos.score' AND observed_at = ? ORDER BY obs_id", (h.index[-1].date().isoformat(),))]
+        self.assertEqual(revs, [0, 1, 2])
+        collect._record_chaos_scores(conn, "t", h)
+        self.assertEqual(count(), 22)                                    # an unchanged run adds nothing
+        self.assertEqual(list(st.columns), ["score", "used", "hot", "inverted"])
+
+    def test_the_first_write_waits_for_a_run_with_every_long_history(self):
+        conn = lake_conn(self)
+        h = frame(list(range(20)))
+        count = lambda: conn.execute("SELECT COUNT(*) FROM v2_observations WHERE metric_id = 'chaos.score'").fetchone()[0]
+        self.assertIsNone(collect._record_chaos_scores(conn, "t", h, first_write=False))     # nothing stored yet: hold back
+        self.assertEqual(count(), 0)
+        collect._record_chaos_scores(conn, "t", h)
+        self.assertEqual(count(), 20)
+        a = h.copy()
+        a.iloc[-1, 0] = 99.0
+        self.assertIsNotNone(collect._record_chaos_scores(conn, "t", a, first_write=False))  # once stored, later runs append as usual
+        self.assertEqual(count(), 21)
+
+    def test_build_chaos_serves_the_block_built_from_the_stored_frame(self):
+        conn = lake_conn(self)
+        s = inputs(VIX=series(1, n=3000, last_z=1.0), VIX3M=series(2, n=3000) * 0.9, SKEW=series(3, n=3000, mean=130, sd=5), SPY=series(4, n=3000, mean=400, sd=3))
+        fresh = CH.long_history(s)
+        old = fresh.copy()
+        old.iloc[-100:-97, 0] = 90.0                                     # a stored history with an episode the fresh frame lacks
+        collect._record_chaos_scores(conn, "t0", old)
+        with mock.patch.object(collect, "_chaos_long_inputs", return_value=(s, None)):
+            c = collect.build_chaos(conn, SourceSession(conn, "t", offline=True), "t", TODAY, {})
+        self.assertEqual(c["long"]["episodes"][-1]["start"], old.index[-98].date().isoformat())      # an episode starts on its third day
+        self.assertEqual(CH.long_block(fresh, TODAY, None, None)["episodes"], CH.episodes(fresh))
+        self.assertNotEqual(c["long"]["episodes"], CH.episodes(fresh))
+        json.dumps(c["long"], allow_nan=False)
+
+    def test_a_failed_long_fetch_falls_back_to_the_fresh_series_and_is_reported(self):
+        fresh = {"VIX": series(1), "SPY": series(4, mean=400, sd=3), "EPU": series(5)}
+        long = series(9, n=3000)
+
+        def yf(session, sym):
+            if sym == "^VIX":
+                raise src.SourceUnavailable("yahoo", "http_500")
+            return long
+        with mock.patch.object(src, "yf_long_history", yf), mock.patch.object(src, "fred_long_series", side_effect=src.SourceUnavailable("fred", "x")):
+            out, _rec = {}, None
+            errs = {}
+            out, _rec = collect._chaos_long_inputs(None, fresh, None, errs)
+        self.assertEqual(len(out["VIX"]), 800)                           # the fresh series alone
+        self.assertEqual(len(out["EPU"]), 800)
+        self.assertEqual(len(out["SPY"]), 3000)
+        self.assertIn("yahoo:^VIX:max", errs)
+        self.assertIn("fred:USEPUINDXD:max", errs)
 
     def test_fred_long_series_is_requested_at_full_size_and_reused(self):
         conn = lake_conn(self)
