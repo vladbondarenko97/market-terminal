@@ -5,7 +5,7 @@
 
 ![The three tabs of the terminal, a scroll through the Forecast Lab and a question to the console](docs/demo.gif)
 
-It ships with its own test suite: 266 tests that need no network, no keys and no data, run on every push. See
+It ships with its own test suite: 400 tests that need no network, no keys and no data, run on every push and once a day. See
 [Tests](#tests). Clone it, run it once and it starts tracking on your own data: nothing of anyone else's is
 included. See [Run it](#run-it).
 
@@ -69,7 +69,7 @@ Everything is optional. Copy `.env.example` to `.env` (`setup.sh` does it) and f
 | nothing | free | Forecast Lab (models, Signal Watch, Day Scanner, Edge Lab), Time Arbitrage, dealer gamma, the Shanghai–COMEX spread, engine tickets |
 | `FRED_API_KEY` | free | The VMRI risk index and War Room, Fed liquidity, the macro inputs of Forecast Lab cards 5 to 7 |
 | A CME account (`main_pipeline.py cme-login`) | free | COMEX volume files, inventory and the paper:physical ratio |
-| `EBAY_APP_ID`, `EBAY_CERT_ID` | free | Silver Eagle premiums over spot |
+| `EBAY_APP_ID`, `EBAY_CERT_ID` | free | Silver Eagle premiums over silver futures, the dealer book and units sold between runs |
 | `NTFY_URL`, the email settings | free | The phone push, the rule alerts and the email report |
 | A local model server (Ollama, oMLX, LM Studio) | free | The console: ask the terminal in plain words |
 | `DATABENTO_API_KEY` | paid | Dark-pool block flow |
@@ -86,9 +86,11 @@ you less than your own first run. If you fork this, keep `CME_Data/` and `.env` 
   Mac that owns the schedule. Each run stores
   every provider response, computes the models and commits one immutable snapshot.
 - **The terminal**, three tabs:
-  - **Macro Direction**: VMRI macro risk index and War Room scenarios, COMEX inventory and paper:physical ratio,
-    eBay Silver Eagle premiums, dealer gamma (GEX), dark-pool block flow, catalyst calendar, news sentiment, Fed
-    liquidity, Shanghai–COMEX spread and the Engine Positions card.
+  - **Macro Direction**: VMRI macro risk index and War Room scenarios; COMEX registered, eligible and total silver
+    with the paper:physical ratio against its own recorded range; the Silver Eagle premium over futures with its
+    z-score, what moved it, a dealer book and units sold; the Shanghai–COMEX spread, each fix paired with the
+    COMEX and USD/CNY close of the same date; dealer gamma (GEX), block flow with the feed's trade sides kept
+    apart from guessed ones, catalyst calendar, news sentiment, Fed liquidity and the Engine Positions card.
   - **Time Arbitrage**: option analytics for a ticker: dealer positioning, IV vs realised volatility, term
     structure, a probability matrix and an option chain explorer with a Black-Scholes calculator.
   - **Forecast Lab**: twelve model cards for SPY or SLV: market-implied range, volatility forecast, trend/CTA,
@@ -96,6 +98,9 @@ you less than your own first run. If you fork this, keep `CME_Data/` and `.env` 
     diesel & refining (with a Texas refinery outage tracker), EIA inventories and a Chaos / Peace stress index. Three rule cards sit beside
     them: **Signal Watch** (every trigger, fired or waiting, with what to do), **Day Scanner** (a dip-in-an-uptrend
     rule on your own ticker list) and **Edge Lab** (seven published edges tested on any ticker's own history).
+- **Numbers checked against their source**: a spread is only drawn from two prices of the same run or the same
+  date, a reading that was not recorded is a gap and never a zero, and a split that is a guess is drawn as one.
+  What is still imperfect is listed in [Known issues](docs/known-issues.md).
 - **Evidence before action**: a rule only says "buy" when its own history clears a fixed test (enough cases, the
   same sign in both halves of the record, a t-statistic of at least 2). Otherwise the card says there is no
   measured edge.
@@ -112,8 +117,9 @@ you less than your own first run. If you fork this, keep `CME_Data/` and `.env` 
 
 ## Tests
 
-266 tests, about 30 seconds, plain `unittest`. They use no network, no credentials and a scratch data folder, so
-they pass on a fresh clone and in CI (Ubuntu, on every push):
+400 tests, about a minute, plain `unittest`. They use no network, no credentials and a scratch data folder, so
+they pass on a fresh clone and in CI (Ubuntu, on every push and pull request, and once a day because
+`requirements.txt` is not pinned, so a new release of a dependency shows up as a red badge within a day):
 
 ```bash
 .venv/bin/python -m unittest discover -s tests
@@ -122,12 +128,19 @@ for f in options_whale/static/*.js; do node --check "$f"; done    # syntax check
 
 | File | Tests | What it protects |
 |---|---|---|
-| `test_api.py` | 84 | Every terminal route: `/help` lists them all, bad parameters are refused, run control, gamma, dark pool, War Room and option maths, JSON that never carries `NaN` |
+| `test_api.py` | 93 | Every terminal route: `/help` lists them all, bad parameters are refused, run control, gamma, dark pool, War Room and option maths, JSON that never carries `NaN` |
 | `test_v2.py` | 53 | The acceptance rules: a failed source is reported and never shown as zero, outputs match the snapshot, the Forecast Lab, the evidence test behind the rule cards, and a console that can only read |
 | `test_pipeline_fixes.py` | 41 | Settings parsing, the data folder rules, the run lock, exit codes, delivery results, and one offline run end to end |
 | `test_core_fixes.py` | 39 | Storage that only ever adds, request limits, CME downloads, engine tickets and their marks, the forecast scorecard, models with missing inputs |
 | `test_ui.py` | 31 | The page without a browser: every element a script touches exists, the menu drawer, the phone layout |
+| `test_narrative.py` | 29 | The analyst note: the brief, its validator, the pipeline stage, replay and the read-only query command |
+| `test_chaos.py` | 24 | The Chaos / Peace index: the model on seeded series, its four fetchers on saved responses, the stored route |
+| `test_news.py` | 22 | The news store and the release calendar: the feed reader, headline clustering, the report block, release-day rows |
+| `test_backfill.py` | 20 | The backfill scripts, Fed speech days and SEC Form 4 with the insider cluster edge |
 | `test_schedule.py` | 18 | NYSE holidays and early closes, which scheduled runs are accepted, the launchd times `setup.sh` writes |
+| `test_card_stats.py` | 17 | The Silver Eagle premium statistics, units sold between runs and the paper:physical history: a missing count is never a zero |
+| `test_shanghai.py` | 10 | The date-paired Shanghai spread: no pair without all three prices of one date, nothing carried forward |
+| `test_bounces.py` | 3 | An email the server accepted and the recipient's server then rejected is reported |
 
 `scripts/record_demo.py` re-records the GIF above from a running terminal.
 

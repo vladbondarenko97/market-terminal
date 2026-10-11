@@ -48,7 +48,10 @@ with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
     scroll(page, 4200, step=70)
     page.wait_for_timeout(1000)
     chip = page.locator("#askSuggest button, #askSuggest .ask-chip").first
-    if chip.count():                                   # the console needs a local model; without one this part is skipped
+    if chip.count() and not chip.is_visible():         # the console starts minimized
+        page.click("#btnMinConsole")
+        page.wait_for_timeout(800)
+    if chip.count() and chip.is_visible():             # the console needs a local model; without one this part is skipped
         chip.click()
         page.wait_for_timeout(8000)
     context.close()                                    # writes the video
