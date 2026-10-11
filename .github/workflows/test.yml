@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "23 11 * * *"      # once a day (11:23 UTC): requirements.txt is unpinned, so a new release of a dependency can break the suite
+  workflow_dispatch:
 jobs:
   unit:
     runs-on: ubuntu-latest
