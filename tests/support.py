@@ -26,6 +26,35 @@ for k in ("DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOL
 sys.path.insert(0, str(ROOT))
 
 
+class NetworkBlocked(BaseException):
+    """Raised on any attempt to reach another machine during the tests. It is a BaseException on purpose: the source
+    wrappers catch Exception and would turn an ordinary error into a quiet `missing`, so a leaking test would still pass."""
+
+
+def _block_network():
+    import socket
+
+    connect = socket.socket.connect
+
+    def guarded(self, address, *args, **kwargs):
+        host = address[0] if isinstance(address, tuple) else address
+        if isinstance(host, str) and host not in ("127.0.0.1", "::1", "localhost") and not host.startswith("/"):
+            raise NetworkBlocked(f"tests must not reach the network (tried {host}); patch the fetcher or use an offline session")
+        return connect(self, address, *args, **kwargs)
+    socket.socket.connect = guarded
+    try:                                    # yfinance talks through curl_cffi, which does not use Python sockets
+        from curl_cffi import requests as curl
+
+        def refused(*args, **kwargs):
+            raise NetworkBlocked("tests must not reach the network (curl_cffi request); patch the fetcher or use an offline session")
+        curl.Session.request = refused
+    except ImportError:
+        pass
+
+
+_block_network()
+
+
 def build_installation():
     DATA.mkdir(parents=True, exist_ok=True)
     for f in FIX.iterdir():

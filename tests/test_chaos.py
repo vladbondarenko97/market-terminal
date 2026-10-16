@@ -280,8 +280,14 @@ class Collector(unittest.TestCase):
             if str(d) == "2026-10-07":
                 raise SourceUnavailable("cboe", "http_403", str(d))
             return 0.6, None
-        with mock.patch.object(src, "cboe_putcall", pc), mock.patch.dict(collect.CHAOS_DAILY, {"PUTCALL": ("chaos.equity_put_call", "cboe", pc)}), \
-                mock.patch.object(src, "finra_short_volume", side_effect=SourceUnavailable("finra", "http_404")):
+        def finra(s, d):
+            raise SourceUnavailable("finra", "http_404", str(d))
+        # CHAOS_DAILY holds the fetch functions themselves, so both entries are replaced there; every other source the
+        # collector calls is unavailable, so the test never leaves the machine
+        down = [mock.patch.object(src, n, side_effect=SourceUnavailable(n, "offline_test"))
+                for n in ("yf_history", "yf_long_history", "eia_weekly", "treasury_auctions", "treasury_buybacks")]
+        with mock.patch.dict(collect.CHAOS_DAILY, {"PUTCALL": ("chaos.equity_put_call", "cboe", pc), "SHORTVOL": ("chaos.short_volume_spy", "finra", finra)}), \
+                down[0], down[1], down[2], down[3], down[4]:
             c1 = collect.build_chaos(conn, SourceSession(conn, "t"), "t", TODAY, {})
             n = len(calls)
             collect.build_chaos(conn, SourceSession(conn, "t2"), "t2", TODAY, {})
