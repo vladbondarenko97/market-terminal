@@ -23,6 +23,11 @@ if ROOT_DIR not in sys.path:
 from core import backfill, collect, market_calendar as MC
 
 
+def today():
+    """Today in New York (a function, so the tests can fix the date)."""
+    return datetime.now(MC.NEW_YORK).date()
+
+
 def trading_days(today, years):
     """NYSE trading days before `today` (today's files are not out yet), newest first, back `years` years plus 45 days."""
     first, d, out = today - timedelta(days=int(365 * years) + 45), today, []
@@ -39,7 +44,7 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=None, help="at most this many requests per series (default: no limit)")
     ap.add_argument("--sleep", type=float, default=0.25, help="seconds between requests (default 0.25)")
     a = ap.parse_args(argv)
-    days = trading_days(datetime.now(MC.NEW_YORK).date(), a.years)
+    days = trading_days(today(), a.years)
 
     def work(conn, session, run_id):
         total = {"stored": 0, "skipped": 0, "no_file": 0, "failed": 0}

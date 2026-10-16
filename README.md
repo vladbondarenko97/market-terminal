@@ -119,7 +119,9 @@ you less than your own first run. If you fork this, keep `CME_Data/` and `.env` 
 
 400 tests, about a minute, plain `unittest`. They use no network, no credentials and a scratch data folder, so
 they pass on a fresh clone and in CI (Ubuntu, on every push and pull request, and once a day because
-`requirements.txt` is not pinned, so a new release of a dependency shows up as a red badge within a day):
+`requirements.txt` is not pinned, so a new release of a dependency shows up as a red badge within a day). CI runs
+the suite a second time with the clock 400 days ahead, so a test that only passes on today's date fails long before
+that date arrives:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests

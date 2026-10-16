@@ -54,8 +54,10 @@ Breaking one of these is a bug, even if the tests pass.
    read stored data. Some existing routes compute live; do not copy that pattern.
 6. **Pipeline network calls go through `SourceSession.fetch()`** (`core/sources.py`), so they are deduplicated,
    bounded, logged, captured and switched off in offline runs.
-7. **Tests stay offline.** No network, no credentials, no real data folder. Use `tests/fixtures/` or synthetic
-   series, as the existing tests do.
+7. **Tests stay offline and do not depend on today's date.** No network, no credentials, no real data folder. Use
+   `tests/fixtures/` or synthetic series, as the existing tests do. Fixtures have fixed dates, so code under test that
+   counts back from today must get a fixed date in the test (patch a `today()` function, as `tests/test_backfill.py`
+   does). CI also runs the suite with the clock 400 days ahead; locally: `faketime -f +400d` (brew `libfaketime`).
 8. **Do not work around the run lock** (exit code 75) or the scheduled-run gate (`SCHEDULED_RUNS`).
 9. **When a computed value changes meaning, record it**: bump the model's version constant and add a line to
    [docs/value-changes.md](docs/value-changes.md).
