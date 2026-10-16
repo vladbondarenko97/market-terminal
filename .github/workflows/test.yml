@@ -20,6 +20,6 @@ jobs:
       # long before the real date reaches it (a backfill test broke on 2026-10-14 that way).
       - name: tests with the clock 400 days ahead
         run: |
-          sudo apt-get install -y -qq faketime > /dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq faketime
           FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f +400d python -m unittest discover -s tests
       - run: for f in options_whale/static/*.js; do node --check "$f"; done
