@@ -54,6 +54,12 @@ def _block_network():
 
 _block_network()
 
+# yfinance keeps cookies and time zones in an on-disk cache shared with the live terminal. A blocked fetch caches an
+# empty cookie, and under tests/shifted_clock.py it is dated a year ahead, so the live process kept reusing it and every
+# Yahoo call came back empty (2026-10-16). Tests get a cache of their own.
+import yfinance  # set_tz_cache_location moves the cookie cache too
+yfinance.set_tz_cache_location(str(TMP / "yfinance"))
+
 
 def build_installation():
     DATA.mkdir(parents=True, exist_ok=True)
