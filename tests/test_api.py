@@ -108,6 +108,9 @@ class ApiCase(unittest.TestCase):
         # keep the expected error logs out of the test output (assertLogs still sees them)
         mock.patch.object(api_router.app.logger, "handlers", [logging.NullHandler()]).start()
         mock.patch.object(api_router.app.logger, "propagate", False).start()
+        # Some stored routes still price things live (the scorecard grading in /api/forecast, positions): Yahoo is a fake
+        # with no data unless a test fills it with fake_yahoo(), so a route test never depends on the date or the network
+        mock.patch.object(api_router.yf, "Ticker", FakeTicker).start()
         self.client = api_router.app.test_client()
 
     def use_data_dir(self, data):
