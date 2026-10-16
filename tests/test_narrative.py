@@ -157,6 +157,19 @@ class Validator(unittest.TestCase):
         block["event_study"]["rows"] = [{"series": "VIX", "window": "0..+5", "n": 5, "mean_pct": None, "base_mean_pct": None, "hit_rate": None, "grade": "none"}]
         self.assertTrue(any("too few cases" in line and "n 5" in line for _label, line in N.chaos_rows(block)))
 
+    def test_election_kind_and_point_units_are_labelled(self):
+        old = dict(N.chaos_rows(make_ctx()["chaos"]))
+        self.assertEqual(old["Midterm"], "Midterm election 2026-11-03: 17 trading days away")             # an older snapshot reads as before
+        self.assertIn("Midterm event study VIX days 0..+5: mean +1.5% vs +0.2% in other windows, up in 84% of cases, n 19, evidence grade thin",
+                      old["Midterm event study VIX 0..+5"])
+        block = copy.deepcopy(make_ctx()["chaos"])
+        block["election"] = {"date": "2028-11-07", "kind": "presidential", "trading_days_to": 5}
+        block["event_study"]["rows"] = [{"series": "Chaos / Peace score", "window": "0..+5", "mean_pct": 2.5, "base_mean_pct": 0.5, "hit_rate": 0.6,
+                                         "n": 9, "grade": "thin", "kind": "presidential", "unit": "pts"}]
+        rows = dict(N.chaos_rows(block))
+        self.assertEqual(rows["Presidential"], "Presidential election 2028-11-07: 5 trading days away")
+        self.assertIn("Presidential-year event study Chaos / Peace score days 0..+5: mean +2.5 pts vs +0.5 pts", rows["Presidential-year event study Chaos / Peace score 0..+5"])
+
     def test_validate_keeps_good_issues_and_drops_bad_refs(self):
         note = copy.deepcopy(NOTE)
         note["issues"][0]["refs"] = ["D2", "S99"]

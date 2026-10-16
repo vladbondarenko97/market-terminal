@@ -492,7 +492,8 @@ def chaos_line(ctx):
         return f"Chaos/Peace: {c.get('status')} ({str(c.get('reason'))[:160]})"
     top = ", ".join(f"{d['label'].split(' (')[0]} {d['z']:+.1f}z" for d in c.get("drivers") or [])
     n = g(c, "election", "trading_days_to")
-    when = "" if n is None else f"; midterm in {n} trading days" if n >= 0 else f"; {-n} trading days after the midterm"
+    kind = "presidential" if g(c, "election", "kind") == "presidential" else "midterm"
+    when = "" if n is None else f"; {kind} in {n} trading days" if n >= 0 else f"; {-n} trading days after the {kind}"
     return (f"Chaos/Peace: {c['score']:+.0f} {c['regime']} ({c['components_used']} of {c['components_total']} components)"
             + (f"; top: {top}" if top else "") + when + ("; REGIME CHANGED" if c.get("regime_changed") else ""))
 

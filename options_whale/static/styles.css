@@ -446,6 +446,15 @@ body.resizing-active #v-resizer {
 .fc-sig .fc-pick { cursor: pointer; color: #a1a1aa; } .fc-sig .fc-pick:hover, .fc-sig .fc-pick.sel { color: #fafafa; font-weight: 700; }
 .fc-sig th, .fc-sig td { text-align: left; white-space: normal; vertical-align: top; cursor: help; }
 .fc-chart { position: relative; height: 170px; }
+/* Chaos / Peace history: range buttons and layer toggles, the zoomable chart, clickable episode rows */
+.ch-ctl { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+.ch-tog { font-size: 9px; color: #a1a1aa; display: inline-flex; gap: 4px; align-items: center; }
+.ch-tog:has(input:disabled) { opacity: .5; cursor: help; }
+.ch-chart { position: relative; height: 240px; }
+.ch-chart canvas { touch-action: pan-y; }
+.ch-hint { font-size: 9px; }
+.rainbow-card.fc-full .ch-chart { height: 52vh; }
+.ch-ep tr[data-ea] { cursor: pointer; } .ch-ep tr[data-ea]:hover td { color: #fafafa; }
 .fc-pos { color: #4ade80; } .fc-neg { color: #f87171; } .fc-warn { color: #fbbf24; }
 .fc-badge { display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: .12em; padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; }
 .fc-seg { display: flex; gap: 4px; }

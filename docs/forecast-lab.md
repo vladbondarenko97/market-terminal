@@ -46,7 +46,7 @@ It is `missing` with a reason when the list is unavailable.
 | 9 | Forecast scorecard | Every logged forecast graded after its target date, plus walk-forward backtests | Were past forecasts right? Hit rate, 68% coverage, Brier score | per ticker | not in the snapshot: graded per request from `v2_forecasts` |
 | 10 | Diesel & refining | Crack spreads, EIA refinery runs and stocks, 10-year maintenance-season path, Texas refinery outage filings (TCEQ), CFTC ULSD positioning | Is refining tight, and is a major unit down? | shared | `ctx["refining"]` (`margins`, `fundamentals`, `maintenance`, `outages`, `ulsd_positioning`) |
 | 11 | EIA inventories | Weekly US petroleum stocks against the 5-year same-week average, and days of supply | Are stocks building or drawing against the norm, and how does today compare with past years? | shared | `ctx["refining"]["inventories"]`, full history from `/api/eia_history` |
-| 14 | Chaos / Peace | Twelve stress readings (VIX, VIX/VIX3M, VVIX, SKEW, MOVE, high-yield spread, SPY realised vol and drawdown, policy uncertainty, equity put/call, VIX9D/VIX6M, SPY short-sale share), each a z-score against its own 3 years | How stressed does the market look against its own recent history, and what do the liquidity levers and past midterm windows look like? | shared | `ctx["chaos"]` (`score`, `regime`, `components`, `levers`, `event_study`, `lever_study`), also `GET /api/chaos` |
+| 14 | Chaos / Peace | Twelve stress readings (VIX, VIX/VIX3M, VVIX, SKEW, MOVE, high-yield spread, SPY realised vol and drawdown, policy uncertainty, equity put/call, VIX9D/VIX6M, SPY short-sale share), each a z-score against its own 3 years | How stressed does the market look against its own recent history and against every stress episode since 1931, how often did a calm market turn, and what do the liquidity levers and past election windows look like? | shared | `ctx["chaos"]` (`score`, `regime`, `components`, `levers`, `event_study`, `lever_study`, `long`), also `GET /api/chaos` and `GET /api/chaos/history` |
 
 `SYM` is `SPY` or `SLV`. Cards 1 to 3, 7 and 8 sit under `forecast[SYM]`; the browser receives that object as `data`.
 
@@ -86,16 +86,47 @@ It is `missing` with a reason when the list is unavailable.
   - `prev` is the previous trading day's score computed from the same histories; `regime_changed` is true when its regime
     differs. Signal Watch has one row ("Chaos/Peace regime") that fires on that. The row describes the reading and
     recommends no trade. `history` holds the last 60 trading days as `[date, score, components_used]`.
-  - `election` counts trading days to the 2026-11-03 midterm (negative after) and `tracking` is true until 60 trading days
-    after it.
+  - `election` counts trading days to the next US general election (`kind` is `midterm` or `presidential`; negative after
+    it) and `tracking` is true until 60 trading days after it; then it moves to the next one. The event study has rows for
+    both kinds, for the S&P 500 (since 1950), the VIX (since 1990) and the score itself (in points, since it has 4 components).
+  - **Long history** (`long`, and the observations `chaos.score`). The same formula is evaluated on every past day: a
+    component counts on a day once its series is 3 years old and while its last observation is at most 10 days old. The
+    S&P 500 closes stand in for SPY before 1993 (scaled to join at SPY's first day), so the history starts at the end of
+    1930 with one component, has two from 1931, and gains the others as their series begin (`long.eras`). Before the
+    early 1990s the score therefore rests on S&P 500 realised volatility and drawdown and reaches the limits easily; the
+    card draws those years fainter. Each run stores the days it has not stored yet. Only the last 10 trading days can be
+    revised (a component that arrives late becomes a new row; the newest row per date is the one served); older days are
+    frozen, so a failed fetch or a sliding 3-year input cannot rewrite the past. For the same reason the first write waits
+    for a run in which every full price history was fetched (`source_errors` says so until then). The three inputs that only ever exist
+    as a 3-year fetch (high-yield spread, equity put/call, SPY short-sale share) therefore join the stored history from
+    about two months before its first run and stay in it from then on. Episodes, eras and the regime study are computed
+    from the stored series, the same one the chart draws.
+    The history's newest point is computed from the full series and the card's score from the run's 3-year fetches, so
+    the two can differ by a tenth of a point.
+  - **Episodes and the regime study** (`long.episodes`, `long.study`). A stress episode starts on the third trading day
+    in a row above 30 and ends on the fifth in a row below 15. These four numbers are fixed and not fitted. The study
+    uses only the days with 4 or more components. It gives the current state, the median length of an episode and of the
+    calm between two, how often an episode began within 20, 60 and 120 trading days of a calm day (all, and by the day's
+    regime), and four conditions fixed in advance (a 15-point rise in 20 days, a score between 15 and 30, a third of
+    the components at z >= 1, VIX at or above VIX3M), each tested on its onsets with the evidence test of the rule cards
+    (`core.watch.grade`). It describes one history: neighbouring days overlap, two of the conditions are partly
+    arithmetic, and a 50% hit rate is also a 50% false-alarm rate.
+  - **Chart.** Range buttons (6M, 1Y, 5Y, 20Y, MAX), mouse-wheel zoom around the cursor, drag to pan, pinch on a touch
+    screen, double-click to return. Stress episodes, election days (P / M) and NBER recessions (FRED `USREC`) can be
+    switched on and off; clicking an episode in the table zooms to it. Until a run has stored the history the card shows
+    the 60-day line as before.
   - `levers` (net liquidity, bank reserves, Strategic Petroleum Reserve, Treasury bills and coupons offered and
     buybacks accepted over the last 28 days) sit beside the score and are not part of it.
-  - `event_study` compares S&P 500 (1950 on) and VIX (1990 on) returns in four windows around past midterm election days
-    with all other windows of the same length, through `core.watch.grade`. About 19 midterms (9 for the VIX) means the
-    best grade is `thin`. `lever_study` compares the 60 days before November elections in even and odd years, with the
+  - `event_study` compares S&P 500 (1950 on) and VIX (1990 on) returns, and the change of the score itself in points
+    (since it has 4 components), in four windows around past election days with all other windows of the same length,
+    through `core.watch.grade`. Each row carries `kind` (`midterm` or `presidential`) and `unit` (`pct` or `pts`). About
+    19 elections of each kind (9 for the VIX) means the best grade is `thin`. `lever_study` compares the 60 days before November elections in even and odd years, with the
     median beside the mean because one extreme year (a percent change of a small balance) can dominate a mean. Both are
     descriptive and say nothing about why anything moved.
-  - The long ^GSPC and ^VIX histories are reused for 30 days (`yf_long_history()` in `core/sources.py`).
+  - The full daily histories (^GSPC, SPY and the seven volatility indices from Yahoo, `USEPUINDXD` and `USREC` from FRED) are
+    reused for 30 days (`yf_long_history()` and `fred_long_series()` in `core/sources.py`); the run's own 3-year fetches
+    extend them to today. If one of them cannot be fetched, the component still counts on recent days from the 3-year
+    series and the error is listed in `source_errors`.
 - **Card 11.**
   - Eight lines: crude (commercial), distillate/diesel, gasoline, jet fuel, Strategic Petroleum Reserve, Cushing OK,
     propane/propylene and **residual fuel oil**.
