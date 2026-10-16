@@ -229,7 +229,9 @@ class T04Outputs(unittest.TestCase):
         import json
         r = self._latest()
         charts = {c["file"]: c for c in json.loads(r["artifacts_json"])["charts"]}
-        self.assertEqual(charts["chart7_crypto_ratios_30d.png"]["status"], "generated")
+        # the fixtures have fixed dates, so a chart whose window has moved past them is a missing input; it must never be a render error
+        self.assertIn(charts["chart7_crypto_ratios_30d.png"]["status"], ("generated", "missing_input"))
+        self.assertEqual([c["file"] for c in charts.values() if c["status"] == "render_error"], [])
         self.assertIn(charts["chart1_es_conviction_7d.png"]["status"], ("stale_input", "generated"))
         self.assertEqual(charts["chart6_comex_inventory_30d.png"]["status"], "stale_input")
         missing = [c for c in charts.values() if c["status"] == "missing_input"]

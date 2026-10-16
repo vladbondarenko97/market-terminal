@@ -340,7 +340,11 @@ def render_charts(conn, ctx, out_dir):
                 "inventory" if "inventory" in spec["inputs"] else None)
             try:
                 dates = JOBS[spec["family"]](conn, ctx, spec, win, window, path)
-                dates = pd.to_datetime(pd.Series(list(dates)))
+                dates = pd.to_datetime(pd.Series(list(dates))).dropna()
+                if dates.empty:
+                    if os.path.exists(path):
+                        os.remove(path)
+                    raise MissingInput(f"no observations in the {_window_label(window)} window")
                 stale = _stale_reason(ctx, dep)
                 entry.update({"status": "stale_input" if stale else "generated", "reason": stale,
                               "first_date": f"{dates.min():%Y-%m-%d}", "last_date": f"{dates.max():%Y-%m-%d}",

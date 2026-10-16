@@ -30,6 +30,11 @@ from core.sources import SourceUnavailable
 METRIC = "edgar.form4"
 
 
+def today():
+    """Today's date (a function, so the tests can fix the date)."""
+    return datetime.now().date()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--symbols", help="comma-separated tickers (default: the Edge Lab tracked list)")
@@ -45,7 +50,7 @@ def main(argv=None):
     else:
         from core import edges
         symbols = edges.tracked()
-    since = (datetime.now() - timedelta(days=int(365 * a.years))).date().isoformat()
+    since = (today() - timedelta(days=int(365 * a.years))).isoformat()
 
     def work(conn, session, run_id):
         total = {"stored": 0, "skipped": 0, "no_cik": 0, "failed": 0}
