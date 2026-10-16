@@ -48,7 +48,8 @@ class Lake(unittest.TestCase):
     def script(self, module, *args):
         """Run a script's main() on this test's database; returns (exit code, printed text)."""
         out = io.StringIO()
-        with mock.patch.object(config, "DB_PATH", self.tmp / "portfolio.db"), contextlib.redirect_stdout(out):
+        with mock.patch.object(config, "DB_PATH", self.tmp / "portfolio.db"), mock.patch.object(module, "today", lambda: TODAY), \
+                contextlib.redirect_stdout(out):     # the scripts count back from today: fix it, or the fixtures age out of the window
             return module.main(list(args)), out.getvalue()
 
 
