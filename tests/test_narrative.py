@@ -91,6 +91,14 @@ class Brief(unittest.TestCase):
         self.assertLessEqual(len(i["text"]), 1500)
         self.assertIn("RUN", i["text"])
 
+    def test_engine_ticket_in_each_of_its_shapes(self):
+        for ticket, want in (("CASH POSITION - No trade ticket generated.", "; CASH POSITION - No trade ticket generated"),
+                             ({"status": "missing", "reason": "no captured expirations"}, "; no contract selected"),
+                             ({"contract": "SPY261106C00779000", "type": "CALL", "strike": 779.0, "expiration": "2026-11-06"},
+                              "; stored ticket CALL SPY 779 expiring 2026-11-06"), (None, "; no contract selected")):
+            ex = {"total_score": 1, "directional_bias": "NEUTRAL (+1)", **({"ticket": ticket} if ticket is not None else {})}
+            self.assertIn("Engine score +1, bias NEUTRAL (+1)" + want, N.inputs(make_ctx(execution=ex), 8000)["text"])
+
     def test_missing_and_old_snapshots(self):
         for ctx in (make_ctx(chaos={"status": "missing", "reason": "no data"}, news={"status": "missing", "reason": "feeds down"}),
                     {k: v for k, v in make_ctx().items() if k not in ("chaos", "news", "calendar", "execution", "vmri")}):

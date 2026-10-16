@@ -187,9 +187,10 @@ def _data_rows(ctx):
     if e.get("total_score") is None:
         add("ENGINE", "Engine", f"Engine: {e.get('status', 'missing')} ({e.get('reason') or 'not in this snapshot'})")
     else:
-        t = e.get("ticket") or {}
-        add("ENGINE", "Engine", f"Engine score {e['total_score']:+d}, bias {(e.get('directional_bias') or '').split(' [')[0]}"
-            + (f"; stored ticket {t['type']} SPY {t['strike']:g} expiring {t['expiration']}" if t.get("contract") else "; no contract selected"))
+        t = e.get("ticket")              # a dict with a contract, a dict with a reason, or the text of a CASH decision
+        tail = (f"; stored ticket {t['type']} SPY {t['strike']:g} expiring {t['expiration']}" if isinstance(t, dict) and t.get("contract")
+                else f"; {t.rstrip('.')}" if isinstance(t, str) else "; no contract selected")
+        add("ENGINE", "Engine", f"Engine score {e['total_score']:+d}, bias {(e.get('directional_bias') or '').split(' [')[0]}" + tail)
     try:
         from core import forecast
         fc = ctx.get("forecast") or {}
