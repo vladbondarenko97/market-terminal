@@ -208,7 +208,7 @@ def ntfy_brief(ctx, report_text, dashboard_url=None, report_url=None, narrative=
         return {"status": "skipped", "error": "NTFY_URL not configured"}
     try:
         title, message, prio, tags = render.ntfy_summary(ctx, narrative)
-        message = f"{notice}\n{message}" if notice else message
+        message = f"{message}\n{notice}" if notice else message     # below the summary, not above it
     except Exception as e:
         return {"status": "failed", "error": lake.redact(f"summary: {e}")[:200]}
     fname = report_filename(ctx)

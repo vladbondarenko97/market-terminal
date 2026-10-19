@@ -514,8 +514,8 @@ The final status is `completed_with_warnings`, and the exit code is 3, when any 
 - a stage raised (see above), or one ledger step failed (`ledger errors: ...`);
 - the email status is `failed` or `outcome_unknown`;
 - an EARLIER run's email bounced. Every delivering run reads the bounce notices in the sender's mailbox (`IMAP_SERVER`,
-  read-only), marks those runs `bounced` with the recipient server's reason, warns once per bounce, and puts one line
-  at the top of the phone push. `smtp_accepted` only means your own mail server took the message: a recipient such as
+  read-only), marks those runs `bounced` with the recipient server's reason, warns once per bounce, and adds one line
+  at the bottom of the phone push. `smtp_accepted` only means your own mail server took the message: a recipient such as
   Gmail can still reject it a minute later (for example `550 5.7.1 ... very low reputation of the sending domain`), and
   nothing but the bounce notice says so. If that keeps happening, send to a mailbox on the sender's own mail server, or
   send through the recipient provider's SMTP server;
