@@ -20,8 +20,20 @@ echo "  VLADHQ DUAL-HORIZON DASHBOARD (v2)"
 echo "  Trigger: $TRIGGER   $(date)"
 echo "======================================"
 
+# Optional healthchecks.io dead-man's switch for the three scheduled runs (launchd slots 8:31, 11:30, 14:45).
+# One check per slot; the ping URLs are HC_PING_AM / HC_PING_MID / HC_PING_PM in .env. Silent no-op without them.
+hc() {  # hc [fail]
+    [ "$TRIGGER" = "scheduled" ] || return 0
+    case $(date +%H) in 0[0-9]|10) K=HC_PING_AM ;; 11|12) K=HC_PING_MID ;; *) K=HC_PING_PM ;; esac
+    U=$(sed -nE "s/^$K=//p" .env 2>/dev/null | tail -1)
+    [ -n "$U" ] && curl -fsS -m10 --retry 2 -o /dev/null "$U${1:+/$1}" >/dev/null 2>&1
+    return 0
+}
+
+hc start
 python main_pipeline.py run --trigger "$TRIGGER"
 STATUS=$?
+case $STATUS in 0|3) hc ;; 75) ;; *) hc fail ;; esac
 
 case $STATUS in
     0) ;;
