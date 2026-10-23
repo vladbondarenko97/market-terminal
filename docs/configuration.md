@@ -101,7 +101,7 @@ the SnapTrade dashboard. With either value empty the card shows the setup steps 
 
 ### Secrets in Bitwarden and the Keychain
 
-Secrets need not live in `.env`. `config.py` fills any name in `config.SECRET_NAMES` that is unset or blank from the macOS
+Both ways work and you can mix them: keep every secret in `.env` (the default, nothing else to set up) or move some or all into Bitwarden and the Keychain. Secrets need not live in `.env`. `config.py` fills any name in `config.SECRET_NAMES` that is unset or blank from the macOS
 login Keychain (service `market-terminal`); a value in `.env` or the environment wins. `scripts/sync_secrets.sh` moves them:
 `push` creates a Bitwarden Login item per name from `.env` (item name = variable name, value in the password field; existing items are left alone), `pull` copies those items into the Keychain, `strip` blanks the names the Keychain now holds in `.env` (backup kept as `.env.bak.secrets`). Run `pull` again after rotating a key. Tests set
 `MT_NO_KEYCHAIN=1`. `HC_PING_*` URLs stay in `.env` because `run_dashboard.command` reads them with `sed`, and the keys in

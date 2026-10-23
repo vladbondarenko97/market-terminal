@@ -4194,8 +4194,8 @@ function renderBrokerage(d) {
         const tone = g.kind.includes('PUT') || g.kind.startsWith('SHORT') ? 'text-rose-300' : 'text-emerald-300';
         const legs = g.legs.map(l => `${l.units > 0 ? '+' : ''}${l.units} ${(l.type || '?')[0]} ${l.strike}${l.price === null ? '' : ' @ ' + l.price}`).join(' / ');
         return `<div class="border-t border-zinc-900 py-1"><span class="font-bold">${esc(g.underlying)}</span> <span class="${tone}">${esc(g.kind)}</span> `
-            + `<span class="text-zinc-500">${esc(g.account || '')} · exp ${esc(g.expiry)}${g.width ? ' · width ' + g.width : ''}</span> <span class="float-right">net mark ${money(g.net_mark)}</span>`
+            + `<span class="text-zinc-500">${esc(g.account || '')} · exp ${esc(g.expiry)}${g.width ? ' · width ' + g.width : ''}</span> <span class="float-right">net mark ${money(g.net_mark)} · P/L <span class="${g.open_pnl === null ? '' : g.open_pnl < 0 ? 'text-red-400' : 'text-green-400'}">${money(g.open_pnl)}</span></span>`
             + `<div class="text-zinc-500">${esc(legs)}</div></div>`;
     }).join('') : '<div class="text-zinc-600">No option positions.</div>';
-    body.innerHTML = stocks + opts + `<div class="text-[8px] text-zinc-600 mt-2">As of ${esc(d.as_of)}. Net mark = signed sum of leg prices × 100 × contracts; shorts subtract. Leg prices as reported by the broker.</div>`;
+    body.innerHTML = stocks + opts + `<div class="text-[8px] text-zinc-600 mt-2">As of ${esc(d.as_of)}. Net mark = signed sum of leg price × multiplier × contracts (shorts subtract). P/L = price minus cost basis, same weighting. Prices as reported by the broker.</div>`;
 }
