@@ -13,6 +13,35 @@ try:
 except ImportError:
     pass
 
+# Secrets live in Bitwarden and are cached in the macOS login Keychain by scripts/sync_secrets.sh. A value in .env or
+# the environment wins; the Keychain fills only what is unset or blank. Off macOS, or without the item, nothing happens.
+KEYCHAIN_SERVICE = "market-terminal"
+SECRET_NAMES = (
+    "DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOLD_API_KEY", "EBAY_APP_ID", "EBAY_CERT_ID",
+    "CME_LOGIN_USERNAME", "CME_LOGIN_PASSWORD", "EMAIL_PASSWORD", "UPLOAD_TOKEN", "NTFY_URL", "ASSISTANT_LOCAL_API_KEY",
+    "SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY", "SNAPTRADE_USER_ID", "SNAPTRADE_USER_SECRET",
+)
+
+
+def _load_keychain():
+    import shutil
+    import subprocess
+    if os.environ.get("MT_NO_KEYCHAIN") == "1" or not shutil.which("security"):
+        return
+    for name in SECRET_NAMES:
+        if str(os.environ.get(name, "")).strip():
+            continue
+        try:
+            out = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", name, "-w"],
+                                 capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return
+        if out.returncode == 0 and out.stdout.strip():
+            os.environ[name] = out.stdout.strip()
+
+
+_load_keychain()
+
 
 class ConfigError(RuntimeError):
     pass

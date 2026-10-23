@@ -101,6 +101,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `options_whale/analyst_bin/mtq` | Read-only command the Claude Code analyst may run: one stored console source in-process, from an allowlist (`MTQ_SOURCES`) |
 | `core/chaos.py` | Chaos / Peace index: twelve stress z-scores, levers and the midterm studies (card 14), pure functions |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
+| `core/brokerage.py` | SnapTrade client for the terminal's Brokerage Positions card: signed REST calls, spread grouping, 60 s cache. Live, not part of the pipeline |
 | `core/news.py` | Headline clustering (title normalisation, Jaccard de-duplication, recency windows, priority bucketing); pure functions |
 | `core/news_feeds.json` | The RSS feed list (`name`, `category`, `url`, `enabled`); `NEWS_FEEDS_FILE` replaces it |
 | `THIRD_PARTY_NOTICES.md` | Credit and MIT notice for the MarketBrief ideas `core/news.py` adapts |
@@ -146,6 +147,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 
 | Path | Role |
 |---|---|
+| `scripts/sync_secrets.sh` | Operator-run: Bitwarden item `market-terminal` <-> macOS Keychain <-> `.env` (see [Configuration](configuration.md#secrets-in-bitwarden-and-the-keychain)) |
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
 | `scripts/backfill_crypto_metals.py` | Adds up to one year of BTC, silver and gold history to `crypto_metrics_history` |
 | `scripts/backfill_chaos_history.py` | Operator-run: loads 3 years of CBOE put/call and FINRA SPY short-volume days (the two Chaos / Peace components that need them). Takes the run lock; see [Backfills](operations.md#backfills) |

@@ -93,6 +93,22 @@ alias whenever `DATABENTO_API_KEY` is unset or blank, so a `.env` copied from th
 
 `ALPHA_VANTAGE_KEY` was removed: nothing read it. A leftover line in `.env` is ignored.
 
+### SnapTrade (optional)
+
+`SNAPTRADE_CLIENT_ID`, `SNAPTRADE_CONSUMER_KEY`, `SNAPTRADE_USER_ID`, `SNAPTRADE_USER_SECRET` feed the Brokerage Positions card
+(read-only). All four are needed; with any empty the card shows the setup steps instead. Get the first two from
+dashboard.snaptrade.com, then run `.venv/bin/python -m core.brokerage register` (prints the user id and secret once) and
+`.venv/bin/python -m core.brokerage connect` (prints the link where you log in to your broker).
+
+### Secrets in Bitwarden and the Keychain
+
+Secrets need not live in `.env`. `config.py` fills any name in `config.SECRET_NAMES` that is unset or blank from the macOS
+login Keychain (service `market-terminal`); a value in `.env` or the environment wins. `scripts/sync_secrets.sh` moves them:
+`push` copies `.env` into the Bitwarden item `market-terminal`, `pull` copies that item into the Keychain, `strip` blanks the
+names the Keychain now holds in `.env` (backup kept as `.env.bak.secrets`). Run `pull` again after rotating a key. Tests set
+`MT_NO_KEYCHAIN=1`. `HC_PING_*` URLs stay in `.env` because `run_dashboard.command` reads them with `sed`, and the keys in
+`index.keys.js` stay there because `index.html` is a static page.
+
 ### CME login
 
 | Variable | Default | Read by | When empty |
