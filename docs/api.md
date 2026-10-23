@@ -39,6 +39,8 @@ Each route below is marked **Stored**, **Live** or **Stored + Live**.
 
 The project rule is that models run in the pipeline and a **new** `/api/*` route reads stored data (see [Architecture](architecture.md#design-rules)). Existing routes do not all follow it. Eight routes are Live and three more are Stored + Live. Several compute models in the request: gamma exposure (`/api/gex`, using the pipeline's own `metrics.gex_profile()`), option analytics (`/api/option_calc`, `/api/time_arbitrage`), the VMRI scenario (`/api/war_room`), moving averages (`/api/vmri_history`) and position values (`/api/positions`). Their results can differ from the pipeline's numbers for the same quantity because they use a later quote.
 
+`GET /api/brokerage` is Live: it calls SnapTrade (HMAC-signed, `core/brokerage.py`), caches 60 s in memory, answers `?refresh=1` fresh, and returns `status` `ok`, `not_configured` (with `missing` and `setup`) or `error` (with `reason`), always HTTP 200 except an unexpected failure (502). It stores nothing.
+
 Every route that reads the database (`/api/positions`, `/api/forecast`, `/api/eia_history`, `/api/chaos`, `/api/chaos/history`) opens it read-only (`core/lake.py` `connect_readonly()`). Only the star and stop-tracking routes open it read-write, and none of the routes creates the database.
 
 ## Response and error conventions

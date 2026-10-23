@@ -327,6 +327,18 @@ Other behavior:
 - An empty list reads "No tracked positions yet": tickets appear after each live pipeline run. Offline runs and replays
   record none, and a run records none when the engine had no verdict or no contract to pick.
 
+## Brokerage Positions
+
+Panel 16 on the Macro Direction tab. Your SnapTrade-connected broker accounts: stock rows (shares, price, value, open P/L)
+and option positions grouped by underlying and expiry. Two legs of one type with opposite signs are named
+`CALL|PUT DEBIT|CREDIT SPREAD` (with width), a long or short pair of different types is a `STRADDLE` or `STRANGLE`, a single
+leg is `LONG|SHORT CALL|PUT`, and anything else is `MULTI-LEG`. Net mark is the signed sum of leg price × 100 × contracts, so
+shorts subtract; it is blank when any leg has no price. The data is live (see [API](api.md)), cached on the server for 60
+seconds, loaded 3.6 seconds after the page opens and refreshed every 60 seconds; REFRESH bypasses the cache.
+
+Until SnapTrade is set up the card says which settings are missing and lists the setup steps (also in
+[Configuration](configuration.md#snaptrade-optional)). An HTTP error from SnapTrade shows the code and the same steps.
+
 ## Panel controls
 
 | Control | Where | Behavior |

@@ -1729,6 +1729,7 @@ def api_help():
   </group>
 
   <group name="Engine positions">
+    <endpoint method="GET" path="/api/brokerage" format="json" source="live (SnapTrade, cached 60 s)" params="refresh=1">Broker stocks and option spreads; status not_configured carries the setup steps.</endpoint>
     <endpoint method="GET" path="/api/positions" format="json" source="stored and live">
       <description>Tracked engine positions from the database (opened read-only), with live underlying and option prices and projected values. 503 until a pipeline run has created the database.</description>
       <parameters />
@@ -2709,6 +2710,14 @@ def _writable_connection():
     if not os.path.exists(_V2_DB_PATH):
         return None
     return _v2lake.connect(_V2_DB_PATH)
+
+
+@app.route('/api/brokerage', methods=['GET'])
+@guarded("Brokerage positions", 502)
+def api_brokerage():
+    """Live SnapTrade holdings (stocks, option legs grouped into spreads), cached 60 s. status ok / not_configured / error."""
+    from core import brokerage
+    return jsonify(_json_safe(brokerage.positions(force=request.args.get('refresh') == '1')))
 
 
 @app.route('/api/positions/<int:signal_id>/star', methods=['POST'])

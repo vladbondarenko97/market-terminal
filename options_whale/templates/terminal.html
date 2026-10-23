@@ -1008,6 +1008,27 @@
                             </table>
                         </div>
                     </div> <!-- End of panel15 -->
+
+                    <!-- Panel 16: Brokerage Positions (SnapTrade) -->
+                    <div id="panel16" draggable="true"
+                        class="draggable-panel md:col-span-2 lg:col-span-3 flex flex-col border border-sky-900/50 rounded bg-black overflow-hidden shadow-[0_0_15px_rgba(14,165,233,0.1)] transition-all duration-300">
+                        <div
+                            class="bg-sky-950/30 px-3 py-1 text-[9px] flex justify-between items-center cursor-move border-b border-sky-900/30">
+                            <span class="text-sky-400 font-bold tracking-widest flex items-center gap-2">
+                                🏦 BROKERAGE POSITIONS <span id="brokerageCount" class="text-zinc-500 font-normal"></span>
+                            </span>
+                            <div class="flex gap-2 items-center">
+                                <button onclick="loadBrokerage(true)"
+                                    class="hover:text-sky-400 text-zinc-500 font-bold transition-colors">REFRESH</button>
+                                <button onclick="copyPanelData('panel16')"
+                                    class="hover:text-green-400 text-zinc-500 font-bold transition-colors">COPY</button>
+                                <button onclick="toggleFullscreen('panel16')"
+                                    class="btn-maximize hover:text-blue-400 font-bold text-zinc-500 transition-colors">[MAX]</button>
+                            </div>
+                        </div>
+                        <div id="brokerageBody"
+                            class="flex-1 p-2 text-[10px] font-mono text-zinc-300 cursor-default overflow-auto terminal-scroll">Loading brokerage...</div>
+                    </div> <!-- End of panel16 -->
                 </div> <!-- End of panelContainer -->
             </div> <!-- End of macro-tab -->
 

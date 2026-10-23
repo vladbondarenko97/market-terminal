@@ -15,13 +15,15 @@ FIX = ROOT / "tests" / "fixtures"
 TMP = Path(tempfile.mkdtemp(prefix="v2test_"))
 DATA = TMP / "CME_Data"
 os.environ["PORTFOLIO_DATA_DIR"] = str(DATA)
+os.environ["MT_NO_KEYCHAIN"] = "1"   # config must not fill blanks from the developer's Keychain
 # Blank every credential and delivery setting so a developer's real .env (loaded by config, which never overrides
 # variables that are already set) cannot reach a provider, a mailbox, a phone or a web server during tests.
 for k in ("DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOLD_API_KEY",
           "EBAY_APP_ID", "EBAY_CERT_ID", "CME_LOGIN_USERNAME", "CME_LOGIN_PASSWORD", "EMAIL_SENDER",
           "EMAIL_PASSWORD", "SMTP_SERVER", "RECIPIENT_EMAIL", "REPORT_SENDER", "NTFY_URL", "DASHBOARD_URL",
           "UPLOAD_URL", "UPLOAD_TOKEN", "REPORT_UPLOAD", "SCHEDULED_RUNS",
-          "ASSISTANT_LOCAL_URL", "ASSISTANT_LOCAL_MODEL", "ASSISTANT_LOCAL_API_KEY"):
+          "ASSISTANT_LOCAL_URL", "ASSISTANT_LOCAL_MODEL", "ASSISTANT_LOCAL_API_KEY",
+          "SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY"):
     os.environ[k] = ""
 sys.path.insert(0, str(ROOT))
 

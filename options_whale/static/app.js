@@ -606,6 +606,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => loadShfeArbSpread(), 3200);
     setTimeout(() => loadPositions(), 3400);
     setInterval(loadPositions, 60000);
+    setTimeout(() => loadBrokerage(), 3600);
+    setInterval(loadBrokerage, 120000);
 
     // Add this to your DOMContentLoaded in app.js
     document.getElementById('modalBackdrop').addEventListener('click', () => {
@@ -1975,7 +1977,8 @@ const PANEL_LABELS = {
     panel12: 'MACRO NEWS FEED',
     panel13: 'FED LIQUIDITY PLUMBING',
     panel14: 'SHANGHAI-COMEX ARB',
-    panel15: 'ENGINE POSITIONS'
+    panel15: 'ENGINE POSITIONS',
+    panel16: 'BROKERAGE POSITIONS'
 };
 
 // Collects data per panel and opens the modal
@@ -2094,6 +2097,10 @@ function copyPanelData(panelId) {
             } else {
                 payload = JSON.stringify({ note: 'Liquidity data loading...' }, null, 2);
             }
+        }
+
+        else if (panelId === 'panel16') {
+            payload = JSON.stringify({ panel: PANEL_LABELS[panelId], ...(window._brokerageData || {}) }, null, 2);
         }
 
         else if (panelId === 'panel15') {
@@ -4150,4 +4157,45 @@ async function deletePosition(id) {
         window._positionsData = (window._positionsData || []).filter(x => x.signal_id !== id);
         renderPositions();
     } catch (e) { log(`Stop tracking failed: ${e.message}`, 'error'); }
+}
+
+
+// --- PANEL 16: BROKERAGE POSITIONS (SnapTrade, live, server-cached 60 s) ---
+async function loadBrokerage(force) {
+    const body = document.getElementById('brokerageBody');
+    if (!body) return;
+    try {
+        const d = await fetchJson(`${API_BASE}/api/brokerage${force ? '?refresh=1' : ''}`);
+        window._brokerageData = d;
+        renderBrokerage(d);
+    } catch (e) {
+        body.innerHTML = `<div class="text-red-400">Brokerage unavailable: ${esc(e.message)}</div>`;
+    }
+}
+
+function renderBrokerage(d) {
+    const body = document.getElementById('brokerageBody'), count = document.getElementById('brokerageCount');
+    const money = v => (v === null || v === undefined) ? '—' : (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (d.status !== 'ok') {
+        count.textContent = '';
+        const steps = (d.setup || []).map((s, i) => `<li class="mb-1">${esc(s)}</li>`).join('');
+        body.innerHTML = `<div class="${d.status === 'error' ? 'text-red-400' : 'text-amber-400'} mb-2">${esc(d.reason || 'unavailable')}</div>`
+            + `<div class="text-zinc-500 uppercase text-[8px] tracking-widest mb-1">${d.status === 'error' ? 'Check setup' : 'Set up SnapTrade'}</div><ol class="list-decimal ml-4 text-zinc-400">${steps}</ol>`;
+        return;
+    }
+    count.textContent = `(${d.stocks.length} stocks · ${d.options.length} option groups)`;
+    const th = c => `<th class="pr-2 ${c || ''}">`;
+    const stocks = d.stocks.length ? `<table class="w-full mb-3"><thead class="text-[8px] text-zinc-500 uppercase tracking-widest"><tr class="text-left border-b border-zinc-800">`
+        + `${th()}Symbol</th>${th('text-right')}Shares</th>${th('text-right')}Price</th>${th('text-right')}Value</th>${th('text-right')}Open P/L</th></tr></thead><tbody>`
+        + d.stocks.map(s => `<tr><td class="pr-2">${esc(s.symbol)}</td><td class="pr-2 text-right">${s.units}</td><td class="pr-2 text-right">${money(s.price)}</td>`
+            + `<td class="pr-2 text-right">${money(s.value)}</td><td class="pr-2 text-right ${s.open_pnl === null ? 'text-zinc-500' : s.open_pnl < 0 ? 'text-red-400' : 'text-green-400'}">${money(s.open_pnl)}</td></tr>`).join('') + '</tbody></table>'
+        : '<div class="text-zinc-600 mb-3">No stock positions.</div>';
+    const opts = d.options.length ? d.options.map(g => {
+        const tone = g.kind.includes('PUT') || g.kind.startsWith('SHORT') ? 'text-rose-300' : 'text-emerald-300';
+        const legs = g.legs.map(l => `${l.units > 0 ? '+' : ''}${l.units} ${(l.type || '?')[0]} ${l.strike}${l.price === null ? '' : ' @ ' + l.price}`).join(' / ');
+        return `<div class="border-t border-zinc-900 py-1"><span class="font-bold">${esc(g.underlying)}</span> <span class="${tone}">${esc(g.kind)}</span> `
+            + `<span class="text-zinc-500">${esc(g.account || '')} · exp ${esc(g.expiry)}${g.width ? ' · width ' + g.width : ''}</span> <span class="float-right">net mark ${money(g.net_mark)}</span>`
+            + `<div class="text-zinc-500">${esc(legs)}</div></div>`;
+    }).join('') : '<div class="text-zinc-600">No option positions.</div>';
+    body.innerHTML = stocks + opts + `<div class="text-[8px] text-zinc-600 mt-2">As of ${esc(d.as_of)}. Net mark = signed sum of leg prices × 100 × contracts; shorts subtract. Leg prices as reported by the broker.</div>`;
 }
