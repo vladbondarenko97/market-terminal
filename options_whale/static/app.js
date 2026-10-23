@@ -4188,14 +4188,14 @@ function renderBrokerage(d) {
     const stocks = d.stocks.length ? `<table class="w-full mb-3"><thead class="text-[8px] text-zinc-500 uppercase tracking-widest"><tr class="text-left border-b border-zinc-800">`
         + `${th()}Symbol</th>${th('text-right')}Shares</th>${th('text-right')}Price</th>${th('text-right')}Value</th>${th('text-right')}Open P/L</th></tr></thead><tbody>`
         + d.stocks.map(s => `<tr><td class="pr-2">${esc(s.symbol)}</td><td class="pr-2 text-right">${s.units}</td><td class="pr-2 text-right">${money(s.price)}</td>`
-            + `<td class="pr-2 text-right">${money(s.value)}</td><td class="pr-2 text-right ${s.open_pnl === null ? 'text-zinc-500' : s.open_pnl < 0 ? 'text-red-400' : 'text-green-400'}">${money(s.open_pnl)}</td></tr>`).join('') + '</tbody></table>'
+            + `<td class="pr-2 text-right">${money(s.value)}</td><td class="pr-2 text-right ${s.open_pnl == null ? 'text-zinc-500' : s.open_pnl < 0 ? 'text-red-400' : 'text-green-400'}">${money(s.open_pnl)}</td></tr>`).join('') + '</tbody></table>'
         : '<div class="text-zinc-600 mb-3">No stock positions.</div>';
     const opts = d.options.length ? d.options.map(g => {
         const tone = g.kind.includes('PUT') || g.kind.startsWith('SHORT') ? 'text-rose-300' : 'text-emerald-300';
         const legs = g.legs.map(l => `${l.units > 0 ? '+' : ''}${l.units} ${(l.type || '?')[0]} ${l.strike}${l.price === null ? '' : ' @ ' + l.price}`).join(' / ');
         return `<div class="border-t border-zinc-900 py-1"><span class="font-bold">${esc(g.underlying)}</span> <span class="${tone}">${esc(g.kind)}</span> `
-            + `<span class="text-zinc-500">${esc(g.account || '')} · exp ${esc(g.expiry)}${g.width ? ' · width ' + g.width : ''}</span> <span class="float-right">net mark ${money(g.net_mark)} · P/L <span class="${g.open_pnl === null ? '' : g.open_pnl < 0 ? 'text-red-400' : 'text-green-400'}">${money(g.open_pnl)}</span></span>`
+            + `<span class="text-zinc-500">${esc(g.account || '')} · exp ${esc(g.expiry)}${g.width ? ' · width ' + g.width : ''}</span> <span class="float-right">net mark ${money(g.net_mark)} · P/L <span class="${g.open_pnl == null ? '' : g.open_pnl < 0 ? 'text-red-400' : 'text-green-400'}">${money(g.open_pnl)}</span></span>`
             + `<div class="text-zinc-500">${esc(legs)}</div></div>`;
     }).join('') : '<div class="text-zinc-600">No option positions.</div>';
-    body.innerHTML = stocks + opts + `<div class="text-[8px] text-zinc-600 mt-2">As of ${esc(d.as_of)}. Net mark = signed sum of leg price × multiplier × contracts (shorts subtract). P/L = price minus cost basis, same weighting. Prices as reported by the broker.</div>`;
+    body.innerHTML = stocks + opts + (d.skipped ? `<div class="text-amber-400 mt-1">${d.skipped} position(s) not shown: unsupported type or unreadable row.</div>` : '') + `<div class="text-[8px] text-zinc-600 mt-2">As of ${esc(d.as_of)}. Net mark = signed sum of leg price × multiplier × contracts (shorts subtract). P/L = price minus cost basis, same weighting. Prices as reported by the broker.</div>`;
 }

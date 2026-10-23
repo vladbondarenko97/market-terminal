@@ -332,7 +332,7 @@ Other behavior:
 Panel 16 on the Macro Direction tab. Your SnapTrade-connected broker accounts: stock rows (shares, price, value, open P/L)
 and option positions grouped by underlying and expiry. Two legs of one type with opposite signs are named
 `CALL|PUT DEBIT|CREDIT SPREAD` (with width), a long or short pair of different types is a `STRADDLE` or `STRANGLE`, a single
-leg is `LONG|SHORT CALL|PUT`, and anything else is `MULTI-LEG`. Net mark is the signed sum of leg price × multiplier × contracts, so
+leg is `LONG|SHORT CALL|PUT`, and anything else is `MULTI-LEG`. Positions of an unsupported type or an unreadable row are counted in an amber "not shown" line, not dropped silently. Net mark is the signed sum of leg price × multiplier × contracts, so
 shorts subtract, and P/L is the same sum of (price − cost basis); each is blank when any leg lacks a number. The data is live (see [API](api.md)), cached on the server for 60
 seconds, loaded 3.6 seconds after the page opens and refreshed every 60 seconds; REFRESH bypasses the cache.
 

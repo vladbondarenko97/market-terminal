@@ -1,4 +1,5 @@
 import support  # noqa: F401  (must come first: sets the offline environment)
+import sys
 import unittest
 from unittest import mock
 
@@ -39,6 +40,7 @@ class BrokerageTests(unittest.TestCase):
         self.assertTrue(r["setup"])
 
     def test_route_not_configured(self):
+        sys.path.insert(0, str(support.ROOT / "options_whale"))
         import api_router
         r = api_router.app.test_client().get("/api/brokerage")
         self.assertEqual((r.status_code, r.get_json()["status"]), (200, "not_configured"))
@@ -50,11 +52,14 @@ class BrokerageTests(unittest.TestCase):
             return {"instrument": {"kind": "option", "option_type": "CALL", "strike_price": strike, "expiration_date": "2026-12-18",
                                    "multiplier": 100, "underlying": {"symbol": "SPY"}}, "units": units, "price": price, "cost_basis": cost}
         bad = o("x", "1", "1", "1")
+        junk = "not a dict"
+        future = {"instrument": {"kind": "future", "symbol": "ES"}, "units": "1", "price": "1"}
         def fake(method, path, creds, body=None):
-            return accts if path.endswith("accounts") else {"results": [stock, bad, o("500", "1", "3", "2"), o("510", "-1", "1", "0.5")]}
+            return accts if path.endswith("accounts") else {"results": [stock, bad, junk, future, o("500", "1", "3", "2"), o("510", "-1", "1", "0.5")]}
         with mock.patch.object(brokerage, "_call", fake):
             r = brokerage.fetch({})
         self.assertEqual((r["stocks"][0]["value"], r["stocks"][0]["open_pnl"]), (20.0, 4.0))
+        self.assertEqual(r["skipped"], 3)
         g = r["options"][0]
         self.assertEqual((g["kind"], g["account"], g["net_mark"], g["open_pnl"]), ("CALL DEBIT SPREAD", "IRA", 200.0, 50.0))
 

@@ -60,6 +60,13 @@ def _num(x):
 
 def _leg(p):
     """An option position from /positions/all, or None when it lacks what grouping needs."""
+    try:
+        return _leg_raw(p)
+    except (AttributeError, ValueError, TypeError):
+        return None
+
+
+def _leg_raw(p):
     i = p.get("instrument") or {}
     if i.get("kind") != "option":
         return None
@@ -76,6 +83,13 @@ STOCK_KINDS = {"stock", "etf", "adr", "cef", "mutualfund", "crypto", "bond", "ot
 
 
 def _stock(p):
+    try:
+        return _stock_raw(p)
+    except (AttributeError, ValueError, TypeError):
+        return None
+
+
+def _stock_raw(p):
     i = p.get("instrument") or {}
     units, price, cost = _num(p.get("units")), _num(p.get("price")), _num(p.get("cost_basis"))
     if i.get("kind") not in STOCK_KINDS or not i.get("symbol") or not units:
@@ -114,7 +128,7 @@ def group_options(legs):
         strikes = [l["strike"] for l in ls]
         marks = [l["units"] * l["price"] * l["multiplier"] for l in ls if l["price"] is not None]
         pnls = [(l["price"] - l["avg_price"]) * l["units"] * l["multiplier"] for l in ls if l["price"] is not None and l["avg_price"] is not None]
-        out.append({"account": acct, "underlying": under, "expiry": expiry, "kind": kind, "legs": ls,
+        out.append({"account": ls[0].get("account_name", acct), "underlying": under, "expiry": expiry, "kind": kind, "legs": ls,
                     "width": max(strikes) - min(strikes) if kind.endswith("SPREAD") else None,
                     # mark value is signed: shorts subtract. None when any leg has no price (missing is not zero).
                     "net_mark": sum(marks) if len(marks) == len(ls) else None,
@@ -123,7 +137,7 @@ def group_options(legs):
 
 
 def fetch(creds):
-    stocks, legs, accounts = [], [], []
+    stocks, legs, accounts, skipped = [], [], [], 0
     for acct in _call("GET", "/api/v1/accounts", creds):
         aid = acct["id"]
         accounts.append({"id": aid, "name": acct.get("name"), "institution": acct.get("institution_name")})
@@ -132,8 +146,10 @@ def fetch(creds):
             if (stock := _stock(p)):
                 stocks.append(stock)
             elif (leg := _leg(p)):
-                legs.append({**leg, "account": acct.get("name") or aid})
-    return {"accounts": accounts, "stocks": stocks, "options": group_options(legs)}
+                legs.append({**leg, "account": aid, "account_name": acct.get("name") or aid})
+            else:
+                skipped += 1   # unlisted kind (future, warrant...) or an unparseable row: counted, never silently zero
+    return {"accounts": accounts, "stocks": stocks, "options": group_options(legs), "skipped": skipped}
 
 
 def positions(force=False):
