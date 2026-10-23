@@ -58,38 +58,45 @@ def _num(x):
         return None
 
 
-def _leg(h):
+def _leg(p):
+    """An option position from /positions/all, or None when it lacks what grouping needs."""
     try:
-        return _leg_raw(h)
-    except (ValueError, TypeError):
+        return _leg_raw(p)
+    except (AttributeError, ValueError, TypeError):
         return None
 
 
-def _leg_raw(h):
-    o = (h.get("symbol") or {}).get("option_symbol") or {}
-    under = (o.get("underlying_symbol") or {}).get("symbol")
-    if not (under and o.get("strike_price") is not None and o.get("expiration_date")):
+def _leg_raw(p):
+    i = p.get("instrument") or {}
+    if i.get("kind") != "option":
         return None
-    return {"underlying": under, "type": str(o.get("option_type", "")).upper(), "strike": float(o["strike_price"]),
-            "expiry": str(o["expiration_date"])[:10], "units": float(h.get("units") or 0),
-            "price": _num(h.get("price")), "avg_price": _num(h.get("average_purchase_price")),
-            "ticker": o.get("ticker")}
+    under = (i.get("underlying") or {}).get("symbol")
+    strike, units = _num(i.get("strike_price")), _num(p.get("units"))
+    if not (under and strike is not None and i.get("expiration_date") and units):
+        return None
+    return {"underlying": under, "type": str(i.get("option_type", "")).upper(), "strike": strike,
+            "expiry": str(i["expiration_date"])[:10], "units": units, "multiplier": _num(i.get("multiplier")) or 100,
+            "price": _num(p.get("price")), "avg_price": _num(p.get("cost_basis")), "ticker": i.get("symbol")}
+
+
+STOCK_KINDS = {"stock", "etf", "adr", "cef", "mutualfund", "crypto", "bond", "other"}
 
 
 def _stock(p):
     try:
         return _stock_raw(p)
-    except (ValueError, TypeError):
+    except (AttributeError, ValueError, TypeError):
         return None
 
 
 def _stock_raw(p):
-    sym = ((p.get("symbol") or {}).get("symbol") or {}).get("symbol")
-    units, price = _num(p.get("units")), _num(p.get("price"))
-    if not sym or not units:
+    i = p.get("instrument") or {}
+    units, price, cost = _num(p.get("units")), _num(p.get("price")), _num(p.get("cost_basis"))
+    if i.get("kind") not in STOCK_KINDS or not i.get("symbol") or not units:
         return None
-    return {"symbol": sym, "units": units, "price": price, "avg_price": _num(p.get("average_purchase_price")),
-            "value": units * price if price is not None else None, "open_pnl": _num(p.get("open_pnl"))}
+    return {"symbol": i["symbol"], "units": units, "price": price, "avg_price": cost,
+            "value": units * price if price is not None else None,
+            "open_pnl": (price - cost) * units if price is not None and cost is not None else None}
 
 
 def classify(legs):
@@ -119,26 +126,30 @@ def group_options(legs):
     for (acct, under, expiry), ls in sorted(groups.items(), key=lambda kv: (kv[0][2], kv[0][1], str(kv[0][0]))):
         kind = classify(ls)
         strikes = [l["strike"] for l in ls]
-        marks = [l["units"] * l["price"] * 100 for l in ls if l["price"] is not None]
-        out.append({"account": acct, "underlying": under, "expiry": expiry, "kind": kind, "legs": ls,
+        marks = [l["units"] * l["price"] * l["multiplier"] for l in ls if l["price"] is not None]
+        pnls = [(l["price"] - l["avg_price"]) * l["units"] * l["multiplier"] for l in ls if l["price"] is not None and l["avg_price"] is not None]
+        out.append({"account": ls[0].get("account_name", acct), "underlying": under, "expiry": expiry, "kind": kind, "legs": ls,
                     "width": max(strikes) - min(strikes) if kind.endswith("SPREAD") else None,
                     # mark value is signed: shorts subtract. None when any leg has no price (missing is not zero).
-                    "net_mark": sum(marks) if len(marks) == len(ls) else None})
+                    "net_mark": sum(marks) if len(marks) == len(ls) else None,
+                    "open_pnl": sum(pnls) if len(pnls) == len(ls) else None})
     return out
 
 
 def fetch(creds):
-    stocks, legs, accounts, seen = [], [], [], 0
+    stocks, legs, accounts, skipped = [], [], [], 0
     for acct in _call("GET", "/api/v1/accounts", creds):
         aid = acct["id"]
         accounts.append({"id": aid, "name": acct.get("name"), "institution": acct.get("institution_name")})
-        stocks += [s for s in map(_stock, _call("GET", f"/api/v1/accounts/{aid}/positions", creds)) if s]
-        held = _call("GET", f"/api/v1/accounts/{aid}/options", creds)
-        held = held.get("holdings", []) if isinstance(held, dict) else held
-        for l in map(_leg, held):
-            if l:
-                legs.append({**l, "account": acct.get("name") or aid})
-    return {"accounts": accounts, "stocks": stocks, "options": group_options(legs)}
+        got = _call("GET", f"/api/v1/accounts/{aid}/positions/all", creds)   # stocks, ETFs and options in one list (the old /positions and /options answer 410)
+        for p in got.get("results", []) if isinstance(got, dict) else got:
+            if (stock := _stock(p)):
+                stocks.append(stock)
+            elif (leg := _leg(p)):
+                legs.append({**leg, "account": aid, "account_name": acct.get("name") or aid})
+            else:
+                skipped += 1   # unlisted kind (future, warrant...) or an unparseable row: counted, never silently zero
+    return {"accounts": accounts, "stocks": stocks, "options": group_options(legs), "skipped": skipped}
 
 
 def positions(force=False):
