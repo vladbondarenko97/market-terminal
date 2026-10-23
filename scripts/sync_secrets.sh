@@ -1,41 +1,34 @@
 #!/bin/zsh
-# Bitwarden <-> macOS Keychain for this project's secrets (names: SECRET_NAMES in config.py).
-#   BW_SESSION=$(bw unlock --raw) scripts/sync_secrets.sh push   # .env -> Bitwarden item "market-terminal" (custom hidden fields)
-#   BW_SESSION=$(bw unlock --raw) scripts/sync_secrets.sh pull   # Bitwarden item -> Keychain, which config.py reads at import
-#   scripts/sync_secrets.sh strip                                # blank those names in .env (run after pull; keeps a .env.bak.secrets copy)
-# Re-run pull after you rotate a key. Reads and writes secrets only; sends nothing anywhere else.
+# Bitwarden <-> macOS Keychain <-> .env for this project's secrets. Names: SECRET_NAMES in config.py.
+# Bitwarden holds one Login item per name (item name = variable name, value in the password field).
+#   export BW_SESSION=$(bw unlock --raw)
+#   scripts/sync_secrets.sh push    # .env values -> Bitwarden items (created if missing, never overwritten)
+#   scripts/sync_secrets.sh pull    # Bitwarden items -> Keychain (service market-terminal), which config.py reads at import
+#   scripts/sync_secrets.sh strip   # blank in .env every name the Keychain holds (keeps .env.bak.secrets)
+# Re-run pull after you rotate a key. Touches only Bitwarden, the Keychain and .env; sends nothing anywhere else.
 set -eu
 cd "$(dirname "$0")/.."
-ITEM=market-terminal
-NAMES=($(.venv/bin/python -c 'import os; os.environ["MT_NO_KEYCHAIN"]="1"; import config; print(*config.SECRET_NAMES)'))
+NAMES=($(MT_NO_KEYCHAIN=1 .venv/bin/python -c 'import config; print(*config.SECRET_NAMES)'))
 
 case "${1:-}" in
 push)
-  fields='[]'
   for n in $NAMES; do
     v=$(sed -nE "s/^$n=//p" .env | tail -1)
-    [ -n "$v" ] && fields=$(jq --arg n "$n" --arg v "$v" '. + [{name:$n,value:$v,type:1}]' <<<"$fields")
-  done
-  id=$(bw get item "$ITEM" 2>/dev/null | jq -r .id || true)
-  if [ -n "$id" ]; then   # merge: keep fields already in the vault that .env no longer has
-    old=$(bw get item "$ITEM" | jq -c '.fields // []')
-    fields=$(jq -c --argjson new "$fields" '[.[] | select(.name as $n | $new | map(.name) | index($n) | not)] + $new' <<<"$old")
-    bw get item "$ITEM" | jq --argjson f "$fields" '.fields=$f' | bw encode | bw edit item "$id" >/dev/null
-  else
-    bw get template item | jq --arg n "$ITEM" --argjson f "$fields" '.type=2|.secureNote={type:0}|.name=$n|.notes="Managed by scripts/sync_secrets.sh"|.fields=$f' | bw encode | bw create item >/dev/null
-  fi
-  echo "pushed $(jq length <<<"$fields") fields to Bitwarden item $ITEM" ;;
+    [ -n "$v" ] || continue
+    if bw get item "$n" >/dev/null 2>&1; then echo "exists:  $n"; continue; fi
+    bw get template item | jq --arg n "$n" --arg v "$v" '.type=1|.name=$n|.login={username:null,password:$v,uris:[]}' | bw encode | bw create item >/dev/null && echo "created: $n"
+  done ;;
 pull)
-  bw get item "$ITEM" | jq -r '.fields[] | [.name,.value] | @tsv' | while IFS=$'\t' read -r n v; do
-    (( ${NAMES[(Ie)$n]} )) || { echo "skip unknown field $n"; continue; }
+  for n in $NAMES; do
+    v=$(bw get password "$n" 2>/dev/null) || continue
     security add-generic-password -U -s market-terminal -a "$n" -w "$v" && echo "keychain: $n"
   done ;;
 strip)
   cp .env .env.bak.secrets && chmod 600 .env.bak.secrets
   for n in $NAMES; do
-    security find-generic-password -s market-terminal -a "$n" -w >/dev/null 2>&1 || continue   # only blank what the Keychain holds
-    sed -i '' -E "s/^$n=.*/$n=/" .env && echo "blanked $n"
+    security find-generic-password -s market-terminal -a "$n" -w >/dev/null 2>&1 || continue
+    sed -i '' -E "s/^$n=.*/$n=/" .env && echo "blanked: $n"
   done
-  echo "backup of the old .env: .env.bak.secrets (delete it once the services run fine)" ;;
+  echo "old .env saved as .env.bak.secrets; delete it once the services run fine" ;;
 *) echo "usage: scripts/sync_secrets.sh push|pull|strip"; exit 2 ;;
 esac

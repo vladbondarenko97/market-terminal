@@ -2,13 +2,12 @@
 
 Live, not stored: the terminal route calls this on refresh and `positions()` caches the answer for CACHE_SECONDS.
 Without the four SNAPTRADE_* settings it answers {"status": "not_configured", ...} with the setup steps the card shows.
-Setup helper: `python -m core.brokerage register` then `python -m core.brokerage connect` (print what to store).
+Personal SnapTrade keys identify the account themselves, so only the client id and consumer key are needed.
 """
 import base64
 import hashlib
 import hmac
 import json
-import sys
 import threading
 import time
 from collections import defaultdict
@@ -20,12 +19,11 @@ import config
 
 BASE = "https://api.snaptrade.com"
 CACHE_SECONDS = 60
-SETTINGS = ("SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY", "SNAPTRADE_USER_ID", "SNAPTRADE_USER_SECRET")
+SETTINGS = ("SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY")
 SETUP = [
-    "Sign in at dashboard.snaptrade.com and copy your Client ID and Consumer Key into Bitwarden.",
-    "Run `.venv/bin/python -m core.brokerage register` once: it prints a user id and user secret. Save both in Bitwarden.",
-    "Run `.venv/bin/python -m core.brokerage connect`, open the link it prints and log in to your broker.",
-    "Run scripts/sync_secrets.sh (pulls the four SNAPTRADE_* values from Bitwarden into the Keychain), then restart the terminal.",
+    "Sign in at dashboard.snaptrade.com (a Personal account) and connect your broker there.",
+    "Copy the Client ID and Consumer Key from the dashboard into Bitwarden as SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY.",
+    "Run scripts/sync_secrets.sh pull (Bitwarden -> Keychain), then restart the terminal.",
 ]
 
 _cache = {"at": 0.0, "data": None}
@@ -43,10 +41,8 @@ def sign(consumer_key, path, query, body=None):
     return base64.b64encode(digest).decode()
 
 
-def _call(method, path, creds, body=None, user=True):
+def _call(method, path, creds, body=None):
     params = {"clientId": creds["SNAPTRADE_CLIENT_ID"], "timestamp": str(int(time.time()))}
-    if user:
-        params.update(userId=creds["SNAPTRADE_USER_ID"], userSecret=creds["SNAPTRADE_USER_SECRET"])
     query = urlencode(params)
     resp = requests.request(method, f"{BASE}{path}", params=params, json=body, timeout=15,
                             headers={"Signature": sign(creds["SNAPTRADE_CONSUMER_KEY"], path, query, body)})
@@ -143,23 +139,3 @@ def positions(force=False):
             return {"status": "error", "reason": f"SnapTrade call failed: {type(exc).__name__}", "setup": SETUP}
         _cache.update(at=time.time(), data=data)
         return data
-
-
-def _cli(cmd):
-    creds = _creds()
-    need = ("SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY") + (("SNAPTRADE_USER_ID", "SNAPTRADE_USER_SECRET") if cmd == "connect" else ())
-    if any(not creds[k] for k in need):
-        sys.exit("Missing: " + ", ".join(k for k in need if not creds[k]))
-    if cmd == "register":
-        user = f"market-terminal-{int(time.time())}"
-        r = _call("POST", "/api/v1/snapTrade/registerUser", creds, {"userId": user}, user=False)
-        print(f"SNAPTRADE_USER_ID={r['userId']}\nSNAPTRADE_USER_SECRET={r['userSecret']}\nStore both in Bitwarden now: the secret is shown once.")
-    else:
-        r = _call("POST", "/api/v1/snapTrade/login", creds, {"connectionType": "read"})
-        print("Open this link and connect your broker:\n" + r["redirectURI"])
-
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in ("register", "connect"):
-        sys.exit("usage: python -m core.brokerage register|connect")
-    _cli(sys.argv[1])
