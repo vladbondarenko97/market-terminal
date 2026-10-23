@@ -8,6 +8,7 @@
 # Re-run pull after you rotate a key. Touches only Bitwarden, the Keychain and .env; sends nothing anywhere else.
 set -eu
 cd "$(dirname "$0")/.."
+ENVF=$(realpath .env)   # follow a symlinked .env so strip edits the real file
 NAMES=($(MT_NO_KEYCHAIN=1 .venv/bin/python -c 'import config; print(*config.SECRET_NAMES)'))
 
 case "${1:-}" in
@@ -24,11 +25,11 @@ pull)
     security add-generic-password -U -s market-terminal -a "$n" -w "$v" && echo "keychain: $n"
   done ;;
 strip)
-  cp .env .env.bak.secrets && chmod 600 .env.bak.secrets
+  cp "$ENVF" "$ENVF.bak.secrets" && chmod 600 "$ENVF.bak.secrets"
   for n in $NAMES; do
     security find-generic-password -s market-terminal -a "$n" -w >/dev/null 2>&1 || continue
-    sed -i '' -E "s/^$n=.*/$n=/" .env && echo "blanked: $n"
+    sed -i '' -E "s/^$n=.*/$n=/" "$ENVF" && echo "blanked: $n"
   done
-  echo "old .env saved as .env.bak.secrets; delete it once the services run fine" ;;
+  echo "old .env saved as .env.bak.secrets next to .env; delete it once the services run fine" ;;
 *) echo "usage: scripts/sync_secrets.sh push|pull|strip"; exit 2 ;;
 esac
