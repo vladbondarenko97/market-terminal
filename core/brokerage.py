@@ -19,6 +19,7 @@ import config
 
 BASE = "https://api.snaptrade.com"
 CACHE_SECONDS = 60
+ERROR_CACHE_SECONDS = 30
 SETTINGS = ("SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY")
 SETUP = [
     "Sign in at dashboard.snaptrade.com (a Personal account) and connect your broker there.",
@@ -51,10 +52,20 @@ def _call(method, path, creds, body=None):
 
 
 def _num(x):
-    return float(x) if isinstance(x, (int, float)) else None
+    try:
+        return float(x)
+    except (ValueError, TypeError):
+        return None
 
 
 def _leg(h):
+    try:
+        return _leg_raw(h)
+    except (ValueError, TypeError):
+        return None
+
+
+def _leg_raw(h):
     o = (h.get("symbol") or {}).get("option_symbol") or {}
     under = (o.get("underlying_symbol") or {}).get("symbol")
     if not (under and o.get("strike_price") is not None and o.get("expiration_date")):
@@ -66,6 +77,13 @@ def _leg(h):
 
 
 def _stock(p):
+    try:
+        return _stock_raw(p)
+    except (ValueError, TypeError):
+        return None
+
+
+def _stock_raw(p):
     sym = ((p.get("symbol") or {}).get("symbol") or {}).get("symbol")
     units, price = _num(p.get("units")), _num(p.get("price"))
     if not sym or not units:
@@ -92,15 +110,17 @@ def classify(legs):
 
 
 def group_options(legs):
+    """Group by account, underlying and expiry. ponytail: calendars/diagonals (several expiries) and two spreads on one
+    underlying and expiry stay split/merged; pair them by hand if that matters."""
     groups = defaultdict(list)
     for leg in legs:
-        groups[(leg["underlying"], leg["expiry"])].append(leg)
+        groups[(leg.get("account"), leg["underlying"], leg["expiry"])].append(leg)
     out = []
-    for (under, expiry), ls in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+    for (acct, under, expiry), ls in sorted(groups.items(), key=lambda kv: (kv[0][2], kv[0][1], str(kv[0][0]))):
         kind = classify(ls)
         strikes = [l["strike"] for l in ls]
         marks = [l["units"] * l["price"] * 100 for l in ls if l["price"] is not None]
-        out.append({"underlying": under, "expiry": expiry, "kind": kind, "legs": ls,
+        out.append({"account": acct, "underlying": under, "expiry": expiry, "kind": kind, "legs": ls,
                     "width": max(strikes) - min(strikes) if kind.endswith("SPREAD") else None,
                     # mark value is signed: shorts subtract. None when any leg has no price (missing is not zero).
                     "net_mark": sum(marks) if len(marks) == len(ls) else None})
@@ -108,14 +128,16 @@ def group_options(legs):
 
 
 def fetch(creds):
-    stocks, legs, accounts = [], [], []
+    stocks, legs, accounts, seen = [], [], [], 0
     for acct in _call("GET", "/api/v1/accounts", creds):
         aid = acct["id"]
         accounts.append({"id": aid, "name": acct.get("name"), "institution": acct.get("institution_name")})
         stocks += [s for s in map(_stock, _call("GET", f"/api/v1/accounts/{aid}/positions", creds)) if s]
         held = _call("GET", f"/api/v1/accounts/{aid}/options", creds)
         held = held.get("holdings", []) if isinstance(held, dict) else held
-        legs += [l for l in map(_leg, held) if l]
+        for l in map(_leg, held):
+            if l:
+                legs.append({**l, "account": acct.get("name") or aid})
     return {"accounts": accounts, "stocks": stocks, "options": group_options(legs)}
 
 
@@ -127,15 +149,15 @@ def positions(force=False):
         return {"status": "not_configured", "missing": missing, "setup": SETUP,
                 "reason": "SnapTrade is not set up: " + ", ".join(missing) + " empty."}
     with _lock:
-        if not force and _cache["data"] and time.time() - _cache["at"] < CACHE_SECONDS:
+        if not force and _cache["data"] and time.time() - _cache["at"] <= CACHE_SECONDS:
             return _cache["data"]
         try:
             data = {"status": "ok", "as_of": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **fetch(creds)}
         except requests.HTTPError as exc:
             code = exc.response.status_code
-            hint = " Check the keys and the user secret." if code in (401, 403) else ""
-            return {"status": "error", "reason": f"SnapTrade answered HTTP {code}.{hint}", "setup": SETUP}
+            hint = " Check the client id and consumer key." if code in (401, 403) else ""
+            data = {"status": "error", "reason": f"SnapTrade answered HTTP {code}.{hint}", "setup": SETUP}
         except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-            return {"status": "error", "reason": f"SnapTrade call failed: {type(exc).__name__}", "setup": SETUP}
-        _cache.update(at=time.time(), data=data)
+            data = {"status": "error", "reason": f"SnapTrade call failed: {type(exc).__name__}", "setup": SETUP}
+        _cache.update(at=time.time() - (0 if data["status"] == "ok" else CACHE_SECONDS - ERROR_CACHE_SECONDS), data=data)   # errors are held 30 s, so a persistent 401/429 is not retried on every poll
         return data

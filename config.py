@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -34,10 +35,13 @@ def _load_keychain():
         try:
             out = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", name, "-w"],
                                  capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"config: Keychain lookup for {name} failed ({type(exc).__name__}); settings still blank stay unset", file=sys.stderr)
             return
         if out.returncode == 0 and out.stdout.strip():
             os.environ[name] = out.stdout.strip()
+        elif out.returncode not in (0, 44):   # 44: item not found. Anything else (locked keychain, denied) is worth a line in the log
+            print(f"config: Keychain lookup for {name} returned {out.returncode}; the Keychain may be locked", file=sys.stderr)
 
 
 _load_keychain()

@@ -111,3 +111,4 @@ deployment_payload.js
 alphaflow/alphaflow.db
 spy_wicks_1m.json
 .env.bak.*
+.env.bak*
