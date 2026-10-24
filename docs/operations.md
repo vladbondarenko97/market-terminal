@@ -641,6 +641,37 @@ safe to repeat. It takes the run lock and prints how many new rows it recorded. 
 stage failed (the run's `stages_json` has `trade_signal_error`) or after importing runs made by a version that did not
 record positions.
 
+## MCP server (Claude chat, ChatGPT, Gemini CLI)
+
+`mcp_server.py` lets MCP clients read the terminal. It is standalone (not in the pipeline) and makes only GET requests to the
+terminal on this machine. Two endpoints, each behind its own secret path segment:
+
+| Endpoint | Tools | Holds |
+|---|---|---|
+| `/<MCP_MARKET_TOKEN>/mcp` | `list_sources`, `get_source` | the console's read-only sources (same list and shaping as "Ask the terminal") |
+| `/<MCP_BROKERAGE_TOKEN>/mcp` | `get_brokerage_positions` | your live SnapTrade holdings |
+
+A token under 24 characters, or blank, turns its endpoint off; any other path answers an empty 404. Anyone with a link can read
+what it exposes, so add the brokerage link only to clients you trust, and rotate a token by changing it and restarting.
+
+1. Tokens: `openssl rand -hex 24` twice; store them as `MCP_MARKET_TOKEN` and `MCP_BROKERAGE_TOKEN` (`.env` or Bitwarden, see
+   [Configuration](configuration.md#secrets-in-bitwarden-and-the-keychain)).
+2. Run it: `.venv/bin/python mcp_server.py` (port `MCP_PORT`, default 8787, localhost only). For a permanent service copy
+   `~/Library/LaunchAgents/com.vlad.optionswhale.plist` to `com.vlad.mcpserver.plist` and change the label and the program to
+   `mcp_server.py`.
+3. Publish it with a Cloudflare Tunnel (the chat apps connect from the vendors' clouds, so it must be on the public internet):
+   the domain's DNS must be on Cloudflare (free plan). Move the nameservers, then recreate the existing records as
+   **DNS only** (grey cloud), for example `market` and `pc` as A records to the tailnet IP. Then
+   `brew install cloudflared`, `cloudflared tunnel login`, `cloudflared tunnel create market-terminal`, and for each hostname
+   `cloudflared tunnel route dns market-terminal mcp-market-terminal.vlad.yt` (and `mcp-brokerage.vlad.yt`). In
+   `~/.cloudflared/config.yml` send both hostnames to `http://127.0.0.1:8787`, then `cloudflared service install`. Both
+   hostnames reach the same server; the token in the path chooses the tools.
+4. Add the connector with the URL `https://mcp-market-terminal.vlad.yt/<MCP_MARKET_TOKEN>/mcp`, authentication none: Claude
+   (Customize > Connectors > Add custom connector), ChatGPT (developer mode > create connector), Gemini CLI
+   (`gemini mcp add --transport http market-terminal <url>`). The consumer Gemini app has no custom connectors.
+
+The terminal itself stays on the tailnet; only `mcp_server.py` is published.
+
 ## Menu bar icon
 
 `menubar/optionswhale.10s.sh` is a SwiftBar plugin that refreshes every 10 seconds. It watches the terminal server

@@ -147,6 +147,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 
 | Path | Role |
 |---|---|
+| `mcp_server.py` | Standalone MCP server (GET-only proxy of the terminal's read-only sources and the brokerage card), two secret-path endpoints; see [Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli) |
 | `scripts/sync_secrets.sh` | Operator-run: Bitwarden item `market-terminal` <-> macOS Keychain <-> `.env` (see [Configuration](configuration.md#secrets-in-bitwarden-and-the-keychain)) |
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
 | `scripts/backfill_crypto_metals.py` | Adds up to one year of BTC, silver and gold history to `crypto_metrics_history` |

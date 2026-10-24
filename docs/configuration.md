@@ -99,6 +99,12 @@ alias whenever `DATABENTO_API_KEY` is unset or blank, so a `.env` copied from th
 dashboard.snaptrade.com, which identify your account themselves, so there is no user id or secret. Connect your broker in
 the SnapTrade dashboard. With either value empty the card shows the setup steps instead.
 
+### MCP server (optional)
+
+`MCP_MARKET_TOKEN`, `MCP_BROKERAGE_TOKEN` (24+ random characters each; blank turns that endpoint off) and `MCP_PORT` (default
+8787) configure `mcp_server.py`; see [Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli). `TERMINAL_URL`
+overrides where it finds the terminal (default `http://127.0.0.1:<OPTIONS_WHALE_PORT>`).
+
 ### Secrets in Bitwarden and the Keychain
 
 Both ways work and you can mix them: keep every secret in `.env` (the default), or move some or all into Bitwarden and the Keychain. `config.py` fills any name in `config.SECRET_NAMES` that is unset or blank from the macOS

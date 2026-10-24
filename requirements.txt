@@ -15,3 +15,4 @@ openpyxl
 xlrd
 akshare
 feedparser
+mcp   # mcp_server.py only
