@@ -36,9 +36,22 @@ class McpTests(unittest.TestCase):
             self.assertEqual(c.post("/%s/other" % MARKET, headers=HEAD, content="{}").status_code, 404)
             self.assertEqual(c.post("/caf\u00e9/mcp", headers=HEAD, content="{}").status_code, 404)
 
-    def test_short_or_blank_token_is_off(self):
-        with self.assertRaises(SystemExit):
-            self.client(MCP_MARKET_TOKEN="short", MCP_BROKERAGE_TOKEN="")
+    def test_bad_token_configs_stop_the_server(self):
+        for env in ({"MCP_MARKET_TOKEN": "short"}, {"MCP_MARKET_TOKEN": MARKET, "MCP_BROKERAGE_TOKEN": MARKET}, {}):
+            with self.subTest(env=env), self.assertRaises(SystemExit):
+                self.client(**{"MCP_MARKET_TOKEN": "", "MCP_BROKERAGE_TOKEN": "", **env})
+
+    def test_one_endpoint_can_be_off(self):
+        with self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN="") as c:
+            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source"])
+            self.assertEqual(rpc(c, "b" * 24, "tools/list").status_code, 404)
+
+    def test_brokerage_tool_reports_an_unreachable_terminal(self):
+        with self.client(MCP_BROKERAGE_TOKEN=BROKER) as c, mock.patch.object(mcp_server.requests, "get", side_effect=mcp_server.requests.ConnectionError("http://127.0.0.1:80 down")):
+            rpc(c, BROKER, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}})
+            out = json.dumps(rpc(c, BROKER, "tools/call", {"name": "get_brokerage_positions", "arguments": {}}, id=4).json())
+        self.assertIn("ConnectionError", out)
+        self.assertNotIn("127.0.0.1", out)
 
     def test_get_source_reuses_console_fetch(self):
         fake = mock.Mock(status_code=200, content_type="application/json", get_data=lambda as_text=True: '{"status":"success","data":{"spot":1.5}}')

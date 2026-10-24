@@ -651,7 +651,7 @@ terminal on this machine. Two endpoints, each behind its own secret path segment
 | `/<MCP_MARKET_TOKEN>/mcp` | `list_sources`, `get_source` | the console's read-only sources (same list and shaping as "Ask the terminal") |
 | `/<MCP_BROKERAGE_TOKEN>/mcp` | `get_brokerage_positions` | your live SnapTrade holdings |
 
-A token under 24 characters, or blank, turns its endpoint off; any other path answers an empty 404. Anyone with a link can read
+A blank token turns its endpoint off; a token under 24 characters, or the same token twice, stops the server at start; any other path answers an empty 404. The secret path is the only guard, because MCP clients cannot send a header of your own: for the holdings link you can add Cloudflare Access (Zero Trust) in front of that hostname if the client supports it. Anyone with a link can read
 what it exposes, so add the brokerage link only to clients you trust, and rotate a token by changing it and restarting.
 
 1. Tokens: `openssl rand -hex 24` twice; store them as `MCP_MARKET_TOKEN` and `MCP_BROKERAGE_TOKEN` (`.env` or Bitwarden, see
