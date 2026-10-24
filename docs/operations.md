@@ -659,16 +659,19 @@ what it exposes, so add the brokerage link only to clients you trust, and rotate
 2. Run it: `.venv/bin/python mcp_server.py` (port `MCP_PORT`, default 8787, localhost only). For a permanent service copy
    `~/Library/LaunchAgents/com.vlad.optionswhale.plist` to `com.vlad.mcpserver.plist` and change the label and the program to
    `mcp_server.py`.
-3. Publish it with a Cloudflare Tunnel (the chat apps connect from the vendors' clouds, so it must be on the public internet):
-   the domain's DNS must be on Cloudflare (free plan). Move the nameservers, then recreate the existing records as
-   **DNS only** (grey cloud), for example `market` and `pc` as A records to the tailnet IP. Then
-   `brew install cloudflared`, `cloudflared tunnel login`, `cloudflared tunnel create market-terminal`, and for each hostname
-   `cloudflared tunnel route dns market-terminal mcp-market-terminal.vlad.yt` (and `mcp-brokerage.vlad.yt`). In
-   `~/.cloudflared/config.yml` send both hostnames to `http://127.0.0.1:8787`, then `cloudflared service install`. Both
-   hostnames reach the same server; the token in the path chooses the tools.
-4. Add the connector with the URL `https://mcp-market-terminal.vlad.yt/<MCP_MARKET_TOKEN>/mcp`, authentication none: Claude
-   (Customize > Connectors > Add custom connector), ChatGPT (developer mode > create connector), Gemini CLI
-   (`gemini mcp add --transport http market-terminal <url>`). The consumer Gemini app has no custom connectors.
+3. Publish it. The chat apps connect from the vendors' clouds, so the server must be on the public internet.
+   **Tailscale Funnel** (no DNS change, free): in the Tailscale admin console enable HTTPS certificates, then
+   `tailscale funnel --bg 8787`. The address is `https://<machine>.<tailnet>.ts.net` (`tailscale funnel status` prints it).
+   One address serves both endpoints; the token in the path chooses the tools. Stop it with `tailscale funnel --https=443 off`.
+   For a name on your own domain use a Cloudflare Tunnel instead, which needs that domain's DNS on Cloudflare: use a separate
+   cheap domain, because moving the nameservers moves every record. Then `brew install cloudflared`,
+   `cloudflared tunnel login`, `cloudflared tunnel create market-terminal`, `cloudflared tunnel route dns market-terminal <host>`,
+   send the host to `http://127.0.0.1:8787` in `~/.cloudflared/config.yml` and run `cloudflared service install`.
+4. Add the connector with the URL `https://<address>/<MCP_MARKET_TOKEN>/mcp`, authentication none: Claude (Customize >
+   Connectors > Add custom connector), ChatGPT (developer mode > create connector), Gemini (gemini.google.com > Settings >
+   Connected apps > Add a custom app; also in the mobile app afterwards) or the Gemini CLI (`gemini mcp add --transport http
+   market-terminal <url>`). Add the holdings URL only to the apps you trust with your positions. If an app insists on a login
+   (OAuth), it cannot use these links; say so in an issue rather than weakening the token rules.
 
 The terminal itself stays on the tailnet; only `mcp_server.py` is published.
 
