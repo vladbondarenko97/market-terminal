@@ -30,7 +30,7 @@ class McpTests(unittest.TestCase):
 
     def test_each_token_gets_only_its_tools_and_bad_paths_404(self):
         with self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN=BROKER) as c:
-            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source"])
+            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source", "search_docs", "read_doc", "calculate"])
             self.assertEqual(self.tools(c, BROKER), ["get_brokerage_positions"])
             self.assertEqual(rpc(c, "x" * 24, "tools/list").status_code, 404)
             self.assertEqual(c.post("/%s/other" % MARKET, headers=HEAD, content="{}").status_code, 404)
@@ -43,7 +43,7 @@ class McpTests(unittest.TestCase):
 
     def test_one_endpoint_can_be_off(self):
         with self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN="") as c:
-            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source"])
+            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source", "search_docs", "read_doc", "calculate"])
             self.assertEqual(rpc(c, "b" * 24, "tools/list").status_code, 404)
 
     def test_brokerage_tool_reports_an_unreachable_terminal(self):
@@ -61,6 +61,24 @@ class McpTests(unittest.TestCase):
         self.assertIn("1.5", json.dumps(out))
         self.assertEqual(g.call_args.args[0], "/api/gex")
         self.assertEqual(g.call_args.kwargs["query_string"], {"ticker": "SPY"})
+
+    def test_knowledge_tools(self):
+        self.assertIn("docs/value-changes.md", mcp_server.search_text("VMRI_VERSION"))
+        text = mcp_server.read_doc_text("core/metrics.py", "GEX_PARAMS")
+        self.assertIn("expirations", text)
+        self.assertLess(len(text), 2000)
+        self.assertIn("Sections:", mcp_server.read_doc_text("docs/terminal.md", "no such heading"))
+        self.assertIn("Engine Positions", mcp_server.read_doc_text("docs/terminal.md", "Engine Positions"))
+        for bad in ("../.env", "/etc/passwd", "config.py", ".env", "docs/../.env"):
+            self.assertTrue(mcp_server.read_doc_text(bad).startswith("error: name must be one of"), bad)
+        self.assertEqual(mcp_server.search_text(""), "error: give a search query")
+        self.assertNotIn(".env", " ".join(mcp_server.doc_files()).replace(".env.example", ""))
+
+    def test_extra_sources_and_calculate(self):
+        for name in ("paper_physical", "shanghai_spread", "chaos_history"):
+            self.assertIn(name, mcp_server.assistant.SOURCES)
+        self.assertEqual(mcp_server.assistant.SOURCES["chaos_history"][1], ("from",))
+        self.assertIn("4", mcp_server.assistant.calc("2+2"))
 
     def test_unknown_source_is_an_error_text_not_a_request(self):
         with mock.patch.object(mcp_server._Terminal, "get") as g:

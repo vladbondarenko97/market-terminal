@@ -648,7 +648,7 @@ terminal on this machine. Two endpoints, each behind its own secret path segment
 
 | Endpoint | Tools | Holds |
 |---|---|---|
-| `/<MCP_MARKET_TOKEN>/mcp` | `list_sources`, `get_source` | the console's read-only sources (same list and shaping as "Ask the terminal") |
+| `/<MCP_MARKET_TOKEN>/mcp` | `list_sources`, `get_source`, `search_docs`, `read_doc`, `calculate` | the console's read-only sources (same list and shaping as "Ask the terminal") plus `paper_physical`, `shanghai_spread` and `chaos_history`; the knowledge base (`docs/*.md`, `README.md`, `AGENTS.md` and the model code `core/*.py`, read-only, nothing else on disk); arithmetic |
 | `/<MCP_BROKERAGE_TOKEN>/mcp` | `get_brokerage_positions` | your live SnapTrade holdings |
 
 A blank token turns its endpoint off; a token under 24 characters, or the same token twice, stops the server at start; any other path answers an empty 404. The secret path is the only guard, because MCP clients cannot send a header of your own: for the holdings link you can add Cloudflare Access (Zero Trust) in front of that hostname if the client supports it. Anyone with a link can read
@@ -673,7 +673,7 @@ what it exposes, so add the brokerage link only to clients you trust, and rotate
    market-terminal <url>`). Add the holdings URL only to the apps you trust with your positions. If an app insists on a login
    (OAuth), it cannot use these links; say so in an issue rather than weakening the token rules.
 
-The terminal itself stays on the tailnet; only `mcp_server.py` is published.
+Write routes (starting a run, tracking tickets, the scanner and Edge Lab watchlists) are not exposed, and neither is the console's own `ask` route. The terminal itself stays on the tailnet; only `mcp_server.py` is published.
 
 ## Menu bar icon
 

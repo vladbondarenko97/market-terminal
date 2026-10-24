@@ -1,7 +1,8 @@
 """MCP server for the terminal: lets Claude chat, ChatGPT and other MCP clients read its data. Standalone, not part of the pipeline.
 
 Two endpoints, each behind its own secret path segment, so holdings can be shared with fewer clients than market data:
-    /<MCP_MARKET_TOKEN>/mcp      list_sources, get_source  (the console's read-only sources; same shaping, see options_whale/assistant.py)
+    /<MCP_MARKET_TOKEN>/mcp      list_sources, get_source (the console's read-only sources plus three more), search_docs, read_doc
+                                 (docs and core/*.py), calculate
     /<MCP_BROKERAGE_TOKEN>/mcp   get_brokerage_positions   (live SnapTrade holdings)
 A blank token switches that endpoint off; a token under 24 characters, or the same token twice, stops the server. Only GETs of the whitelisted
 sources are made. The secret path is the only guard (MCP clients cannot send our own header): treat each link like a password.
@@ -11,6 +12,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,10 +47,86 @@ class _Terminal:
 
 _APP = SimpleNamespace(test_client=lambda: _Terminal())
 
+# Read routes the console does not list. This process is separate from the terminal, so this changes only what the MCP tools see.
+assistant.SOURCES.update({
+    "paper_physical": ("/api/paper_physical", (), "Paper-to-physical silver ratio of the latest run: ratio, tier, inputs and the recorded-ratio history."),
+    "shanghai_spread": ("/api/shanghai_spread", (), "Shanghai (SGE) versus COMEX silver spread, VAT-adjusted: latest reading, history, how unusual it is."),
+    "chaos_history": ("/api/chaos/history", ("from",), "Recorded Chaos / Peace score history; from=YYYY-MM-DD limits the start."),
+})
+
+# ---------------------------------------------------------------- the knowledge base: the repo's own docs and model code (public, no secrets)
+ROOT = Path(__file__).resolve().parent
+DOC_CAP = 30000
+
+
+def doc_files():
+    """name -> path. The only files read_doc and search_docs can reach: docs/*.md, README, AGENTS and core/*.py (the models)."""
+    files = {f"docs/{p.name}": p for p in sorted((ROOT / "docs").glob("*.md"))}
+    files.update({"README.md": ROOT / "README.md", "AGENTS.md": ROOT / "AGENTS.md"})
+    files.update({f"core/{p.name}": p for p in sorted((ROOT / "core").glob("*.py"))})
+    return {n: p for n, p in files.items() if p.is_file()}
+
+
+_START = re.compile(r"^(def |class |async def |[A-Z][A-Z0-9_]* *=)")
+
+
+def _blocks(name, lines):
+    """(title, start, end, depth) of every heading (markdown) or top-level def/class/CONSTANT (python)."""
+    marks = []
+    for i, line in enumerate(lines):
+        if name.endswith(".md"):
+            m = re.match(r"^(#+) +(.*)", line)
+            if m:
+                marks.append((m.group(2).strip(), i, len(m.group(1))))
+        elif _START.match(line):
+            marks.append((line.split("(")[0].split("=")[0].strip(), i, 1))
+    out = []
+    for k, (title, i, depth) in enumerate(marks):
+        end = next((j for _t, j, d in marks[k + 1:] if d <= depth), len(lines))
+        out.append((title, i, end, depth))
+    return out
+
+
+def read_doc_text(name, section=""):
+    files = doc_files()
+    if name not in files:
+        return "error: name must be one of: " + ", ".join(files)
+    lines = files[name].read_text(errors="replace").splitlines()
+    blocks = _blocks(name, lines)
+    if section:
+        want = section.strip().lower().lstrip("# ")
+        hit = next((b for b in blocks if want == b[0].lower()), None) or next((b for b in blocks if want in b[0].lower()), None)
+        if hit:
+            lines = lines[hit[1]:hit[2]]
+        else:
+            return f"error: no section matching {section!r} in {name}. Sections: " + "; ".join(b[0] for b in blocks)
+    text = "\n".join(lines)
+    if len(text) > DOC_CAP:
+        return (text[:DOC_CAP] + f"\n\n[cut at {DOC_CAP} characters; pass section=... to read one part. Sections: "
+                + "; ".join(b[0] for b in blocks if b[3] <= 2) + "]")
+    return text
+
+
+def search_text(query, max_hits=25):
+    words = [w for w in re.split(r"\s+", query.lower().strip()) if w]
+    if not words:
+        return "error: give a search query"
+    hits = []
+    for name, path in doc_files().items():
+        for i, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            low = line.lower()
+            if all(w in low for w in words):
+                hits.append(f"{name}:{i}: {line.strip()[:220]}")
+    if not hits:
+        return "no matches"
+    more = f"\n[{len(hits) - max_hits} more; narrow the query]" if len(hits) > max_hits else ""
+    return "\n".join(hits[:max_hits]) + more
+
 
 def market_server():
     mcp = MCPServer("market-terminal", instructions="Read-only market data from the operator's terminal (SPY/SLV options, dealer gamma, "
-                    "Forecast Lab, VMRI, silver). Call list_sources first. Say the run time of stored data when quoting it.")
+                    "Forecast Lab, VMRI, silver). Call list_sources first. For how a number is defined or computed, use search_docs and read_doc "
+                    "(the documentation and model code) instead of guessing. Say the run time of stored data when quoting it.")
 
     @mcp.tool()
     async def list_sources() -> str:
@@ -59,6 +137,22 @@ def market_server():
     async def get_source(source: str, query: str = "", path: str = "", last: int = 10) -> str:
         """Read one source. query like "ticker=SPY&limit=50"; path opens one part of a large result (e.g. data.implied); last = rows kept of a long list."""
         return await asyncio.to_thread(assistant.fetch_source, _APP, source, query, path, last)   # blocking HTTP: keep it off the event loop
+
+    @mcp.tool()
+    async def search_docs(query: str) -> str:
+        """Search the terminal's documentation and model code (words are ANDed, case-insensitive). Returns file:line hits; open them with read_doc."""
+        return await asyncio.to_thread(search_text, query)
+
+    @mcp.tool()
+    async def read_doc(name: str = "", section: str = "") -> str:
+        """Read a document or model source: docs/*.md (terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md, core/*.py
+        (core/metrics.py has the VMRI and GEX formulas). Empty name lists them. section = a heading (markdown) or a def/class/CONSTANT name (python), e.g. name=core/metrics.py section=VMRI_VERSION."""
+        return await asyncio.to_thread(read_doc_text, name, section) if name else "\n".join(doc_files())
+
+    @mcp.tool()
+    async def calculate(expression: str) -> str:
+        """Plain arithmetic (+ - * / // % ** and abs, round, min, max, sqrt, log, exp), e.g. for a ratio or a percent move."""
+        return assistant.calc(expression)
 
     return mcp
 
