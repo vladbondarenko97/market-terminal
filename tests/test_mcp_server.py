@@ -139,6 +139,8 @@ class McpTests(unittest.TestCase):
             self.assertIn(name, mcp_server.SOURCES)
             self.assertNotIn(name, mcp_server.assistant.SOURCES)
         self.assertEqual(mcp_server.SOURCES["chaos_history"][1], ("from",))
+        self.assertIn("brokerage", mcp_server.assistant.SOURCES)       # the console reads holdings; the public market link must not
+        self.assertNotIn("brokerage", mcp_server.SOURCES)
         self.assertIn("chaos_history", mcp_server.assistant.catalog_text(mcp_server.SOURCES))
         self.assertTrue(mcp_server.assistant.fetch_source(mcp_server._APP, "paper_physical", sources={}).startswith("error"))
 
@@ -150,7 +152,7 @@ class McpTests(unittest.TestCase):
 
     def test_unknown_source_is_an_error_text_not_a_request(self):
         with mock.patch.object(mcp_server._Terminal, "get") as g:
-            text = mcp_server.assistant.fetch_source(mcp_server._APP, "brokerage")
+            text = mcp_server.assistant.fetch_source(mcp_server._APP, "brokerage", sources=mcp_server.SOURCES)
         self.assertTrue(text.startswith("error"))
         g.assert_not_called()
 

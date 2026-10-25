@@ -100,6 +100,7 @@ _APP = SimpleNamespace(test_client=lambda: _Terminal())
 
 # Read routes the console does not list; the console's own SOURCES stays as it is.
 SOURCES = OrderedDict(assistant.SOURCES)
+SOURCES.pop("brokerage", None)      # holdings are private: only the holdings endpoint's own tool serves them
 SOURCES.update({
     "paper_physical": ("/api/paper_physical", (), "Paper-to-physical silver ratio of the latest run: ratio, tier, inputs and the recorded-ratio history."),
     "shanghai_spread": ("/api/shanghai_spread", (), "Shanghai (SGE) versus COMEX silver spread, VAT-adjusted: latest reading, history, how unusual it is."),

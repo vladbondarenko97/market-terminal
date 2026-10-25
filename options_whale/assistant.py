@@ -85,6 +85,10 @@ SOURCES = OrderedDict([
         "Engine positions: every trade ticket the execution engine issued (one per pipeline run), newest first, with local "
         "time, contract, entry mid, value now and after 1 day / 1 week / 2 weeks. `today` holds today's tickets. For "
         "history open path=trades (calls and puts only) or path=all (cash tickets too) with last=N.")),
+    ("brokerage", ("/api/brokerage", (),
+        "The operator's real brokerage holdings (SnapTrade, live, cached 60 s): `stocks` and `options`, where each option "
+        "group is a spread/straddle/single with its legs, net_mark and open_pnl. status not_configured means no broker is linked. "
+        "Not the engine tickets: those are `positions`.")),
     ("signal_watch", ("/api/forecast", (),
         "Card 0, Signal Watch: every rule-based trigger from the model cards (fair value, momentum flip, positioning, "
         "option pricing, dealer gamma, macro, engine ticket) with its reading, trigger level, FIRED or waiting, action and evidence.")),
@@ -328,7 +332,11 @@ def _shape_news(obj, _params):
             "other_sources": [line(r) for r in rows if not r["official"]]}
 
 
-SHAPERS = {"chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+def _shape_brokerage(obj, _params):
+    return {k: v for k, v in obj.items() if k not in ("setup", "accounts")}     # setup steps and account ids are noise to the model
+
+
+SHAPERS = {"brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool
