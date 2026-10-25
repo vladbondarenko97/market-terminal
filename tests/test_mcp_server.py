@@ -30,7 +30,7 @@ class McpTests(unittest.TestCase):
 
     def test_each_token_gets_only_its_tools_and_bad_paths_404(self):
         with self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN=BROKER) as c:
-            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source"])
+            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source", "search_docs", "read_doc", "calculate"])
             self.assertEqual(self.tools(c, BROKER), ["get_brokerage_positions"])
             self.assertEqual(rpc(c, "x" * 24, "tools/list").status_code, 404)
             self.assertEqual(c.post("/%s/other" % MARKET, headers=HEAD, content="{}").status_code, 404)
@@ -43,7 +43,7 @@ class McpTests(unittest.TestCase):
 
     def test_one_endpoint_can_be_off(self):
         with self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN="") as c:
-            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source"])
+            self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source", "search_docs", "read_doc", "calculate"])
             self.assertEqual(rpc(c, "b" * 24, "tools/list").status_code, 404)
 
     def test_brokerage_tool_reports_an_unreachable_terminal(self):
@@ -61,6 +61,53 @@ class McpTests(unittest.TestCase):
         self.assertIn("1.5", json.dumps(out))
         self.assertEqual(g.call_args.args[0], "/api/gex")
         self.assertEqual(g.call_args.kwargs["query_string"], {"ticker": "SPY"})
+
+    def fixture_root(self):
+        import tempfile
+        from pathlib import Path
+        root = Path(tempfile.mkdtemp())
+        (root / "docs").mkdir(); (root / "core").mkdir()
+        (root / "docs" / "t.md").write_text("# Top\nintro\n## Set up\n```bash\n# a shell comment\n```\nafter fence\n## Other\nx\n## Setup two\ny\n")
+        (root / "core" / "metrics.py").write_text("X = 1\n\n@deco\ndef compute_vmri(a):\n    return a\n\ndef compute_vmri_history():\n    pass\n\nCFG: dict = {'k': 1}\n\nOTHER = 2\n")
+        (root / "core" / "brokerage.py").write_text("SECRET_FLOW = 1\n")
+        (root / "README.md").write_text("# R\nVMRI formula here\n")
+        return root
+
+    def test_knowledge_tools(self):
+        with mock.patch.object(mcp_server, "ROOT", self.fixture_root()):
+            files = mcp_server.doc_files()
+            self.assertEqual(sorted(files), ["README.md", "core/metrics.py", "docs/t.md"])   # brokerage.py and everything else is out
+            self.assertIn("README.md:2", mcp_server.search_text("vmri FORMULA"))
+            self.assertEqual(mcp_server.search_text("zzz"), "no matches")
+            self.assertEqual(mcp_server.search_text(""), "error: give a search query")
+            sec = mcp_server.read_doc_text("docs/t.md", "set up")
+            self.assertIn("after fence", sec); self.assertIn("# a shell comment", sec); self.assertNotIn("x", sec.split("after fence")[1])
+            fn = mcp_server.read_doc_text("core/metrics.py", "compute_vmri")   # exact name beats compute_vmri_history; decorator included
+            self.assertIn("@deco", fn); self.assertNotIn("history", fn)
+            self.assertIn("CFG", mcp_server.read_doc_text("core/metrics.py", "CFG"))
+            self.assertIn("matches 2 sections", mcp_server.read_doc_text("docs/t.md", "set"))
+            self.assertIn("Sections:", mcp_server.read_doc_text("docs/t.md", "nope"))
+            for bad in ("../.env", "/etc/passwd", "config.py", ".env", "docs/../.env", "core/brokerage.py"):
+                self.assertTrue(mcp_server.read_doc_text(bad).startswith("error: name must be one of"), bad)
+
+    def test_real_repo_knowledge_smoke(self):
+        self.assertIn("core/metrics.py", " ".join(mcp_server.doc_files()))
+        self.assertNotIn("core/brokerage.py", mcp_server.doc_files())
+        self.assertIn("VMRI", mcp_server.search_text("vmri"))
+
+    def test_extra_sources_only_in_the_mcp_copy(self):
+        for name in ("paper_physical", "shanghai_spread", "chaos_history"):
+            self.assertIn(name, mcp_server.SOURCES)
+            self.assertNotIn(name, mcp_server.assistant.SOURCES)
+        self.assertEqual(mcp_server.SOURCES["chaos_history"][1], ("from",))
+        self.assertIn("chaos_history", mcp_server.assistant.catalog_text(mcp_server.SOURCES))
+        self.assertTrue(mcp_server.assistant.fetch_source(mcp_server._APP, "paper_physical", sources={}).startswith("error"))
+
+    def test_calculate_thousands_separators(self):
+        import asyncio
+        fn = mcp_server.market_server()
+        res = asyncio.run(fn.call_tool("calculate", {"expression": "round(1,000*2)"}))
+        self.assertIn("2000", str(res))
 
     def test_unknown_source_is_an_error_text_not_a_request(self):
         with mock.patch.object(mcp_server._Terminal, "get") as g:

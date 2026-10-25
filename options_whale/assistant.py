@@ -103,9 +103,9 @@ SOURCES = OrderedDict([
 ])
 
 
-def catalog_text():
+def catalog_text(sources=None):
     lines = []
-    for name, (_route, params, desc) in SOURCES.items():
+    for name, (_route, params, desc) in (sources or SOURCES).items():
         lines.append(f"- {name}{' (' + ', '.join(params) + ')' if params else ''}: {desc}")
     return "\n".join(lines)
 
@@ -332,19 +332,20 @@ SHAPERS = {"chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _sh
 
 
 # ---------------------------------------------------------------- the one data tool
-def fetch_source(app, source, query="", path="", last=10):
-    """GET one whitelisted route through Flask's test client and return shaped text. Never raises."""
+def fetch_source(app, source, query="", path="", last=10, sources=None):
+    """GET one whitelisted route (from `sources`, default SOURCES) through Flask's test client and return shaped text. Never raises."""
+    sources = sources or SOURCES
     source, path = str(source or "").strip(), str(path or "").strip()
-    if source not in SOURCES:                                  # models sometimes write positions.trades or put the source in path
+    if source not in sources:                                  # models sometimes write positions.trades or put the source in path
         for text in (source, path):
             head, _, rest = text.replace(":", ".").replace("/", ".").partition(".")
-            if head in SOURCES:
+            if head in sources:
                 source, path = head, rest if text == source and not path else (rest if text == path else path)
                 break
-    if source not in SOURCES:
-        return (f"error: `source` must be one of: {', '.join(SOURCES)}. Example: source=positions, path=trades, last=10. "
+    if source not in sources:
+        return (f"error: `source` must be one of: {', '.join(sources)}. Example: source=positions, path=trades, last=10. "
                 "Fix the call and try again.")
-    route, allowed, _desc = SOURCES[source]
+    route, allowed, _desc = sources[source]
     params = {}
     for pair in str(query or "").replace("?", "").split("&"):
         if "=" in pair:
