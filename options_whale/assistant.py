@@ -88,7 +88,8 @@ SOURCES = OrderedDict([
         "history open path=trades (calls and puts only) or path=all (cash tickets too) with last=N.")),
     ("brokerage", ("/api/brokerage", (),
         "The operator's real brokerage holdings (SnapTrade, live, cached 60 s): `stocks` and `options`, where each option "
-        "group is a spread/straddle/single with its legs, net_mark and open_pnl. status not_configured means no broker is linked. "
+        "group is a spread/straddle/single with its legs, net_mark and open_pnl. Always fetch it before saying anything about "
+        "the holdings: if the fetched result's status is not ok, report the reason it gives; never assume a status. "
         "Not the engine tickets: those are `positions`.")),
     ("signal_watch", ("/api/forecast", (),
         "Card 0, Signal Watch: every rule-based trigger from the model cards (fair value, momentum flip, positioning, "
@@ -565,6 +566,10 @@ def _conversation(cid):
     return conv
 
 
+UNFETCHED_CLAIM = re.compile(r"not[ _]configured|not linked|unavailable|not available|could(n't| not) (retrieve|find|access|see)|"
+                             r"no (data|access|broker)|don't have (access|data)|can(no|')t see", re.I)
+
+
 def _clean_answer(text):
     """Some local models leak reasoning or a written-out tool call into the answer; neither is an answer."""
     if "</think>" in text:
@@ -580,7 +585,7 @@ def run_local(app, conv, question, model, reasoning=None):
         messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
     messages.append({"role": "user", "content": f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"})
     started, lookups, tokens = time.monotonic(), 0, 0
-    answer, seen, retried = "", set(), False
+    answer, seen, retried, pushed_back = "", set(), False, False
     _round = 0
     while _round <= MAX_ROUNDS:
         body = {"model": model, "messages": messages, "stream": True, "temperature": 0, "max_tokens": MAX_TOKENS,
@@ -652,6 +657,15 @@ def run_local(app, conv, question, model, reasoning=None):
         _round += 1
         if not calls:
             answer = _clean_answer(content)
+            if not lookups and not pushed_back and UNFETCHED_CLAIM.search(answer) and _round < MAX_ROUNDS:
+                # The model claims data is missing without fetching anything (a 9B told to be brief answered "brokerage not
+                # configured" from the source description, 4 runs out of 4). Push back once: fetch first, then answer.
+                pushed_back = True
+                yield {"type": "replace", "text": ""}
+                messages += [{"role": "assistant", "content": content},
+                             {"role": "user", "content": "You haven't fetched any source yet. Call fetch_source for the source that holds "
+                                                         "this, then answer from the result."}]
+                continue
             if answer != content:
                 yield {"type": "replace", "text": answer}
             break
