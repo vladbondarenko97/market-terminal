@@ -183,6 +183,6 @@ Open issues and deliberate choices are listed in [Known issues](known-issues.md)
 | `GET /api/edges` (`?symbol=XYZ`, `?refresh=1`), `POST /api/edges` `{symbol}`, `DELETE /api/edges/{symbol}` | Edge Lab: tracked tickers, a one-off analysis in `query`; track or untrack a ticker |
 | `GET /api/forecast` | Also returns `signals`: the Signal Watch rows |
 | `POST /api/assistant/ask` | Ask the console engine a question; streams the answer as server-sent events |
-| `GET /api/assistant/status`, `GET /api/assistant/data?source=…`, `POST /api/assistant/reset` | Model server and sources; exactly what the model sees for one source (`source=brief` for the brief); forget a conversation |
+| `GET /api/assistant/status`, `GET /api/assistant/data?source=…`, `POST /api/assistant/reset` | Model server and sources; exactly what the model sees for one source (`source=brief` for the brief); forget a conversation. `brokerage` (real holdings) is a console source only; the market MCP link does not serve it |
 
 Details: [terminal.md](terminal.md#rule-cards-and-alerts).

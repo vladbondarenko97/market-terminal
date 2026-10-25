@@ -47,6 +47,7 @@ MAX_TURNS_KEPT = 8
 
 # ---------------------------------------------------------------- what the model may read
 # name: (route, allowed query parameters, description shown to the model)
+PRIVATE_SOURCES = ("brokerage",)      # the console reads these; the public MCP market link must not (mcp_server drops them)
 SOURCES = OrderedDict([
     ("forecast", ("/api/forecast", ("ticker",),
         "Forecast Lab for ticker=SPY or SLV. Large: open one part with path. Parts: data.implied (options-implied "
@@ -333,7 +334,9 @@ def _shape_news(obj, _params):
 
 
 def _shape_brokerage(obj, _params):
-    return {k: v for k, v in obj.items() if k not in ("setup", "accounts")}     # setup steps and account ids are noise to the model
+    if obj.get("status") != "ok":
+        return obj                                      # keep the setup steps and the reason
+    return {k: v for k, v in obj.items() if k != "accounts"}     # account ids are noise; each group already names its account
 
 
 SHAPERS = {"brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
@@ -374,7 +377,7 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
             return f"error: {source} returned HTTP {resp.status_code}: {str(obj)[:300]}"
         if source in SHAPERS and isinstance(obj, dict):
             obj = SHAPERS[source](obj, params)
-            last = last if str(last) != "10" or source in ("positions", "gex") else 40     # already compact: whole lists by default
+            last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
         return shape(obj, path, last, keep=KEEP.get(source, "last"))
     except KeyError as e:
         return f"error: {e.args[0]}"

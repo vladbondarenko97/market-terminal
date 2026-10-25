@@ -139,8 +139,10 @@ class McpTests(unittest.TestCase):
             self.assertIn(name, mcp_server.SOURCES)
             self.assertNotIn(name, mcp_server.assistant.SOURCES)
         self.assertEqual(mcp_server.SOURCES["chaos_history"][1], ("from",))
-        self.assertIn("brokerage", mcp_server.assistant.SOURCES)       # the console reads holdings; the public market link must not
-        self.assertNotIn("brokerage", mcp_server.SOURCES)
+        self.assertIn("brokerage", mcp_server.assistant.PRIVATE_SOURCES)
+        for name in mcp_server.assistant.PRIVATE_SOURCES:               # the console reads holdings; the public market link must not
+            self.assertIn(name, mcp_server.assistant.SOURCES)
+            self.assertNotIn(name, mcp_server.SOURCES)
         self.assertIn("chaos_history", mcp_server.assistant.catalog_text(mcp_server.SOURCES))
         self.assertTrue(mcp_server.assistant.fetch_source(mcp_server._APP, "paper_physical", sources={}).startswith("error"))
 
