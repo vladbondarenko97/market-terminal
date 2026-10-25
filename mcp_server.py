@@ -15,6 +15,8 @@ import hmac
 import json
 import re
 import sys
+import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +33,48 @@ import assistant  # noqa: E402  (the console's source list and shaping)
 
 TERMINAL = config.optional_env("TERMINAL_URL", default=f"http://127.0.0.1:{config.OPTIONS_WHALE_PORT}").rstrip("/")
 PORT = config.int_env("MCP_PORT", 8787, minimum=1, maximum=65535)
+LOG_PATH = Path(config.optional_env("MCP_LOG", default="") or config.DATA_DIR / "mcp_calls.jsonl")
+_log_lock, _denied_at = threading.Lock(), {}
+
+
+def log_call(entry):
+    """One JSON line per request: when, which endpoint, what was asked, the outcome. Never the token or the path. Never raises."""
+    entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **entry}
+    try:
+        with _log_lock, open(LOG_PATH, "a") as f:
+            f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        print(f"mcp log write failed: {exc}", file=sys.stderr)
+
+
+def _client(scope):
+    h = {k.decode().lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+    ip = h.get("x-forwarded-for", "").split(",")[0].strip() or (scope.get("client") or ("",))[0]
+    return {"ip": ip[:64], "ua": h.get("user-agent", "")[:120]}
+
+
+def _summary(req, resp, status):
+    """What an MCP request asked for and how it went, from the JSON-RPC bodies (a batch is summarised by its first item)."""
+    try:
+        r = json.loads(req)
+        r = r[0] if isinstance(r, list) and r else r
+        method, params = r.get("method", "?"), r.get("params") or {}
+    except (ValueError, AttributeError):
+        method, params = "unparsed", {}
+    out = {"rpc": method}
+    if method == "tools/call":
+        out["tool"] = params.get("name")
+        out["args"] = json.dumps(params.get("arguments") or {}, separators=(",", ":"))[:200]
+    try:
+        d = json.loads(resp)
+        d = d[0] if isinstance(d, list) and d else d
+        res = d.get("result") or {}
+        text = ((res.get("content") or [{}])[0].get("text") or "")[:20]
+        failed = "error" in d or bool(res.get("isError")) or text.startswith(("error:", '{"status":"error"', '{"status": "error"'))   # the tools report problems as text
+    except (ValueError, AttributeError):
+        failed = status >= 400
+    return {**out, "status": status, "ok": status < 400 and not failed, "bytes": len(resp)}
+
 
 
 class _Response:
@@ -214,9 +258,14 @@ def build_app():
     servers = [(tokens[n], make()) for n, make in (("MCP_MARKET_TOKEN", market_server), ("MCP_BROKERAGE_TOKEN", brokerage_server)) if tokens[n]]
     if not servers:
         sys.exit("Set MCP_MARKET_TOKEN and/or MCP_BROKERAGE_TOKEN (24+ random characters, e.g. `openssl rand -hex 24`).")
-    routes = [(t, m.streamable_http_app(stateless_http=True, json_response=True, transport_security=off)) for t, m in servers]
+    routes = [(t, m.streamable_http_app(stateless_http=True, json_response=True, transport_security=off), prof)
+              for (t, m), prof in zip(servers, [n for n in ("market", "brokerage") if tokens["MCP_" + n.upper() + "_TOKEN"]])]
 
     async def not_found(scope, send):
+        c = _client(scope)
+        if time.time() - _denied_at.get(c["ip"], 0) > 60:   # a scanner is one line a minute, not a flood
+            _denied_at[c["ip"]] = time.time()
+            log_call({"profile": "denied", "method": scope.get("method", scope["type"]), "path_len": len(scope["path"]), **c})
         if scope["type"] == "websocket":
             await send({"type": "websocket.close"})
         else:
@@ -240,13 +289,32 @@ def build_app():
                 await send({"type": "lifespan.startup.failed", "message": f"{type(exc).__name__}: {exc}"})
                 raise
         parts = scope["path"].split("/", 2)   # ["", token, "mcp"]
-        sub = None
-        for t, a in routes:   # compare against every token so the time does not show which one matched
+        sub = profile = None
+        for t, a, prof in routes:   # compare against every token so the time does not show which one matched
             if len(parts) == 3 and hmac.compare_digest(parts[1].encode(), t.encode()):
-                sub = a
+                sub, profile = a, prof
         if scope["type"] != "http" or sub is None or parts[2] != "mcp":
             return await not_found(scope, send)
-        await sub({**scope, "path": "/mcp", "root_path": ""}, receive, send)
+        t0, req, resp, status = time.monotonic(), bytearray(), bytearray(), [500]
+
+        async def recv():
+            msg = await receive()
+            if msg["type"] == "http.request" and len(req) < 65536:
+                req.extend(msg.get("body", b""))
+            return msg
+
+        async def snd(msg):
+            if msg["type"] == "http.response.start":
+                status[0] = msg["status"]
+            elif msg["type"] == "http.response.body" and len(resp) < 1048576:
+                resp.extend(msg.get("body", b""))
+            await send(msg)
+
+        try:
+            await sub({**scope, "path": "/mcp", "root_path": ""}, recv, snd)
+        finally:
+            log_call({"profile": profile, **_summary(bytes(req), bytes(resp), status[0]),
+                      "ms": round((time.monotonic() - t0) * 1000), **_client(scope)})
 
     return app
 

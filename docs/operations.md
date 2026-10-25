@@ -675,6 +675,13 @@ what it exposes, so add the brokerage link only to clients you trust, and rotate
 
 Write routes (starting a run, tracking tickets, the scanner and Edge Lab watchlists) are not exposed, and neither is the console's own `ask` route. The terminal itself stays on the tailnet; only `mcp_server.py` is published.
 
+**Call log.** Every request to the server appends one JSON line to `mcp_calls.jsonl` in the data folder (`MCP_LOG` moves it):
+`ts` (UTC), `profile` (`market`, `brokerage`, or `denied` for a wrong path), `rpc` (the MCP method), `tool` and `args` for a tool
+call (at most 200 characters), `status`, `ok` (false for an HTTP error, a JSON-RPC error or a tool that answered `error: ...`),
+`bytes`, `ms`, and the caller's `ip` (the first `X-Forwarded-For` entry, else the socket) and `ua`. The token and the path are
+never written. A denied probe is logged once a minute per address. The file only grows (about 250 bytes a call): truncate it by
+hand when it gets large. The infra dashboard (`dash.vlad.yt`, `~/dev/infra/dash/build.py`) reads it for its "MCP server" card.
+
 ## Menu bar icon
 
 `menubar/optionswhale.10s.sh` is a SwiftBar plugin that refreshes every 10 seconds. It watches the terminal server

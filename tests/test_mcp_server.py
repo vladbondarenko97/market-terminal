@@ -41,6 +41,31 @@ class McpTests(unittest.TestCase):
             with self.subTest(env=env), self.assertRaises(SystemExit):
                 self.client(**{"MCP_MARKET_TOKEN": "", "MCP_BROKERAGE_TOKEN": "", **env})
 
+    def test_every_request_is_logged_without_the_token(self):
+        import tempfile
+        from pathlib import Path
+        log = Path(tempfile.mkdtemp()) / "calls.jsonl"
+        fake = mock.Mock(status_code=200, content_type="application/json", get_data=lambda as_text=True: '{"status":"success","data":{"spot":1}}')
+        with mock.patch.object(mcp_server, "LOG_PATH", log), mock.patch.object(mcp_server, "_denied_at", {}), \
+             mock.patch.object(mcp_server._Terminal, "get", return_value=fake), \
+             self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN=BROKER) as c:
+            rpc(c, MARKET, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}})
+            rpc(c, MARKET, "tools/call", {"name": "get_source", "arguments": {"source": "gex", "query": "ticker=SPY"}}, id=2)
+            rpc(c, MARKET, "tools/call", {"name": "get_source", "arguments": {"source": "nope"}}, id=3)
+            rpc(c, BROKER, "tools/list", id=4)
+            c.post("/" + "z" * 24 + "/mcp", headers={**HEAD, "X-Forwarded-For": "9.9.9.9, 1.1.1.1", "User-Agent": "scanner/1"}, content="{}")
+            c.post("/" + "y" * 24 + "/mcp", headers={**HEAD, "X-Forwarded-For": "9.9.9.9"}, content="{}")   # same ip within a minute: not logged again
+        rows = [json.loads(l) for l in log.read_text().splitlines()]
+        self.assertEqual([(r["profile"], r.get("rpc"), r.get("tool")) for r in rows if r["profile"] != "denied"],
+                         [("market", "initialize", None), ("market", "tools/call", "get_source"), ("market", "tools/call", "get_source"), ("brokerage", "tools/list", None)])
+        self.assertIn("ticker=SPY", rows[1]["args"])
+        self.assertTrue(rows[0]["ok"] and rows[1]["ok"]); self.assertFalse(rows[2]["ok"])   # unknown source: error text
+        self.assertGreaterEqual(rows[1]["ms"], 0)
+        denied = [r for r in rows if r["profile"] == "denied"]
+        self.assertEqual((len(denied), denied[0]["ip"], denied[0]["ua"]), (1, "9.9.9.9", "scanner/1"))
+        text = log.read_text()
+        self.assertNotIn(MARKET, text); self.assertNotIn(BROKER, text); self.assertNotIn("zzzz", text)
+
     def test_one_endpoint_can_be_off(self):
         with self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN="") as c:
             self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source", "search_docs", "read_doc", "calculate"])

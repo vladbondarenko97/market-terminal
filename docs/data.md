@@ -309,4 +309,4 @@ sqlite3 CME_Data/portfolio.db ".backup 'portfolio-copy.db'"
   replaced each session day, safe to delete.
 - **Files in the data folder** (not in the lake): `scanner_watchlist.json` (Day Scanner tickers added from the
   card), `edges_tracked.json` (Edge Lab tracked tickers), `signal_alert_state.json` (what `signal-alerts` last saw,
-  so a row alerts once).
+  so a row alerts once), `mcp_calls.jsonl` (one line per MCP server request; see [Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli)).

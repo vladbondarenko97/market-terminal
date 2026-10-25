@@ -102,7 +102,7 @@ the SnapTrade dashboard. With either value empty the card shows the setup steps 
 ### MCP server (optional)
 
 `MCP_MARKET_TOKEN`, `MCP_BROKERAGE_TOKEN` (24+ random characters each and different from each other; blank turns that endpoint off) and `MCP_PORT` (default
-8787) configure `mcp_server.py`; see [Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli). `TERMINAL_URL`
+8787), `MCP_LOG` (call log, default `<data folder>/mcp_calls.jsonl`) configure `mcp_server.py`; see [Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli). `TERMINAL_URL`
 overrides where it finds the terminal (default `http://127.0.0.1:<OPTIONS_WHALE_PORT>`).
 
 ### Secrets in Bitwarden and the Keychain
