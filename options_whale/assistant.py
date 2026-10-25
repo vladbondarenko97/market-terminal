@@ -570,6 +570,15 @@ UNFETCHED_CLAIM = re.compile(r"not[ _]configured|not linked|unavailable|not avai
                              r"no (data|access|broker)|don't have (access|data)|can(no|')t see", re.I)
 
 
+def unsourced_numbers(answer, messages):
+    """Numbers in an answer given with zero lookups that appear nowhere in what the model was shown (brief, earlier turns,
+    the question). Seen: 'VMRI 12.4, LOW RISK' invented with no fetch while the real score was 264.6."""
+    seen = " ".join(str(m.get("content") or "") for m in messages)
+    nums = {n.rstrip(".") for n in re.findall(r"(?<![\w.])\d+(?:\.\d+)?", answer.replace(",", "")) if len(n.rstrip(".")) >= 2}
+    known = set(re.findall(r"(?<![\w.])\d+(?:\.\d+)?", seen.replace(",", "")))
+    return sorted(n for n in nums if n not in known and n.lstrip("0") not in known)
+
+
 def _clean_answer(text):
     """Some local models leak reasoning or a written-out tool call into the answer; neither is an answer."""
     if "</think>" in text:
@@ -657,7 +666,8 @@ def run_local(app, conv, question, model, reasoning=None):
         _round += 1
         if not calls:
             answer = _clean_answer(content)
-            if not lookups and not pushed_back and UNFETCHED_CLAIM.search(answer) and _round < MAX_ROUNDS:
+            if not lookups and not pushed_back and _round < MAX_ROUNDS and (UNFETCHED_CLAIM.search(answer)
+                                                                           or unsourced_numbers(answer, messages)):
                 # The model claims data is missing without fetching anything (a 9B told to be brief answered "brokerage not
                 # configured" from the source description, 4 runs out of 4). Push back once: fetch first, then answer.
                 pushed_back = True
