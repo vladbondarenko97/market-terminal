@@ -479,7 +479,7 @@ def brief(app):
                      "and can analyse any ticker.")
     except Exception:
         pass
-    lines.append("Not in this brief, fetch them: current option values and P&L (positions), gamma walls (gex), scanner readings and trigger "
+    lines.append("Not in this brief, fetch them: engine ticket values (positions), the user's real broker holdings, spreads and P&L (brokerage), gamma walls (gex), scanner readings and trigger "
                  "prices (day_scanner), edge tables (edge_lab), VMRI (war_room), forecasts, history.")
     _BRIEF.update(at=time.monotonic(), text="\n".join(lines))
     return _BRIEF["text"]
@@ -514,8 +514,8 @@ VIX comes only from war_room or vmri_history. A gap between two volatilities is 
 - The data shows what happened, not who caused it. Never name a cause or an actor (the Fed, dealers, a \
 government, institutions) unless a fetched source measures it. Asked whether someone is causing something that no \
 source measures, say first that the terminal cannot show that, then report what the data does show.
-- All times are the user's local time. "Engine positions" means the tickets the execution engine issued. Asked about \
-them, lead with the newest ticket: time, contract, entry mid, score and bias, size. Then list the earlier ones, newest first.
+- All times are the user's local time. "Engine positions" means the tickets the execution engine issued (source positions). "My positions", \
+"my holdings", "my brokerage", Robinhood, spreads I own: use source brokerage, never positions. Asked about engine tickets, lead with the newest ticket: time, contract, entry mid, score and bias, size. Then list the earlier ones, newest first.
 - Sources are read-only. You cannot trade, start a run, browse the web or read files.
 
 How to answer
