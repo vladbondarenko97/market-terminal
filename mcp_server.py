@@ -2,7 +2,7 @@
 
 Two endpoints, each behind its own secret path segment, so holdings can be shared with fewer clients than market data:
     /<MCP_MARKET_TOKEN>/mcp      list_sources, get_source (the console's read-only sources plus three more), search_docs, read_doc
-                                 (docs and core/*.py), calculate
+                                 (docs and the model code in core/), calculate
     /<MCP_BROKERAGE_TOKEN>/mcp   get_brokerage_positions   (live SnapTrade holdings)
 A blank token switches that endpoint off; a token under 24 characters, or the same token twice, stops the server. Only GETs of the whitelisted
 sources are made. The secret path is the only guard (MCP clients cannot send our own header): treat each link like a password.
@@ -10,10 +10,12 @@ Run: .venv/bin/python mcp_server.py   (listens on 127.0.0.1:MCP_PORT; a Cloudfla
 """
 import asyncio
 import contextlib
+import functools
 import hmac
 import json
 import re
 import sys
+from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,8 +49,9 @@ class _Terminal:
 
 _APP = SimpleNamespace(test_client=lambda: _Terminal())
 
-# Read routes the console does not list. This process is separate from the terminal, so this changes only what the MCP tools see.
-assistant.SOURCES.update({
+# Read routes the console does not list; the console's own SOURCES stays as it is.
+SOURCES = OrderedDict(assistant.SOURCES)
+SOURCES.update({
     "paper_physical": ("/api/paper_physical", (), "Paper-to-physical silver ratio of the latest run: ratio, tier, inputs and the recorded-ratio history."),
     "shanghai_spread": ("/api/shanghai_spread", (), "Shanghai (SGE) versus COMEX silver spread, VAT-adjusted: latest reading, history, how unusual it is."),
     "chaos_history": ("/api/chaos/history", ("from",), "Recorded Chaos / Peace score history; from=YYYY-MM-DD limits the start."),
@@ -57,29 +60,44 @@ assistant.SOURCES.update({
 # ---------------------------------------------------------------- the knowledge base: the repo's own docs and model code (public, no secrets)
 ROOT = Path(__file__).resolve().parent
 DOC_CAP = 30000
+MODEL_FILES = ("metrics", "forecast", "refining", "chaos", "edges", "watch", "market_calendar")   # the models; not the broker, sources or run plumbing
 
 
 def doc_files():
-    """name -> path. The only files read_doc and search_docs can reach: docs/*.md, README, AGENTS and core/*.py (the models)."""
+    """name -> path. The only files read_doc and search_docs can reach: docs/*.md, README, AGENTS and the model modules of core/."""
     files = {f"docs/{p.name}": p for p in sorted((ROOT / "docs").glob("*.md"))}
     files.update({"README.md": ROOT / "README.md", "AGENTS.md": ROOT / "AGENTS.md"})
-    files.update({f"core/{p.name}": p for p in sorted((ROOT / "core").glob("*.py"))})
+    files.update({f"core/{m}.py": ROOT / "core" / f"{m}.py" for m in MODEL_FILES})
     return {n: p for n, p in files.items() if p.is_file()}
 
 
-_START = re.compile(r"^(def |class |async def |[A-Z][A-Z0-9_]* *=)")
+@functools.lru_cache(maxsize=64)
+def _lines(path, mtime):
+    return tuple(Path(path).read_text(errors="replace").splitlines())
+
+
+def _read(path):
+    return _lines(str(path), path.stat().st_mtime_ns)
+
+
+_PY = re.compile(r"^(?:async def |def |class )(\w+)|^([A-Z][A-Z0-9_]*) *(?::[^=]+)?=")
 
 
 def _blocks(name, lines):
-    """(title, start, end, depth) of every heading (markdown) or top-level def/class/CONSTANT (python)."""
-    marks = []
+    """(title, start, end, depth) of every heading (markdown, outside code fences) or top-level def/class/CONSTANT (python)."""
+    marks, fence = [], False
     for i, line in enumerate(lines):
         if name.endswith(".md"):
-            m = re.match(r"^(#+) +(.*)", line)
+            if line.lstrip().startswith(("```", "~~~")):
+                fence = not fence
+            m = None if fence else re.match(r"^(#+) +(.*)", line)
             if m:
                 marks.append((m.group(2).strip(), i, len(m.group(1))))
-        elif _START.match(line):
-            marks.append((line.split("(")[0].split("=")[0].strip(), i, 1))
+        elif (m := _PY.match(line)):
+            start = i
+            while start > 0 and lines[start - 1].startswith("@"):   # decorators belong to the function below them
+                start -= 1
+            marks.append((m.group(1) or m.group(2), start, 1))
     out = []
     for k, (title, i, depth) in enumerate(marks):
         end = next((j for _t, j, d in marks[k + 1:] if d <= depth), len(lines))
@@ -87,23 +105,29 @@ def _blocks(name, lines):
     return out
 
 
+def _outline(blocks, depth=2, limit=40):
+    names = [b[0] for b in blocks if b[3] <= depth]
+    return "; ".join(names[:limit]) + (f"; ... {len(names) - limit} more" if len(names) > limit else "")
+
+
 def read_doc_text(name, section=""):
     files = doc_files()
     if name not in files:
         return "error: name must be one of: " + ", ".join(files)
-    lines = files[name].read_text(errors="replace").splitlines()
+    lines = list(_read(files[name]))
     blocks = _blocks(name, lines)
     if section:
         want = section.strip().lower().lstrip("# ")
-        hit = next((b for b in blocks if want == b[0].lower()), None) or next((b for b in blocks if want in b[0].lower()), None)
-        if hit:
-            lines = lines[hit[1]:hit[2]]
-        else:
-            return f"error: no section matching {section!r} in {name}. Sections: " + "; ".join(b[0] for b in blocks)
+        exact = [b for b in blocks if b[0].lower() == want]
+        near = exact or [b for b in blocks if want in b[0].lower()]
+        if not near:
+            return f"error: no section matching {section!r} in {name}. Sections: " + _outline(blocks, 99)
+        if len(near) > 1 and not exact:
+            return f"error: {section!r} matches {len(near)} sections in {name}; pass one of: " + _outline(near, 99)
+        lines = lines[near[0][1]:near[0][2]]
     text = "\n".join(lines)
     if len(text) > DOC_CAP:
-        return (text[:DOC_CAP] + f"\n\n[cut at {DOC_CAP} characters; pass section=... to read one part. Sections: "
-                + "; ".join(b[0] for b in blocks if b[3] <= 2) + "]")
+        return text[:DOC_CAP] + f"\n\n[cut at {DOC_CAP} characters; pass section=... to read one part. Sections: " + _outline(blocks) + "]"
     return text
 
 
@@ -113,7 +137,7 @@ def search_text(query, max_hits=25):
         return "error: give a search query"
     hits = []
     for name, path in doc_files().items():
-        for i, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        for i, line in enumerate(_read(path), 1):
             low = line.lower()
             if all(w in low for w in words):
                 hits.append(f"{name}:{i}: {line.strip()[:220]}")
@@ -131,12 +155,12 @@ def market_server():
     @mcp.tool()
     async def list_sources() -> str:
         """Every source get_source can read, with its parameters and what it holds."""
-        return assistant.catalog_text()
+        return assistant.catalog_text(SOURCES)
 
     @mcp.tool()
     async def get_source(source: str, query: str = "", path: str = "", last: int = 10) -> str:
         """Read one source. query like "ticker=SPY&limit=50"; path opens one part of a large result (e.g. data.implied); last = rows kept of a long list."""
-        return await asyncio.to_thread(assistant.fetch_source, _APP, source, query, path, last)   # blocking HTTP: keep it off the event loop
+        return await asyncio.to_thread(assistant.fetch_source, _APP, source, query, path, last, SOURCES)   # blocking HTTP: keep it off the event loop
 
     @mcp.tool()
     async def search_docs(query: str) -> str:
@@ -145,14 +169,16 @@ def market_server():
 
     @mcp.tool()
     async def read_doc(name: str = "", section: str = "") -> str:
-        """Read a document or model source: docs/*.md (terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md, core/*.py
-        (core/metrics.py has the VMRI and GEX formulas). Empty name lists them. section = a heading (markdown) or a def/class/CONSTANT name (python), e.g. name=core/metrics.py section=VMRI_VERSION."""
-        return await asyncio.to_thread(read_doc_text, name, section) if name else "\n".join(doc_files())
+        """Read a document or model source: docs/*.md (terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md and the model code
+        core/{metrics,forecast,refining,chaos,edges,watch,market_calendar}.py (core/metrics.py has the VMRI and GEX formulas). Empty name lists them. section = a heading (markdown) or a def/class/CONSTANT name (python), e.g. name=core/metrics.py section=VMRI_VERSION."""
+        if not name:
+            return "error: pass name (and optionally section) from this list:\n" + "\n".join(doc_files()) if section else "\n".join(doc_files())
+        return await asyncio.to_thread(read_doc_text, name, section)
 
     @mcp.tool()
     async def calculate(expression: str) -> str:
         """Plain arithmetic (+ - * / // % ** and abs, round, min, max, sqrt, log, exp), e.g. for a ratio or a percent move."""
-        return assistant.calc(expression)
+        return assistant.calc(re.sub(r"(?<=\d),(?=\d{3}\b)", "", expression))   # 1,000 -> 1000 whether or not the expression has a call
 
     return mcp
 

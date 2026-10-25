@@ -648,7 +648,7 @@ terminal on this machine. Two endpoints, each behind its own secret path segment
 
 | Endpoint | Tools | Holds |
 |---|---|---|
-| `/<MCP_MARKET_TOKEN>/mcp` | `list_sources`, `get_source`, `search_docs`, `read_doc`, `calculate` | the console's read-only sources (same list and shaping as "Ask the terminal") plus `paper_physical`, `shanghai_spread` and `chaos_history`; the knowledge base (`docs/*.md`, `README.md`, `AGENTS.md` and the model code `core/*.py`, read-only, nothing else on disk); arithmetic |
+| `/<MCP_MARKET_TOKEN>/mcp` | `list_sources`, `get_source`, `search_docs`, `read_doc`, `calculate` | the console's read-only sources (same list and shaping as "Ask the terminal") plus `paper_physical`, `shanghai_spread` and `chaos_history`; the knowledge base (`docs/*.md`, `README.md`, `AGENTS.md` and the model code `core/{metrics,forecast,refining,chaos,edges,watch,market_calendar}.py`, read-only; the broker, source and run code and everything else on disk are out of reach); arithmetic |
 | `/<MCP_BROKERAGE_TOKEN>/mcp` | `get_brokerage_positions` | your live SnapTrade holdings |
 
 A blank token turns its endpoint off; a token under 24 characters, or the same token twice, stops the server at start; any other path answers an empty 404. The secret path is the only guard, because MCP clients cannot send a header of your own: for the holdings link you can add Cloudflare Access (Zero Trust) in front of that hostname if the client supports it. Anyone with a link can read
