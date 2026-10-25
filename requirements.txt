@@ -1,0 +1,19 @@
+# Installed into .venv by setup.sh
+flask
+yfinance
+pandas
+numpy
+scipy
+requests
+urllib3
+databento
+playwright
+vaderSentiment
+python-dotenv
+matplotlib
+openpyxl
+xlrd
+akshare
+feedparser
+mcp>=2,<3        # mcp_server.py only
+uvicorn           # mcp_server.py only
