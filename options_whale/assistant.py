@@ -47,6 +47,7 @@ MAX_TURNS_KEPT = 8
 
 # ---------------------------------------------------------------- what the model may read
 # name: (route, allowed query parameters, description shown to the model)
+PRIVATE_SOURCES = ("brokerage",)      # the console reads these; the public MCP market link must not (mcp_server drops them)
 SOURCES = OrderedDict([
     ("forecast", ("/api/forecast", ("ticker",),
         "Forecast Lab for ticker=SPY or SLV. Large: open one part with path. Parts: data.implied (options-implied "
@@ -85,6 +86,10 @@ SOURCES = OrderedDict([
         "Engine positions: every trade ticket the execution engine issued (one per pipeline run), newest first, with local "
         "time, contract, entry mid, value now and after 1 day / 1 week / 2 weeks. `today` holds today's tickets. For "
         "history open path=trades (calls and puts only) or path=all (cash tickets too) with last=N.")),
+    ("brokerage", ("/api/brokerage", (),
+        "The operator's real brokerage holdings (SnapTrade, live, cached 60 s): `stocks` and `options`, where each option "
+        "group is a spread/straddle/single with its legs, net_mark and open_pnl. status not_configured means no broker is linked. "
+        "Not the engine tickets: those are `positions`.")),
     ("signal_watch", ("/api/forecast", (),
         "Card 0, Signal Watch: every rule-based trigger from the model cards (fair value, momentum flip, positioning, "
         "option pricing, dealer gamma, macro, engine ticket) with its reading, trigger level, FIRED or waiting, action and evidence.")),
@@ -328,7 +333,13 @@ def _shape_news(obj, _params):
             "other_sources": [line(r) for r in rows if not r["official"]]}
 
 
-SHAPERS = {"chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+def _shape_brokerage(obj, _params):
+    if obj.get("status") != "ok":
+        return obj                                      # keep the setup steps and the reason
+    return {k: v for k, v in obj.items() if k != "accounts"}     # account ids are noise; each group already names its account
+
+
+SHAPERS = {"brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool
@@ -366,7 +377,7 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
             return f"error: {source} returned HTTP {resp.status_code}: {str(obj)[:300]}"
         if source in SHAPERS and isinstance(obj, dict):
             obj = SHAPERS[source](obj, params)
-            last = last if str(last) != "10" or source in ("positions", "gex") else 40     # already compact: whole lists by default
+            last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
         return shape(obj, path, last, keep=KEEP.get(source, "last"))
     except KeyError as e:
         return f"error: {e.args[0]}"

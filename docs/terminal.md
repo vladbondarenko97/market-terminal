@@ -431,9 +431,9 @@ Code engine and added the routing below.
   waiting Signal Watch rows, macro regime and the next CPI / Fed / OPEX dates, and what the brief leaves out. It has
   no clock and no live readings, so it only changes when the data does and a server with a prompt cache reads it
   once per run. The question carries the time. `GET /api/assistant/data?source=brief` shows it.
-- **Then routing.** For anything the brief does not show, the model calls `fetch_source` for one to three of the 26
+- **Then routing.** For anything the brief does not show, the model calls `fetch_source` for one to three of the 27
   read-only GET sources in `SOURCES` (Flask test client, unlisted parameters dropped). Large results come back as an
-  outline that the model opens with `path=` and `last=`. Positions, Signal Watch, the Day Scanner, the Edge Lab,
+  outline that the model opens with `path=` and `last=`. Positions, brokerage holdings (console only, never on the market MCP link), Signal Watch, the Day Scanner, the Edge Lab,
   gamma and the VMRI history are pre-shaped (`SHAPERS`): plain contract names, local times, trades apart from cash
   tickets, gamma distances already worked out, the VMRI history as one dated row per week with the date the record
   starts. `calc` does the arithmetic. `/run` and the eBay scrape are not sources.
