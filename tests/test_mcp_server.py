@@ -41,6 +41,45 @@ class McpTests(unittest.TestCase):
             with self.subTest(env=env), self.assertRaises(SystemExit):
                 self.client(**{"MCP_MARKET_TOKEN": "", "MCP_BROKERAGE_TOKEN": "", **env})
 
+    def test_every_request_is_logged_without_the_token(self):
+        import tempfile
+        from pathlib import Path
+        log = Path(tempfile.mkdtemp()) / "calls.jsonl"
+        fake = mock.Mock(status_code=200, content_type="application/json", get_data=lambda as_text=True: '{"status":"success","data":{"spot":1}}')
+        with mock.patch.object(mcp_server, "LOG_PATH", log), mock.patch.object(mcp_server, "_denied", {"at": 0.0, "n": 0}), \
+             mock.patch.object(mcp_server._Terminal, "get", return_value=fake), \
+             self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN=BROKER) as c:
+            rpc(c, MARKET, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}})
+            rpc(c, MARKET, "tools/call", {"name": "get_source", "arguments": {"source": "gex", "query": "ticker=SPY"}}, id=2)
+            rpc(c, MARKET, "tools/call", {"name": "get_source", "arguments": {"source": "nope"}}, id=3)
+            rpc(c, BROKER, "tools/list", id=4)
+            c.post("/" + "z" * 24 + "/mcp", headers={**HEAD, "X-Forwarded-For": "9.9.9.9, 1.1.1.1", "User-Agent": "scanner/1"}, content="{}")
+            for i in range(5):   # a changing forwarded address does not get a fresh allowance
+                c.post("/" + "y" * 24 + "/mcp", headers={**HEAD, "X-Forwarded-For": f"8.8.8.{i}"}, content="{}")
+            rpc(c, MARKET, "tools/call", {"name": "get_source", "arguments": {"source": "gex"}}, id=5)
+        import time as _t; _t.sleep(0.2)   # the writes run on a worker thread
+        rows = [json.loads(l) for l in log.read_text().splitlines()]
+        self.assertEqual([(r["profile"], r.get("rpc"), r.get("tool")) for r in rows if r["profile"] != "denied"],
+                         [("market", "initialize", None), ("market", "tools/call", "get_source"), ("market", "tools/call", "get_source"), ("brokerage", "tools/list", None), ("market", "tools/call", "get_source")])
+        self.assertIn("ticker=SPY", rows[1]["args"])
+        self.assertTrue(rows[0]["ok"] and rows[1]["ok"]); self.assertFalse(rows[2]["ok"])   # unknown source: error text
+        self.assertGreaterEqual(rows[1]["ms"], 0)
+        denied = [r for r in rows if r["profile"] == "denied"]
+        self.assertEqual((len(denied), denied[0]["ip"], denied[0]["ua"]), (1, "9.9.9.9", "scanner/1"))
+        self.assertNotIn("path_len", text_all := log.read_text())
+        text = log.read_text()
+        self.assertNotIn(MARKET, text); self.assertNotIn(BROKER, text); self.assertNotIn("zzzz", text)
+
+    def test_summary_survives_hostile_bodies_and_logs_batches(self):
+        f = mcp_server._summary
+        self.assertEqual(f(b'{"method":"tools/call","params":[1]}', b"{}", 200)["rpc"], "tools/call")   # params not a dict: no tool, no crash
+        self.assertEqual(f(b"[1,2]", b"x", 200)["rpc"], "unparsed")
+        batch = json.dumps([{"method": "tools/call", "params": {"name": "a", "arguments": {}}}, {"method": "tools/call", "params": {"name": "b", "arguments": {"q": 1}}}]).encode()
+        resp = json.dumps([{"result": {"content": [{"text": "fine"}]}}, {"result": {"content": [{"text": "  error: boom"}]}}]).encode()
+        out = f(batch, resp, 200)
+        self.assertEqual((out["rpc"], out["tool"], out["ok"]), ("batch", "a,b", False))   # one failed item fails the batch
+        self.assertTrue(f(b"{}", b"x" * 10, 200, cut=True)["cut"])
+
     def test_one_endpoint_can_be_off(self):
         with self.client(MCP_MARKET_TOKEN=MARKET, MCP_BROKERAGE_TOKEN="") as c:
             self.assertEqual(self.tools(c, MARKET), ["list_sources", "get_source", "search_docs", "read_doc", "calculate"])

@@ -15,6 +15,8 @@ import hmac
 import json
 import re
 import sys
+import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +33,53 @@ import assistant  # noqa: E402  (the console's source list and shaping)
 
 TERMINAL = config.optional_env("TERMINAL_URL", default=f"http://127.0.0.1:{config.OPTIONS_WHALE_PORT}").rstrip("/")
 PORT = config.int_env("MCP_PORT", 8787, minimum=1, maximum=65535)
+LOG_PATH = Path(config.optional_env("MCP_LOG", default="") or config.DATA_DIR / "mcp_calls.jsonl")
+_log_lock, _denied = threading.Lock(), {"at": 0.0, "n": 0}
+
+
+def log_call(entry):
+    """One JSON line per request: when, which endpoint, what was asked, the outcome. Never the token or the path. Never raises."""
+    entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **entry}
+    try:
+        with _log_lock, open(LOG_PATH, "a") as f:
+            f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        print(f"mcp log write failed: {exc}", file=sys.stderr)
+
+
+def _client(scope):
+    h = {k.decode().lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+    ip = h.get("x-forwarded-for", "").split(",")[0].strip() or (scope.get("client") or ("",))[0]
+    return {"ip": ip[:64], "ua": h.get("user-agent", "")[:120]}
+
+
+def _summary(req, resp, status, cut=False):
+    """What an MCP request asked for and how it went, from the JSON-RPC bodies. A batch lists every tool and fails if any item failed."""
+    def load(raw):
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            return None
+        return d if isinstance(d, list) else [d]
+    items, answers = load(req), load(resp)
+    out = {"rpc": "unparsed"}
+    if items and all(isinstance(i, dict) for i in items):
+        out["rpc"] = "batch" if len(items) > 1 else str(items[0].get("method", "?"))
+        calls = [i.get("params") for i in items if i.get("method") == "tools/call" and isinstance(i.get("params"), dict)]
+        if calls:
+            out["tool"] = ",".join(str(c.get("name")) for c in calls)[:100]
+            out["args"] = " ".join(json.dumps(c.get("arguments") or {}, separators=(",", ":")) for c in calls)[:200]
+
+    def failed(d):
+        if not isinstance(d, dict):
+            return False
+        res = d.get("result") if isinstance(d.get("result"), dict) else {}
+        content = res.get("content") if isinstance(res.get("content"), list) and res.get("content") else [{}]
+        text = str(content[0].get("text") or "").lstrip()[:20] if isinstance(content[0], dict) else ""
+        return "error" in d or bool(res.get("isError")) or text.startswith(("error:", '{"status":"error"', '{"status": "error"'))   # the tools report problems as text
+
+    bad = status >= 400 or any(failed(d) for d in answers or [])
+    return {**out, "status": status, "ok": not bad, "bytes": len(resp), **({"cut": True} if cut else {})}
 
 
 class _Response:
@@ -211,12 +260,19 @@ def build_app():
             sys.exit(f"{name} is shorter than 24 characters: use `openssl rand -hex 24`, or leave it blank to switch that endpoint off.")
     if tokens["MCP_MARKET_TOKEN"] and tokens["MCP_MARKET_TOKEN"] == tokens["MCP_BROKERAGE_TOKEN"]:
         sys.exit("MCP_MARKET_TOKEN and MCP_BROKERAGE_TOKEN must differ: the market link would otherwise expose holdings.")
-    servers = [(tokens[n], make()) for n, make in (("MCP_MARKET_TOKEN", market_server), ("MCP_BROKERAGE_TOKEN", brokerage_server)) if tokens[n]]
+    servers = [(tokens[n], make(), prof) for n, make, prof in (("MCP_MARKET_TOKEN", market_server, "market"),
+                                                              ("MCP_BROKERAGE_TOKEN", brokerage_server, "brokerage")) if tokens[n]]
     if not servers:
         sys.exit("Set MCP_MARKET_TOKEN and/or MCP_BROKERAGE_TOKEN (24+ random characters, e.g. `openssl rand -hex 24`).")
-    routes = [(t, m.streamable_http_app(stateless_http=True, json_response=True, transport_security=off)) for t, m in servers]
+    routes = [(t, m.streamable_http_app(stateless_http=True, json_response=True, transport_security=off), prof) for t, m, prof in servers]
 
     async def not_found(scope, send):
+        # One denied line per 10 s overall (the forwarded address is caller-controlled, so it cannot key a limit); the rest are counted.
+        if time.time() - _denied["at"] >= 10:
+            n, _denied["at"], _denied["n"] = _denied["n"], time.time(), 0
+            log_call({"profile": "denied", "rpc": scope.get("method", scope["type"]), "suppressed": n, **_client(scope)})
+        else:
+            _denied["n"] += 1
         if scope["type"] == "websocket":
             await send({"type": "websocket.close"})
         else:
@@ -227,7 +283,7 @@ def build_app():
         if scope["type"] == "lifespan":
             try:
                 async with contextlib.AsyncExitStack() as stack:
-                    for _t, m in servers:
+                    for _t, m, _p in servers:
                         await stack.enter_async_context(m.session_manager.run())
                     while True:
                         msg = await receive()
@@ -240,13 +296,33 @@ def build_app():
                 await send({"type": "lifespan.startup.failed", "message": f"{type(exc).__name__}: {exc}"})
                 raise
         parts = scope["path"].split("/", 2)   # ["", token, "mcp"]
-        sub = None
-        for t, a in routes:   # compare against every token so the time does not show which one matched
+        sub = profile = None
+        for t, a, prof in routes:   # compare against every token so the time does not show which one matched
             if len(parts) == 3 and hmac.compare_digest(parts[1].encode(), t.encode()):
-                sub = a
+                sub, profile = a, prof
         if scope["type"] != "http" or sub is None or parts[2] != "mcp":
             return await not_found(scope, send)
-        await sub({**scope, "path": "/mcp", "root_path": ""}, receive, send)
+        t0, req, resp, status = time.monotonic(), bytearray(), bytearray(), [500]
+
+        async def recv():
+            msg = await receive()
+            if msg["type"] == "http.request" and len(req) < 262144:
+                req.extend(msg.get("body", b""))
+            return msg
+
+        async def snd(msg):
+            if msg["type"] == "http.response.start":
+                status[0] = msg["status"]
+            elif msg["type"] == "http.response.body" and len(resp) < 4194304:
+                resp.extend(msg.get("body", b""))
+            await send(msg)
+
+        try:
+            await sub({**scope, "path": "/mcp", "root_path": ""}, recv, snd)
+        finally:
+            entry = {"profile": profile, **_summary(bytes(req), bytes(resp), status[0], len(req) >= 262144 or len(resp) >= 4194304),
+                     "ms": round((time.monotonic() - t0) * 1000), **_client(scope)}
+            asyncio.get_running_loop().run_in_executor(None, log_call, entry)   # the file write must not stall the event loop
 
     return app
 
