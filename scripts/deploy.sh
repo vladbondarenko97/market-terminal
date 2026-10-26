@@ -11,32 +11,36 @@ say() { echo "deploy: $*"; }
 
 git fetch -q origin main
 OLD=$(git rev-parse HEAD); NEW=$(git rev-parse origin/main)
-[ "$OLD" = "$NEW" ] && { say "up to date ($(git rev-parse --short HEAD))"; exit 0; }
+STAMP="$(git rev-parse --git-dir)/deployed-sha"    # the commit the services were last restarted on (a hand-run `git pull` does not move it)
+[ "$OLD" = "$NEW" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$NEW" ] && { say "up to date ($(git rev-parse --short HEAD))"; exit 0; }
 [ "$(git branch --show-current)" = main ] || { say "checkout is not on main: not touching it"; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { say "uncommitted changes in the checkout: not touching it"; exit 1; }
 git merge-base --is-ancestor "$OLD" "$NEW" || { say "local main is not behind origin/main (diverged or ahead): not touching it"; exit 1; }
+LIVE=$(cat "$STAMP" 2>/dev/null || echo "$OLD")      # what the services run; roll back to this
 
 # CI must have passed for exactly this commit (the latest "test" run on it)
 CI=$(gh run list --workflow test --commit "$NEW" --limit 1 --json status,conclusion -q '.[0] | "\(.status)/\(.conclusion)"' 2>/dev/null || true)
 [ "$CI" = "completed/success" ] || { say "CI for $(git rev-parse --short "$NEW") is '${CI:-none}', not green: waiting"; exit 1; }
 
-say "$(git rev-parse --short "$OLD") -> $(git rev-parse --short "$NEW"), CI green"
-git diff --stat "$OLD" "$NEW" | tail -1
+say "$(git rev-parse --short "$LIVE") -> $(git rev-parse --short "$NEW"), CI green"
+git diff --stat "$LIVE" "$NEW" | tail -1
 [ "${1:-}" = "--check" ] && exit 0
 
 PORT=$(MT_NO_KEYCHAIN=1 .venv/bin/python -c "import config; print(config.OPTIONS_WHALE_PORT)" 2>/dev/null || echo 80)
 healthy() { for _ in $(seq 20); do curl -sf -m3 "http://127.0.0.1:$PORT/help" >/dev/null && return 0; sleep 1; done; return 1; }
 restart() { for s in "${SERVICES[@]}"; do launchctl kickstart -k "gui/$(id -u)/$s" || say "could not restart $s"; done; }
+deps() { git diff --quiet "$1" "$2" -- requirements.txt || .venv/bin/pip install -q -r requirements.txt; }
 
 git merge --ff-only -q "$NEW"
-git diff --quiet "$OLD" "$NEW" -- requirements.txt || .venv/bin/pip install -q -r requirements.txt
+deps "$LIVE" "$NEW"
 restart
 if healthy; then
+  echo "$NEW" > "$STAMP"
   say "deployed $(git rev-parse --short HEAD); terminal answers on port $PORT"
 else
-  say "terminal did not answer after the restart: rolling back to $(git rev-parse --short "$OLD")"
-  git reset -q --hard "$OLD"        # safe: the tree was clean and the new commits are on origin
-  git diff --quiet "$NEW" "$OLD" -- requirements.txt || .venv/bin/pip install -q -r requirements.txt
+  say "terminal did not answer after the restart: rolling back to $(git rev-parse --short "$LIVE")"
+  git reset -q --hard "$LIVE"        # safe: the tree was clean and the new commits are on origin
+  deps "$NEW" "$LIVE"
   restart; healthy && say "rolled back, terminal answers" || say "STILL DOWN: check ~/Library/Logs"
   exit 1
 fi

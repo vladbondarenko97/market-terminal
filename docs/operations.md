@@ -647,7 +647,9 @@ record positions.
 (`scripts/deploy.sh --check` shows what it would do). It deploys only when all of these hold: the checkout is on
 `main` with no uncommitted changes, it can fast-forward, and the GitHub `test` run for that exact commit passed.
 Then it fast-forwards, installs `requirements.txt` if it changed, restarts `com.vlad.optionswhale` and
-`com.vlad.mcpserver`, and waits for the terminal to answer. If it does not answer, it puts the old commit back and
+`com.vlad.mcpserver`, and waits for the terminal to answer. It records the commit the services run in
+`.git/deployed-sha`, so after a hand-run `git pull` it still restarts them. `tests/test_deploy.py` runs it against
+throwaway repos with stub `gh`, `launchctl` and `curl`. If it does not answer, it puts the old commit back and
 restarts again. It never starts a pipeline run, sends anything or touches `.env`. When nothing is new it exits quietly,
 so a timer can call it. To deploy automatically after each green merge, call it from a launchd job with
 `StartInterval` 300 (the same plist shape as `com.vlad.mcpserver`).

@@ -22,6 +22,17 @@ class ConsoleGuards(unittest.TestCase):
             self.assertTrue(assistant.UNFETCHED_CLAIM.search(text), text)
         self.assertFalse(assistant.UNFETCHED_CLAIM.search("You hold three option positions."))
 
+    def test_my_holdings_route_to_brokerage_not_engine_tickets(self):
+        # the model chose `positions` (engine tickets) for "my brokerage positions" on 2026-10-24
+        self.assertIn("brokerage", assistant.SOURCES)
+        self.assertIn("brokerage", assistant.PRIVATE_SOURCES)
+        self.assertIn("Robinhood, spreads I own: use source brokerage, never positions", assistant.SYSTEM_PROMPT)
+        self.assertIn("Not the engine tickets", assistant.SOURCES["brokerage"][2])
+        self.assertIn("Engine positions", assistant.SOURCES["positions"][2])
+
+    def test_prompt_forbids_substituting_the_latest_value_for_a_past_date(self):
+        self.assertIn("no recorded value for that date", assistant.SYSTEM_PROMPT)
+
 
 if __name__ == "__main__":
     unittest.main()

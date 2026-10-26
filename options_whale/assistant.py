@@ -509,6 +509,9 @@ Never recompute a source's formula yourself.
 - Copy contract symbols, tickers and numbers exactly as the data gives them.
 - Every number you state must come from the BRIEF or from a result you fetched in this conversation. Never use a \
 number from memory and never invent one. If the data does not contain what is needed, say so plainly.
+- A value for a past date must come from a reading on or near that date. Asked for a figure at a date the source does \
+not cover (SPY in March when its history starts in May), say there is no recorded value for that date. Never answer \
+with the latest value, and never say "closest available" for a reading weeks away.
 - Name each figure the way its source does. An option's implied volatility (atm_iv, live_iv) is not the VIX: the \
 VIX comes only from war_room or vmri_history. A gap between two volatilities is in volatility points (9.9% minus \
 5.6% is 4.3 points), never basis points.
