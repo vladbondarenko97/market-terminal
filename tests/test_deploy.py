@@ -80,11 +80,11 @@ class Deploy(unittest.TestCase):
         self.assertEqual((self.head(), self.restarts()), (before, 0))
 
     def test_hand_pull_still_gets_restarted(self):
-        self.deploy()                                              # first deploy records the commit the services run
+        self.deploy()                                              # first run records the commit the services run
         self.merge_upstream()
         self.git(self.live, "pull", "-q")                          # someone pulled by hand: HEAD == origin/main, services stale
         code, out = self.deploy()
-        self.assertEqual((code, self.restarts()), (0, 4), out)
+        self.assertEqual((code, self.restarts()), (0, 2), out)
         self.assertIn("deployed", out)
 
     def test_dirty_checkout_is_left_alone(self):
@@ -103,6 +103,28 @@ class Deploy(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("rolling back", out)
         self.assertEqual((self.head(), (self.live / "a.txt").read_text()), (good, "1"))
+
+    def test_failed_commit_is_not_retried_and_hand_pull_rolls_back_to_the_running_commit(self):
+        self.deploy()
+        running = self.head()
+        self.merge_upstream("c2")
+        self.git(self.live, "pull", "-q")                          # hand pull: files at c2, services still on the stamped commit
+        self.merge_upstream("c3")
+        (self.tmp / "healthy").unlink()
+        self.assertEqual(self.deploy()[0], 1)
+        self.assertEqual(self.head(), running)                     # back on what was verified, not the hand-pulled c2
+        before = self.restarts()
+        code, out = self.deploy()
+        self.assertEqual((code, self.restarts()), (1, before), out)   # same bad commit: no restart loop
+        self.assertIn("already failed", out)
+
+    def test_first_run_and_garbage_stamp_do_not_restart_a_current_checkout(self):
+        self.assertIn("up to date", self.deploy()[1])              # no stamp yet
+        self.assertEqual(self.restarts(), 0)
+        self.merge_upstream()
+        (self.live / ".git" / "deployed-sha").write_text("0" * 40)  # rewritten history
+        code, out = self.deploy()
+        self.assertEqual((code, self.restarts()), (0, 2), out)
 
     def test_check_changes_nothing(self):
         self.merge_upstream()
