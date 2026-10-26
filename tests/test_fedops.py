@@ -170,7 +170,7 @@ class Matching(unittest.TestCase):
         sys.path.insert(0, str(support.ROOT / "options_whale"))
         import assistant
         out = assistant._shape_fed({"max_60d": {"date": "2026-09-30", "accepted_bn": 11.539}, "rows": [{"rrp_bn": 0.2, "sofr": 3.92, "repo_bn": None}]})
-        self.assertEqual(out, {"max_60d": {"date": "2026-09-30", "accepted": "$11.539 billion"}, "rows": [{"rrp": "$0.200 billion", "sofr": 3.92, "repo": None}]})
+        self.assertEqual(out, {"max_60d": {"date": "2026-09-30 (Wednesday)", "accepted": "$11.539 billion"}, "rows": [{"rrp": "$0.200 billion", "sofr": 3.92, "repo": None}]})
         latest = assistant._shape_fed_latest({"data": {"last_8": [], "yearly": [{"year": y, "accepted_bn": n} for y, n in (("2024", 1.0), ("2025", 2.0), ("2026", 3.0))]}})
         self.assertEqual(list(latest["data"]["yearly"]), ["2025", "2026"])
         self.assertEqual(latest["data"]["yearly"]["2025"]["whole_year"], {"accepted": "$2.000 billion"})
@@ -209,9 +209,13 @@ class Round2(unittest.TestCase):
         import assistant
         up = [{"date": f"2026-10-{d}", "term": f"t{d}"} for d in range(27, 38)]
         out = assistant._shape_fed_latest({"data": {"by_tenor": {}, "upcoming": up}})
-        self.assertEqual(out["data"]["upcoming"]["next_1"]["date"], "2026-10-27")
-        self.assertEqual(len(out["data"]["upcoming"]), 6)
-        self.assertIn('"next_1"', assistant.shape(out, last=3))       # the generic cut trims lists, never this numbered dict
+        up = [{"date": "2026-10-27", "term": "52-Week", "type": "Bill", "size_bn": 54.0}, {"date": "2026-10-27", "term": "6-Week", "type": "Bill", "size_bn": 95.0},
+              {"date": "2026-10-27", "term": "5-Year", "type": "Note", "size_bn": 70.0}] + up[1:]
+        out = assistant._shape_fed_latest({"data": {"by_tenor": {}, "upcoming": up}})
+        first = out["data"]["upcoming"]["1. 2026-10-27 (Tuesday)"]                    # every auction of the soonest day, together
+        self.assertEqual(first, {"52-Week Bill": "$54.000 billion", "6-Week Bill": "$95.000 billion", "5-Year Note": "$70.000 billion"})
+        self.assertEqual(len(out["data"]["upcoming"]), 4)
+        self.assertIn("2026-10-27 (Tuesday)", assistant.shape(out, last=3))          # the generic cut trims lists, never these dicts
         self.assertEqual(assistant._shape_fed({"accepted_change_bn": -12.5}), {"accepted_change": "-$12.500 billion"})
         bb = assistant._shape_fed_latest({"data": {"last_8": [], "monthly": [{"period": "2026-09", "ops": 7, "accepted_bn": 37.755}]}})
         self.assertEqual(bb["data"]["monthly_totals_last_13_months"]["2026-09"], {"ops": 7, "accepted": "$37.755 billion"})
@@ -226,9 +230,52 @@ class HistoryShaping(unittest.TestCase):
         app.test_client.return_value.get.return_value = mock.Mock(status_code=200, content_type="application/json",
                                                                   get_data=lambda as_text=True: json.dumps(body))
         out = json.loads(assistant.fetch_source(app, "auction_history", "from=2022-01-01&to=2023-12-31"))
-        self.assertEqual(list(out["summary"]["by_tenor"]["30-Year Bond"]["by_year"]), ["2022", "2023"])
+        self.assertTrue(out["summary"]["by_tenor"]["30-Year Bond"]["latest_year_vs_year_before"].startswith("2023 vs 2022"))
         out = json.loads(assistant.fetch_source(app, "auction_history", ""))
-        self.assertEqual(list(out["summary"]["by_tenor"]["30-Year Bond"]["by_year"]), ["2025", "2026"])
+        self.assertTrue(out["summary"]["by_tenor"]["30-Year Bond"]["latest_year_vs_year_before"].startswith("2026 vs 2025"))
+        self.assertNotIn("by_year", out["summary"]["by_tenor"]["30-Year Bond"])
+
+
+class Round3(unittest.TestCase):
+    """The five wording errors of 2026-10-26 round 3: the data now says it in words."""
+
+    def setUp(self):
+        sys.path.insert(0, str(support.ROOT / "options_whale"))
+        import assistant
+        self.A = assistant
+
+    def test_trillions_are_written_out(self):
+        self.assertEqual(fedops.money(2553.716), "$2,553.7 billion ($2.55 trillion)")
+        self.assertEqual(fedops.money(10.3), "$10.300 billion")
+        self.assertEqual(fedops.money(-12.5), "-$12.500 billion")
+
+    def test_peaks_and_trend_sentence(self):
+        rows = [{"date": d, "entity": "rrp", "accepted_bn": v} for d, v in (("2022-12-30", 2553.716), ("2025-10-15", 11.07), ("2025-12-31", 105.993),
+                                                                          ("2026-10-23", 0.2))]
+        m = {"rrp": {"earliest": "2014-01-02", "latest": rows[-1], "peak_12m": fedops._peak(rows, "2025-10-26"), "peak_all_time": fedops._peak(rows)}}
+        months = fedops.repo_monthly([{"date": r["date"], "rrp_bn": r["accepted_bn"]} for r in rows])
+        s = fedops.rrp_trend(m, months, TODAY)
+        self.assertIn("$105.993 billion on 2025-12-31 (Wednesday)", s)
+        self.assertIn("$2,553.7 billion ($2.55 trillion) on 2022-12-30 (Friday)", s)
+        self.assertIn("against $11.070 billion a day in 2025-10", s)
+
+    def test_one_auction_bidder_shares_sum_to_100(self):
+        out = self.A._shape_fed({"last_dealer_pct": 2.54, "last_direct_pct": 17.12, "last_indirect_pct": 80.34, "dealer_pct_12m": 8.9})
+        self.assertEqual(out["last_winning_bid_shares"]["total"], "100.0%")
+        self.assertEqual(out["dealer_pct_12m"], 8.9)
+        self.assertNotIn("last_dealer_pct", out)
+
+    def test_weekdays_and_latest_available(self):
+        out = self.A._shape_fed({"latest": {"date": "2026-10-23", "rate": 3.92}, "as_of": "2026-10-27"})
+        self.assertEqual(out, {"latest_available": {"date": "2026-10-23 (Friday)", "rate": 3.92}, "as_of": "2026-10-27 (Tuesday)"})
+        with mock.patch.object(self.A, "datetime", wraps=self.A.datetime) as dt:
+            dt.now.return_value = __import__("datetime").datetime(2026, 10, 26, 9, 0)
+            self.assertTrue(self.A._today_line().startswith("Monday 2026-10-26; the last business day before today was Friday 2026-10-23"))
+
+    def test_year_on_year_direction_is_written(self):
+        s = self.A._year_vs_year({"2025": {"bid_to_cover_avg": 2.3708, "auctions": 12, "size_bn": 276.0},
+                                  "2026": {"bid_to_cover_avg": 2.453, "auctions": 10, "size_bn": 229.0}})
+        self.assertTrue(s.startswith("2026 vs 2025: mean bid-to-cover 2.453 vs 2.371 (higher by 0.082)"))
 
 
 class ConsoleRouting(unittest.TestCase):
@@ -285,6 +332,19 @@ class Routes(ApiCase):
         self.assertEqual((h["rows"][-1]["rrp_bn"], h["rows"][-1]["sofr"]), (0.2, 3.92))
         self.assertEqual(self.client.get("/api/fed_ops/history/repo?from=nope").status_code, 400)
         self.assertEqual(self.client.get("/api/fed_ops/history/auctions").status_code, 404)      # nothing stored yet
+
+    def test_a_block_from_an_older_version_is_rebuilt_from_the_stored_rows(self):
+        conn = lake.connect(self.tmp / "portfolio.db")
+        lake.migrate(conn)
+        lake.record_observations(conn, fedops.repo_records(load("rp.json")))
+        lake.create_run(conn, "r1", mode="live", trigger="manual", run_folder="Oct-26-26", code_version="t")
+        lake.commit_snapshot(conn, "r1", {"run": {"run_id": "r1"}, "fed_ops": {"version": "fed_ops_v3", "repo": {"status": "fresh"}}})
+        lake.update_run(conn, "r1", status="completed")
+        conn.close()
+        d = self.get_json("/api/fed_ops")["data"]
+        self.assertEqual((d["version"], d["repo"]["status"]), (fedops.FEDOPS_VERSION, "fresh"))
+        self.assertIn("rebuilt from stored rows", d["source"])
+        self.assertIn("peak_all_time", d["repo"]["markets"]["rrp"])
 
     def test_before_the_first_run_the_routes_summarise_the_stored_history(self):
         conn = lake.connect(self.tmp / "portfolio.db")

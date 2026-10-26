@@ -3019,7 +3019,7 @@ def api_chaos_history():
 
 FED_OPS_PARTS = ("repo", "buybacks", "auctions")
 # repo: the latest reading per market and rate is /api/fed_ops/repo; the history carries the period levels only
-FED_OPS_SUMMARY = {"repo": ("status", "as_of", "reason", "rates_status", "yearly", "monthly", "units", "note"),
+FED_OPS_SUMMARY = {"repo": ("status", "as_of", "reason", "rrp_trend", "rates_status", "yearly", "monthly", "units", "note"),
                    "buybacks": ("this_year_vs_last_year_same_dates", "status", "as_of", "reason", "last_8", "scheduled", "largest_5", "monthly", "quarterly", "yearly", "t12m", "prior_t12m", "t12m_by_security_type", "units"),
                    "auctions": ("status", "as_of", "reason", "upcoming", "upcoming_status", "by_tenor", "monthly", "t12m", "prior_t12m", "tail", "units")}
 
@@ -3034,20 +3034,26 @@ def _fed_ops_section(conn):
     from core import fedops as _v2fo
     run, fc = _latest_forecast(conn)
     sec = (fc or {}).get("fed_ops")
-    if sec and sec.get("status") != "error":
+    if sec and sec.get("status") != "error" and sec.get("version") == _v2fo.FEDOPS_VERSION:
         return run, sec
+    # An older model version (a run before the deploy) is rebuilt from the same stored rows with the current code: that run
+    # refreshed them, so its parts keep their status. No snapshot, or a failed block: every part is marked stale.
+    outdated = bool(sec) and sec.get("status") != "error"
     metrics = (_v2fo.REPO, _v2fo.RATE, _v2fo.BUYBACK, _v2fo.AUCTION)
     stamp = conn.execute("SELECT MAX(obs_id) FROM v2_observations WHERE metric_id IN (?,?,?,?)", metrics).fetchone()[0]
     upcoming = conn.execute("SELECT MAX(payload_id) FROM v2_payloads WHERE kind = 'treasury_upcoming'").fetchone()[0]
     if stamp is None:
         return run, None
     today = datetime.now(ZoneInfo("America/New_York")).date()
-    key = (today, stamp, upcoming, bool(sec))
+    key = (today, stamp, upcoming, bool(sec), outdated)
     if key not in _FED_OPS_FALLBACK:
-        why = "the latest pipeline run could not build card 15" if sec else "no pipeline run has refreshed it yet"
-        errors = {k: why for k in ("nyfed:rp", "nyfed:rates", "treasury:buybacks", "treasury:auctions", "treasury:upcoming")}
+        if outdated:
+            errors, label = {}, f"rebuilt from stored rows with {_v2fo.FEDOPS_VERSION} (the latest run's block is {sec.get('version')})"
+        else:
+            why = "the latest pipeline run could not build card 15" if sec else "no pipeline run has refreshed it yet"
+            errors, label = {k: why for k in ("nyfed:rp", "nyfed:rates", "treasury:buybacks", "treasury:auctions", "treasury:upcoming")}, f"stored history ({why})"
         _FED_OPS_FALLBACK.clear()
-        _FED_OPS_FALLBACK[key] = dict(_v2fo.build(conn, today, errors), source=f"stored history ({why})")
+        _FED_OPS_FALLBACK[key] = dict(_v2fo.build(conn, today, errors), source=label)
     return run, _FED_OPS_FALLBACK[key]
 
 

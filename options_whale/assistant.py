@@ -21,13 +21,13 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Response, jsonify, request, stream_with_context
 
 from config import optional_env
-from core import narrative
+from core import fedops, narrative
 
 LOCAL_URL = optional_env("ASSISTANT_LOCAL_URL", default="http://127.0.0.1:11434/v1").rstrip("/")
 # Default for an Ollama setup (fastest of the Ollama models measured on an M4 Pro). A machine that runs another server,
@@ -382,28 +382,81 @@ FED_SOURCES = ("repo_ops", "treasury_buybacks", "treasury_auctions", "repo_histo
 
 # Columns a question never needs; dropping them keeps a source under MAX_CHARS instead of an outline the model must dig through
 FED_DROP = {"issues_accepted", "issues_eligible", "settlement_date", "low_yield", "median_yield", "investment_rate", "cusip", "entity",
-            "issue_date", "direct_pct", "p1", "p99", "units", "note", "last_10", "last_60d"}     # the daily lists repeat the rows
+            "issue_date", "p1", "p99", "units", "note", "last_10", "last_60d", "weekday"}
+DATE_KEYS = {"date", "as_of", "earliest", "earliest_stored", "last_date", "from", "to"}
+BIDDERS = (("dealer_pct", "primary dealers"), ("direct_pct", "direct bidders"), ("indirect_pct", "indirect bidders"))
+
+
+def _bidder_shares(obj, prefix):
+    """dealer / direct / indirect shares of ONE auction as one labelled set that sums to 100% (a 9B mixed the dealer share of
+    one auction with the indirect share of another, 57% in all)."""
+    vals = [obj.get(prefix + k) for k, _ in BIDDERS]
+    if any(not isinstance(v, (int, float)) for v in vals):
+        return None
+    return {**{label: f"{v:.2f}%" for (_, label), v in zip(BIDDERS, vals)}, "total": f"{sum(vals):.1f}%"}
+
+
+def _year_vs_year(by_year):
+    """'2026 vs 2025: bid-to-cover 2.453 vs 2.371 (higher by 0.082); ...' written by code, so the direction cannot be misread."""
+    if not isinstance(by_year, dict) or len(by_year) < 2:
+        return None
+    (y0, a), (y1, b) = list(by_year.items())[-2:]
+
+    def cmp(label, k, unit="", pts=False):
+        x, y = b.get(k), a.get(k)
+        if x is None or y is None:
+            return None
+        d = x - y
+        word = "higher" if d > 0 else "lower" if d < 0 else "unchanged"
+        by = "" if d == 0 else f" by {abs(d):.3f}{' points' if pts else ''}"
+        return f"{label} {x:.3f}{unit} vs {y:.3f}{unit} ({word}{by})"
+    parts = [cmp("mean bid-to-cover", "bid_to_cover_avg"), cmp("mean dealer share", "dealer_pct_avg", "%", True),
+             cmp("mean high yield", "high_avg", "%", True)]
+    sizes = f"auctions {b.get('auctions')} vs {a.get('auctions')}; total size {fedops.money(b.get('size_bn'))} vs {fedops.money(a.get('size_bn'))}"
+    return f"{y1} vs {y0}: " + "; ".join(p for p in parts if p) + f"; {sizes}"     # the daily lists repeat the rows
 # The latest-reading sources leave the period tables to the *_history sources
-FED_LATEST_DROP = {"monthly", "quarterly", "by_year", "last_60d", "last_10", "dealer_pct_12m", "last_dealer_pct"}
+FED_LATEST_DROP = {"monthly", "quarterly", "by_year", "last_60d", "last_10", "dealer_pct_12m"}
 
 
 def _shape_fed(obj, params=None, drop=FED_DROP):
-    """Write each amount with its unit: accepted_bn 11.539 becomes accepted "$11.539 billion" (a 9B read 11.539 bn as trillions)."""
+    """What the model reads, written so it cannot be misread: amounts in words with their unit ("$11.539 billion", "$2,553.7
+    billion ($2.55 trillion)"), every date with its weekday, an auction's bidder shares as one labelled set, "latest" named
+    "latest_available", and a tenor's year-on-year change with its direction spelled out. Seen with a 9B: "$1.03 trillion"
+    for $10.3 billion, "Wednesday, October 27" for a Tuesday, shares from two auctions mixed, "lower" for 2.45 vs 2.37."""
     if isinstance(obj, list):
         return [_shape_fed(v, None, drop) for v in obj]
     if not isinstance(obj, dict):
         return obj
-    out = {}
+    out, used = {}, set()
+    for prefix in ("", "last_"):
+        shares = _bidder_shares(obj, prefix)
+        if shares:
+            out[f"{prefix}winning_bid_shares"] = shares
+            used |= {prefix + k for k, _ in BIDDERS}
+    if isinstance(obj.get("by_year"), dict) and "by_year" not in drop:
+        out["latest_year_vs_year_before"] = _year_vs_year(obj["by_year"])
     for k, v in obj.items():
-        if k in drop:
+        if k in drop or k in used:
             continue
-        if k.endswith("_bn") and isinstance(v, (int, float)) and not isinstance(v, bool):
-            out[k[:-3]] = f"{'-' if v < 0 else ''}${abs(v):,.3f} billion"
-        elif k.endswith("_bn") and v is None:
-            out[k[:-3]] = None
+        if k.endswith("_bn") and (v is None or isinstance(v, (int, float)) and not isinstance(v, bool)):
+            out[k[:-3]] = fedops.money(v)
+        elif (k in DATE_KEYS or k.endswith("_date")) and isinstance(v, str) and re.match(r"\d{4}-\d{2}-\d{2}$", v[:10]):
+            out[k] = fedops.day(v[:10]) + v[10:]
+        elif k == "latest":
+            out["latest_available"] = _shape_fed(v, None, drop)
         else:
             out[k] = _shape_fed(v, None, drop)
     return out
+
+
+def _today_line():
+    """'Monday 2026-10-26; the last business day before today was Friday 2026-10-23': "yesterday" on a Monday is Friday."""
+    from core import market_calendar as MC
+    today = datetime.now(MC.NEW_YORK).date()
+    prev = today - timedelta(days=1)
+    while not MC.is_trading_day(prev):
+        prev -= timedelta(days=1)
+    return f"{today:%A} {today}; the last business day before today was {prev:%A} {prev}. NY Fed rates for a day are published the next business morning."
 
 
 def _shape_fed_latest(obj, params=None):
@@ -416,8 +469,15 @@ def _shape_fed_latest(obj, params=None):
         drop = drop | {"t12m", "prior_t12m"}
         # Numbered dicts, not lists: the generic cut keeps the LAST items of a list and once kept the last 5 of 11 announced
         # auctions, so "the next auction" was Oct 29 instead of Oct 27. A dict is never cut.
-        if isinstance(src.get("upcoming"), list):
-            src["upcoming"] = {f"next_{i + 1}": u for i, u in enumerate(src["upcoming"][:6])}
+        if isinstance(src.get("by_tenor"), dict):            # ~35 tenors in full overflow into an outline: bills get a short line
+            src["by_tenor"] = {k: ({f: v.get(f) for f in ("last_date", "last_high", "last_bid_to_cover", "bid_to_cover_12m")}
+                                   if k.endswith(("Bill", "CMB")) else v) for k, v in src["by_tenor"].items()}
+        if isinstance(src.get("upcoming"), list):            # by day, soonest first: every auction of the next day is in the first entry
+            days = {}
+            for u in src["upcoming"]:
+                if len(days) < 4 or u.get("date") in days:
+                    days.setdefault(u.get("date"), {})[f"{u.get('term')} {u.get('type')}"] = (fedops.money(u.get("size_bn")) or "size not announced yet")
+            src["upcoming"] = {f"{i + 1}. {fedops.day(d)}": v for i, (d, v) in enumerate(days.items())}
         if isinstance(src.get("recent"), list):
             src["recent"] = {f"latest_{i + 1}": u for i, u in enumerate(reversed(src["recent"][-6:]))}
     if isinstance(src.get("monthly"), list) and "last_8" in src:      # buybacks: a month's total in one place, not summed from rows
@@ -488,12 +548,15 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
                                                      "pass from=YYYY-MM-DD for earlier months")
         if source == "auction_history" and "tenor" not in params and isinstance((obj.get("summary") or {}).get("by_tenor"), dict):
             lo, hi = (params.get("from") or "0000")[:4], (params.get("to") or "9999")[:4]
-            for v in obj["summary"]["by_tenor"].values():  # every tenor's six years overflow: the asked years (or the last 2) fit
-                if isinstance(v.get("by_year"), dict):
-                    years = [(y, s) for y, s in v["by_year"].items() if lo <= y <= hi]
-                    v["by_year"] = dict(years if "from" in params or "to" in params else years[-2:])
-            obj["summary"]["by_tenor_note"] = ("by_year covers the years of from/to (without them, this year and last); pass tenor= "
-                                               "(e.g. 30 year bond) for every year of one tenor")
+            compact = ("last_date", "last_bid_to_cover", "bid_to_cover_12m", "bid_to_cover_prior_12m")
+            for name, v in list(obj["summary"]["by_tenor"].items()):   # ~35 tenors in full overflow: a short line each fits
+                years = [(y, s) for y, s in (v.get("by_year") or {}).items() if lo <= y <= hi]
+                line = {k: v.get(k) for k in compact}
+                if not name.endswith(("Bill", "CMB")):                 # coupons: the year-on-year sentence too
+                    line["latest_year_vs_year_before"] = _year_vs_year(dict(years))
+                obj["summary"]["by_tenor"][name] = line
+            obj["summary"]["by_tenor_note"] = ("a short line per tenor; coupons compare the last two years of from/to (without them, this "
+                                               "year and last); pass tenor= (e.g. 10 year note) for one tenor's full results and table by year")
         if source in FED_SOURCES and source.endswith("_history") and isinstance(obj.get("rows"), list):
             # Too long: shorten the monthly list first (summary.yearly covers its range), then give up rows; the totals stay.
             size = lambda: len(json.dumps(_shape_fed(obj), default=str))
@@ -512,6 +575,8 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
             last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
             if source in FED_SOURCES and source.endswith("_history") and str(last) in ("10", "40"):
                 last = 60                                    # the route's limit chose the rows; keep every summary row too
+        if source in FED_SOURCES and isinstance(obj, dict):
+            obj = {"today": _today_line(), **obj}
         return shape(obj, path, last, keep=KEEP.get(source, "last"))
     except KeyError as e:
         return f"error: {e.args[0]}"
