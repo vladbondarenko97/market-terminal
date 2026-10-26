@@ -221,7 +221,7 @@ class Round2(unittest.TestCase):
         self.assertIn("2026-10-27 (Tuesday)", assistant.shape(out, last=3))          # the generic cut trims lists, never these dicts
         self.assertEqual(assistant._shape_fed({"accepted_change_bn": -12.5}), {"accepted_change": "-$12.500 billion"})
         bb = assistant._shape_fed_latest({"data": {"last_8": [], "monthly": [{"period": "2026-09", "ops": 7, "accepted_bn": 37.755}]}})
-        self.assertEqual(bb["data"]["monthly_totals_last_13_months"]["2026-09"], {"ops": 7, "accepted": "$37.755 billion"})
+        self.assertEqual(bb["data"]["monthly_totals_last_13_months"]["2026-09"], {"ops": 7, "total_accepted": "$37.755 billion"})
 
 
 def fixed_now(assistant, when):
@@ -237,15 +237,14 @@ class HistoryShaping(unittest.TestCase):
         sys.path.insert(0, str(support.ROOT / "options_whale"))
         import assistant
         self.addCleanup(fixed_now(assistant, (2026, 10, 26, 9, 0)).stop)
-        body = {"rows": [], "summary": {"by_tenor": {"30-Year Bond": {"by_year": {y: {"auctions": 12} for y in ("2021", "2022", "2023", "2025", "2026")}}}}}
+        body = {"rows": [], "summary": {"by_tenor": {"30-Year Bond": {"by_year": {y: {"auctions": 12, "bid_to_cover_avg": 2.4} for y in ("2021", "2022", "2023", "2025", "2026")}}}}}
         app = mock.Mock()
         app.test_client.return_value.get.return_value = mock.Mock(status_code=200, content_type="application/json",
                                                                   get_data=lambda as_text=True: json.dumps(body))
         out = json.loads(assistant.fetch_source(app, "auction_history", "from=2022-01-01&to=2023-12-31"))
-        self.assertTrue(out["summary"]["by_tenor"]["30-Year Bond"]["latest_year_vs_year_before"].startswith("2023 vs 2022"))
+        self.assertIn(". 2023 vs 2022", out["summary"]["by_tenor"]["30-Year Bond"])
         out = json.loads(assistant.fetch_source(app, "auction_history", ""))
-        self.assertTrue(out["summary"]["by_tenor"]["30-Year Bond"]["latest_year_vs_year_before"].startswith("2026 so far (to 10-26) vs all of 2025"))
-        self.assertNotIn("by_year", out["summary"]["by_tenor"]["30-Year Bond"])
+        self.assertIn(". 2026 so far (to 10-26) vs all of 2025", out["summary"]["by_tenor"]["30-Year Bond"])
 
 
 class Round3(unittest.TestCase):
@@ -294,6 +293,39 @@ class Round3(unittest.TestCase):
         s = self.A._year_vs_year({"2025": {"bid_to_cover_avg": 2.3708, "auctions": 12, "size_bn": 276.0},
                                   "2026": {"bid_to_cover_avg": 2.453, "auctions": 10, "size_bn": 229.0}})
         self.assertTrue(s.startswith("2026 vs 2025: mean bid-to-cover 2.453 vs 2.371 (higher by 0.082)"))
+
+
+class Round4(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(support.ROOT / "options_whale"))
+        import assistant
+        self.A = assistant
+
+    def test_each_repo_month_is_one_labelled_line(self):
+        row = {"month": "2025-10", "rrp_avg_bn": 11.07, "rrp_max_bn": 51.802, "rrp_last_bn": 51.802, "rrp_last_date": "2025-10-31",
+               "repo_avg_bn": 4.834, "repo_max_bn": 50.35, "repo_last_bn": 50.35, "repo_last_date": "2025-10-31",
+               "sofr_avg": 4.2009, "effr_avg": 4.0823, "tgcr_avg": 4.1682, "bgcr_avg": 4.1682, "sofr_volume_avg_bn": 3007.2}
+        summary = {"monthly": [row], "yearly": [dict(row, year="2025", rrp_avg_bn=102.973)]}
+        self.A._repo_periods(summary)
+        line = summary["monthly_levels"]["2025-10"]
+        self.assertTrue(line.startswith("ON RRP averaged $11.070 billion a day (highest day $51.802 billion, last day $51.802 billion on 2025-10-31 (Friday))"))
+        self.assertNotIn("trillion", line)                        # SOFR volume (trillions) is not beside the ON RRP average any more
+        self.assertIn("ON RRP averaged $102.973 billion a day", summary["yearly_levels"]["2025"])
+        self.assertNotIn("monthly", summary)
+
+    def test_earlier_readings_are_single_days(self):
+        out = self.A._shape_fed({"ago": {"1m": {"date": "2026-09-25", "accepted_bn": 0.576}, "1y": {"date": "2025-10-23", "rate": 4.24}, "3m": None}})
+        e = out["single_day_readings_earlier"]
+        self.assertEqual(e["about 1 month before"], "$0.576 billion on 2026-09-25 (Friday) (one day, not a total)")
+        self.assertEqual(e["about 1 year before"], "4.24% on 2025-10-23 (Thursday) (one day, not a total)")
+        self.assertIsNone(e["about 3 months before"])
+
+    def test_buyback_totals_say_they_are_sums(self):
+        out = self.A._shape_fed({"ops": 64, "max_bn": 273.78, "offered_bn": 1255.197, "accepted_bn": 230.235})
+        self.assertEqual(set(out), {"ops", "sum_of_announced_maximums", "total_offered_by_dealers", "total_accepted"})
+        op = self.A._shape_fed({"date": "2026-10-21", "operation_type": "Liquidity Support", "max_bn": 0.75, "offered_bn": 4.751, "accepted_bn": 0.75})
+        self.assertEqual(op["announced_maximum"], "$0.750 billion")
+        self.assertEqual(op["offered_by_dealers"], "$4.751 billion")
 
 
 class ConsoleRouting(unittest.TestCase):

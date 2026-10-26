@@ -105,12 +105,12 @@ SOURCES = OrderedDict([
     ("options_scan_evening", ("/api/evening", ("ticker",), "Options flow scan for a ticker, evening preset. Slow (10-30 s).")),
     ("options_whale_hunt", ("/api/custom", ("ticker", "min_vol_oi", "max_dte"),
         "Unusual options activity for a ticker: contracts whose volume exceeds min_vol_oi x open interest, up to max_dte days out. Slow.")),
-    ("repo_ops", ("/api/fed_ops/repo", (), "The NY Fed's repo and reverse repo operations (what people call repo auctions or repo ops), latest readings: overnight reverse repo (ON RRP) and repo (Standing Repo "
+    ("repo_ops", ("/api/fed_ops/repo", (), "Reverse repo (RRP, ON RRP) and repo: the NY Fed's operations (what people call repo auctions or repo ops), latest readings: overnight reverse repo (ON RRP) and repo (Standing Repo "
         "Facility) and term repo take-up per day (USD bn, rate, counterparties), the reference rates SOFR, TGCR, BGCR, EFFR with their "
         "4-week change, the highest day in the last 60 days, the last 12 months and since 2014 (peak_12m, peak_all_time), a "
         "ready-made ON RRP sentence (rrp_trend) and the readings 1 month, 3 months and 1 year earlier (ago.1m / 3m / 1y). Monthly "
         "average, highest day and month-end levels and any date range: repo_history. Status stale means it could not be refreshed: say the date it is as of.")),
-    ("treasury_buybacks", ("/api/fed_ops/buybacks", (), "US Treasury buyback operations: this year vs last year over the same dates (first), month-by-month totals for the last 13 months, the last 8 held (date, security type, maturity "
+    ("treasury_buybacks", ("/api/fed_ops/buybacks", (), "US Treasury buybacks of Treasury securities (not repo or reverse repo / RRP: those are repo_ops and repo_history): this year vs last year over the same dates (first), month-by-month totals for the last 13 months, the last 8 held (date, security type, maturity "
         "bucket, the most Treasury would buy vs what dealers offered vs what was accepted), scheduled ones, the 5 largest since 2024, totals "
         "by month, quarter, year (with year-to-date against a year earlier and by operation type: liquidity support vs cash management), "
         "trailing 12 months vs the 12 before, by security type.")),
@@ -119,7 +119,7 @@ SOURCES = OrderedDict([
         "bid-to-cover, dealer / direct / indirect shares), the upcoming auction calendar, per tenor the last result, the 12-month mean "
         "bid-to-cover against the 12 before. For one tenor this year vs last year, or any period, call auction_history with tenor "
         "and from: its summary has a by_year table per tenor. Tails are not available.")),
-    ("repo_history", ("/api/fed_ops/history/repo", ("from", "to", "limit"), "Daily repo market history: accepted USD bn for rrp, repo, "
+    ("repo_history", ("/api/fed_ops/history/repo", ("from", "to", "limit"), "Reverse repo (RRP, ON RRP) and repo history, for any period or year vs year: accepted USD bn for rrp, repo, "
         "repo_term and the sofr, tgcr, bgcr, effr rates, from 2014 (rates from 2018-04-02). Its summary.monthly has, per month, the ON RRP "
         "balance as a daily average, highest day and month-end (USD billions, never a sum) and the mean rates. For a change over a "
         "period compare those monthly levels. from/to=YYYY-MM-DD, limit=N newest rows.")),
@@ -397,7 +397,7 @@ def _bidder_shares(obj, prefix):
     return " / ".join(f"{label} {v:.2f}%" for (_, label), v in zip(BIDDERS, vals)) + f" (one auction, total {sum(vals):.1f}%)"
 
 
-def _year_vs_year(by_year):
+def _year_vs_year(by_year, short=False):
     """'2026 vs 2025: bid-to-cover 2.453 vs 2.371 (higher by 0.082); ...' written by code, so the direction cannot be misread."""
     if not isinstance(by_year, dict) or len(by_year) < 2:
         return None
@@ -414,11 +414,13 @@ def _year_vs_year(by_year):
         word = "higher" if d > 0 else "lower" if d < 0 else "unchanged"
         by = "" if d == 0 else f" by {abs(d):.3f}{' points' if pts else ''}"
         return f"{label} {x:.3f}{unit} vs {y:.3f}{unit} ({word}{by})"
-    parts = [cmp("mean bid-to-cover", "bid_to_cover_avg"), cmp("mean dealer share", "dealer_pct_avg", "%", True),
-             cmp("mean high yield", "high_avg", "%", True)]
+    parts = [cmp("mean bid-to-cover", "bid_to_cover_avg")]
+    if short:                                               # one line per tenor for ~20 tenors: bid-to-cover only
+        return f"{label}: " + "; ".join(p for p in parts if p) if parts[0] else None
+    parts += [cmp("mean dealer share", "dealer_pct_avg", "%", True), cmp("mean high yield", "high_avg", "%", True)]
     sizes = (f"auctions {b.get('auctions')} vs {a.get('auctions')}; total size {fedops.money(b.get('size_bn'))} vs {fedops.money(a.get('size_bn'))}"
              + (f" (the count and size of {y1} are not final: compare the means)" if partial else ""))
-    return f"{label}: " + "; ".join(p for p in parts if p) + f"; {sizes}"
+    return f"{label}: " + "; ".join([p for p in parts if p] + [sizes])
 # The latest-reading sources leave the period tables to the *_history sources
 FED_LATEST_DROP = {"monthly", "quarterly", "by_year", "last_60d", "last_10", "dealer_pct_12m"}
 
@@ -442,20 +444,86 @@ def _shape_fed(obj, params=None, drop=FED_DROP):
     for k, v in obj.items():
         if k in drop or k in used:
             continue
-        if k.endswith("_bn") and (v is None or isinstance(v, (int, float)) and not isinstance(v, bool)):
+        if k == "ago" and isinstance(v, dict):             # a 9B read ago.1y as a 12-month total
+            out["single_day_readings_earlier"] = {
+                {"1m": "about 1 month before", "3m": "about 3 months before", "1y": "about 1 year before"}.get(span, span):
+                (None if not r else f"{fedops.money(r['accepted_bn']) if 'accepted_bn' in r else str(r.get('rate')) + '%'} on {fedops.day(r['date'])} (one day, not a total)")
+                for span, r in v.items()}
+        elif k.endswith("_bn") and (v is None or isinstance(v, (int, float)) and not isinstance(v, bool)):
             out[k[:-3]] = fedops.money(v)
         elif (k in DATE_KEYS or k.endswith("_date")) and isinstance(v, str) and re.match(r"\d{4}-\d{2}-\d{2}$", v[:10]):
             out[k] = fedops.day(v[:10]) + v[10:]
         else:
             out[k] = _shape_fed(v, None, drop)
-    return out
+    return _buyback_names(out, obj)
 
 
-def _compact_tenor(name, v, coupon_extra=None):
-    """A bill's short line, or a coupon's full entry (plus coupon_extra), for lists of ~35 tenors that overflow in full."""
+def _period_line(r, short=False):
+    """One labelled line for a month or year of repo history. A 9B wrote "$1.03 trillion" for October 2025's $11.070 billion
+    ON RRP average when the row also held SOFR volume in trillions and the year's $102.973 billion sat nearby."""
+    def part(k, label):
+        if r.get(f"{k}_avg_bn") is None:
+            return None
+        if short:
+            return f"{label} averaged {fedops.money(r[f'{k}_avg_bn'])} a day (highest day {fedops.money(r.get(f'{k}_max_bn'))})"
+        return (f"{label} averaged {fedops.money(r[f'{k}_avg_bn'])} a day (highest day {fedops.money(r.get(f'{k}_max_bn'))}, "
+                f"last day {fedops.money(r.get(f'{k}_last_bn'))} on {fedops.day(r.get(f'{k}_last_date'))})")
+    rates = ", ".join(f"{k.upper()} {r[f'{k}_avg']:.2f}%" for k in (("sofr", "effr") if short else ("sofr", "effr", "tgcr", "bgcr"))
+                      if r.get(f"{k}_avg") is not None)
+    return "; ".join(p for p in (part("rrp", "ON RRP"), None if short else part("repo", "standing repo"), rates and f"mean rates {rates}") if p)
+
+
+def _repo_periods(summary):
+    """repo_history's monthly and yearly lists become {period: line}: one labelled average per period, never cut by the generic trim."""
+    for key, label in (("monthly", "month"), ("yearly", "year")):
+        rows = summary.get(key)
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "rrp_avg_bn" in rows[0]:
+            summary[f"{key}_levels"] = {str(r.get(label)): _period_line(r, short=key == "yearly") for r in rows}
+            del summary[key]
+
+
+def _buyback_line(m):
+    """'7 operations: accepted $37.755 billion (sum of announced maximums $42.250 billion, dealers offered $93.065 billion)'."""
+    return (f"{m.get('ops')} operations: accepted {fedops.money(m.get('accepted_bn'))} (sum of announced maximums "
+            f"{fedops.money(m.get('max_bn'))}, dealers offered {fedops.money(m.get('offered_bn'))})")
+
+
+def _buyback_periods(summary):
+    """buyback_history's monthly / quarterly / yearly totals become {period: line}, so the console's limit cuts nothing."""
+    for key, label in (("monthly", "period"), ("quarterly", "period")):
+        rows = summary.get(key)
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "ops" in rows[0]:
+            summary[f"{key}_totals"] = {str(r.get(label)): _buyback_line(r) for r in rows}
+            del summary[key]
+    if isinstance(summary.get("yearly"), list):
+        summary["yearly_totals"] = {str(y["year"]): {"whole_year": _buyback_line(y), f"jan_1_to_{y.get('ytd_to')}": _buyback_line(y.get("ytd") or {})}
+                                    for y in summary.pop("yearly") if isinstance(y, dict)}
+
+
+def _tenor_line(name, v):
+    """One tenor in one line: a bill's last result, or a coupon's last result with its bidder shares, its 12-month mean
+    bid-to-cover against the 12 before and, when given, the year-on-year sentence."""
+    last = f"last {fedops.day(v.get('last_date'))}: high {v.get('last_high')}%, bid-to-cover {v.get('last_bid_to_cover')}"
     if name.endswith(fedops.BILLS):
-        return {f: v.get(f) for f in ("last_date", "last_high", "last_bid_to_cover", "bid_to_cover_12m", "bid_to_cover_prior_12m")}
-    return {**v, **(coupon_extra or {})}
+        return last
+    shares = _bidder_shares(v, "last_")
+    s = (last + (f", size {fedops.money(v['last_size_bn'])}" if v.get("last_size_bn") is not None else "") + (f", {shares}" if shares else "")
+         + f"; mean bid-to-cover {v.get('bid_to_cover_12m')} over the last 12 months (the 12 before: {v.get('bid_to_cover_prior_12m')})")
+    return s + (f". {v['latest_year_vs_year_before']}" if v.get("latest_year_vs_year_before") else "")
+
+
+def _buyback_names(out, obj):
+    """Buyback totals named for what they are: a 9B called the sum of 64 operations' announced maximums ($273.780 billion)
+    "the maximum single operation"."""
+    if "ops" in obj:                                      # a total over several operations
+        for k, new in (("max", "sum_of_announced_maximums"), ("offered", "total_offered_by_dealers"), ("accepted", "total_accepted")):
+            if k in out:
+                out[new] = out.pop(k)
+    elif "operation_type" in obj or "maturity_bucket" in obj:   # one operation
+        for k, new in (("max", "announced_maximum"), ("offered", "offered_by_dealers")):
+            if k in out:
+                out[new] = out.pop(k)
+    return out
 
 
 def _today_line():
@@ -483,7 +551,7 @@ def _shape_fed_latest(obj, params=None):
         # Numbered dicts, not lists: the generic cut keeps the LAST items of a list and once kept the last 5 of 11 announced
         # auctions, so "the next auction" was Oct 29 instead of Oct 27. A dict is never cut.
         if isinstance(src.get("by_tenor"), dict):            # ~35 tenors in full overflow into an outline: bills get a short line
-            src["by_tenor"] = {k: _compact_tenor(k, v) for k, v in src["by_tenor"].items()}
+            src["by_tenor"] = {k: _tenor_line(k, v) for k, v in src["by_tenor"].items()}
         if isinstance(src.get("upcoming"), list):            # by day, soonest first: every auction of the next day is in the first entry
             days = {}
             for u in src["upcoming"]:
@@ -495,16 +563,18 @@ def _shape_fed_latest(obj, params=None):
                                   f"{'reopening' if u.get('reopening') else 'new issue'}")
             src["upcoming"] = {f"{i + 1}. {fedops.day(d)}": v for i, (d, v) in enumerate(days.items())}
         if isinstance(src.get("recent"), list):
-            src["recent"] = {f"latest_{i + 1}": u for i, u in enumerate(reversed(src["recent"][-6:]))}
+            src["recent"] = {f"latest_{i + 1}": u for i, u in enumerate(reversed(src["recent"][-4:]))}
     if isinstance(src.get("monthly"), list) and "last_8" in src:      # buybacks: a month's total in one place, not summed from rows
-        src["monthly_totals_last_13_months"] = {m["period"]: {k: v for k, v in m.items() if k != "period"} for m in src["monthly"][-13:]}
+        src["monthly_totals_last_13_months"] = {m["period"]: {k: m.get(k) for k in ("ops", "accepted_bn")} for m in src["monthly"][-13:]}
+    if isinstance(src.get("last_8"), list):                   # within the console's character limit (ASSISTANT_MAX_CHARS)
+        src["last_5_operations"] = src.pop("last_8")[-5:]
     out = _shape_fed(obj, params, drop)
     data = out.get("data") if isinstance(out.get("data"), dict) else out
     if "this_year_vs_last_year_same_dates" in data:      # first in what the model reads (the route's JSON sorts keys)
         first = data.pop("this_year_vs_last_year_same_dates")
         data = {"this_year_vs_last_year_same_dates": first, **data}
         out = {**out, "data": data} if isinstance(out.get("data"), dict) else data
-    if isinstance(data.get("yearly"), list) and "last_8" not in data:       # repo: the yearly levels are repo_history's
+    if isinstance(data.get("yearly"), list) and "last_5_operations" not in data:       # repo: the yearly levels are repo_history's
         data.pop("yearly")
     if isinstance(data.get("yearly"), list):
         named = lambda y: {"whole_year": {k: y[k] for k in ("ops", "max", "offered", "accepted") if k in y},
@@ -564,26 +634,49 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
                                                      "pass from=YYYY-MM-DD for earlier months")
         if source == "auction_history" and "tenor" not in params and isinstance((obj.get("summary") or {}).get("by_tenor"), dict):
             lo, hi = (params.get("from") or "0000")[:4], (params.get("to") or "9999")[:4]
-            coupon = ("last_date", "last_high", "last_bid_to_cover", "bid_to_cover_12m", "bid_to_cover_prior_12m")
+            coupon = ("last_date", "last_high", "last_bid_to_cover", "last_size_bn", "bid_to_cover_12m", "bid_to_cover_prior_12m")   # shares: tenor=
             for name, v in list(obj["summary"]["by_tenor"].items()):   # ~35 tenors in full overflow: a short line each fits
+                if name.endswith("CMB"):                                    # one-off cash management bills: tenor=CMB lists them
+                    del obj["summary"]["by_tenor"][name]
+                    continue
                 years = dict((y, s) for y, s in (v.get("by_year") or {}).items() if lo <= y <= hi)
-                obj["summary"]["by_tenor"][name] = _compact_tenor(name, {f: v.get(f) for f in coupon},
-                                                                  {"latest_year_vs_year_before": _year_vs_year(years)})
-            obj["summary"]["by_tenor_note"] = ("a short line per tenor; coupons compare the last two years of from/to (without them, this "
-                                               "year and last); pass tenor= (e.g. 10 year note) for one tenor's full results and table by year")
+                line = {f: v.get(f) for f in coupon}
+                if not name.endswith(fedops.BILLS):
+                    line["latest_year_vs_year_before"] = _year_vs_year(years, short=True)
+                obj["summary"]["by_tenor"][name] = _tenor_line(name, line)
+            # Market-wide totals named as such, and the monthly table dropped: a 9B asked about the 30-year quoted all coupons
+            # ($4.464 trillion, 439 auctions) as the 30-year's
+            for key in ("monthly", "upcoming", "upcoming_status"):     # the calendar is treasury_auctions'
+                obj["summary"].pop(key, None)
+            for key in ("t12m", "prior_t12m"):
+                if key in obj["summary"]:
+                    obj["summary"][f"all_tenors_{key}"] = obj["summary"].pop(key)
+            obj["summary"]["by_tenor_note"] = ("one line per tenor (cash management bills left out); coupons compare the mean bid-to-cover of "
+                                               "the last two years of from/to (without them, this year and last). For one tenor's dealer share, "
+                                               "yields, sizes and table by year pass tenor= (e.g. 30 year bond)")
+        if source == "repo_history" and isinstance(obj.get("summary"), dict):
+            _repo_periods(obj["summary"])                 # before the size check: it measures what the model will read
+        if source == "buyback_history" and isinstance(obj.get("summary"), dict):
+            _buyback_periods(obj["summary"])
         if source in FED_SOURCES and source.endswith("_history") and isinstance(obj.get("rows"), list):
-            # Too long: shorten the monthly list first (summary.yearly covers its range), then give up rows; the totals stay.
+            # Too long for the console's limit: give up daily rows first, then the oldest third of the longest dated table,
+            # one step at a time; the newest periods and every total line stay, and a note says what was cut.
             size = lambda: len(json.dumps(_shape_fed(obj), default=str))
-            months = (obj.get("summary") or {}).get("monthly")
-            while isinstance(months, list) and len(months) > 13 and size() > MAX_CHARS - 300:
-                months = obj["summary"]["monthly"] = months[len(months) // 3:]
-                obj["summary"]["monthly_note"] = (f"latest {len(months)} months shown; the history starts {obj.get('earliest_stored')} "
-                                                  "and summary.yearly covers the whole range")
             n = len(obj["rows"])
             while obj["rows"] and size() > MAX_CHARS - 300:
                 obj["rows"] = obj["rows"][len(obj["rows"]) // 2 + 1:] if len(obj["rows"]) > 2 else []
             if len(obj["rows"]) < n:
                 obj["rows_note"] = f"only the latest {len(obj['rows'])} of the {n} rows fit; use the summary for totals, or narrow from/to"
+            summary = obj.get("summary") or {}
+            dated = ("monthly_levels", "monthly_totals", "monthly", "quarterly_totals", "quarterly", "last_8", "yearly_levels", "yearly_totals")
+            while size() > MAX_CHARS - 300:
+                key = next((k for k in dated if isinstance(summary.get(k), (list, dict)) and len(summary[k]) > 3), None)
+                if key is None:
+                    break
+                items = summary[key]
+                keep = len(items) - len(items) // 3
+                summary[key] = items[-keep:] if isinstance(items, list) else dict(list(items.items())[-keep:])
+                summary[f"{key}_note"] = f"the latest {keep} shown to fit; the history starts {obj.get('earliest_stored')}: narrow from/to for older ones"
         if source in SHAPERS and isinstance(obj, dict):
             obj = SHAPERS[source](obj, params)
             last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
