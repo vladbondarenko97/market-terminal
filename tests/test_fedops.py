@@ -320,10 +320,37 @@ class Round4(unittest.TestCase):
         self.assertEqual(e["about 1 year before"], "4.24% on 2025-10-23 (Thursday) (one day, not a total)")
         self.assertIsNone(e["about 3 months before"])
 
+    def test_thirteen_months_fit_without_a_range(self):
+        body = {"earliest_stored": "2014-01-02", "rows": [], "summary": {
+            "monthly": [{"month": f"{2025 + (m > 12)}-{(m - 1) % 12 + 1:02d}", "rrp_avg_bn": 1.0, "rrp_max_bn": 2.0, "rrp_last_bn": 1.0,
+                         "rrp_last_date": "2026-10-23", "sofr_avg": 3.9} for m in range(10, 23)],
+            "yearly": [{"year": str(y), "rrp_avg_bn": 100.0, "rrp_max_bn": 200.0, "rrp_last_bn": 50.0, "rrp_last_date": f"{y}-12-31",
+                        "repo_avg_bn": 1.0, "repo_max_bn": 2.0, "repo_last_bn": 1.0, "repo_last_date": f"{y}-12-31",
+                        "sofr_avg": 3.0, "effr_avg": 3.0, "tgcr_avg": 3.0, "bgcr_avg": 3.0} for y in range(2014, 2027)]}}
+        app = mock.Mock()
+        app.test_client.return_value.get.return_value = mock.Mock(status_code=200, content_type="application/json",
+                                                                  get_data=lambda as_text=True: json.dumps(body))
+        out = json.loads(self.A.fetch_source(app, "repo_history", ""))
+        self.assertEqual(len(out["summary"]["monthly_levels"]), 13)
+        self.assertEqual(list(out["summary"]["yearly_levels"]), ["2025", "2026"])
+
+    def test_review_pr30_regressions(self):
+        y = self.A._shape_fed_latest({"data": {"last_8": [], "yearly": [{"year": "2026", "ops": 10, "max_bn": 50.0, "offered_bn": 90.0, "accepted_bn": 40.0,
+                                                                           "ytd_to": "10-26", "ytd": {"ops": 10, "accepted_bn": 40.0}}]}})
+        self.assertEqual(y["data"]["yearly"]["2026"]["whole_year"]["total_accepted"], "$40.000 billion")       # not emptied by the rename
+        day = self.A._shape_fed({"latest": {"date": "2026-10-23", "accepted_bn": 5.1, "ops": 1}})
+        self.assertEqual(day["latest"]["accepted"], "$5.100 billion")                                      # a repo day is not a "total"
+        summary = {"yearly": [{"year": "2024", "ops": 2, "accepted_bn": 3.0, "max_bn": 4.0, "offered_bn": 5.0, "ytd_to": "10-26", "ytd": {},
+                               "by_operation_type": {"Cash Management": {"ops": 1, "accepted_bn": 1.0, "max_bn": 1.0, "offered_bn": 2.0}}}]}
+        self.A._buyback_periods(summary)
+        self.assertIn("Cash Management", summary["yearly_totals"]["2024"]["by_operation_type"])
+        self.assertIn("not recorded", self.A._buyback_line({"ops": 1, "accepted_bn": None}))
+        self.assertNotIn("None", self.A._tenor_line("13-Week Bill", {"last_date": "2026-10-26"}))
+
     def test_buyback_totals_say_they_are_sums(self):
-        out = self.A._shape_fed({"ops": 64, "max_bn": 273.78, "offered_bn": 1255.197, "accepted_bn": 230.235})
+        out = self.A._shape_fed({"ops": 64, "max_bn": 273.78, "offered_bn": 1255.197, "accepted_bn": 230.235}, buyback=True)
         self.assertEqual(set(out), {"ops", "sum_of_announced_maximums", "total_offered_by_dealers", "total_accepted"})
-        op = self.A._shape_fed({"date": "2026-10-21", "operation_type": "Liquidity Support", "max_bn": 0.75, "offered_bn": 4.751, "accepted_bn": 0.75})
+        op = self.A._shape_fed({"date": "2026-10-21", "operation_type": "Liquidity Support", "max_bn": 0.75, "offered_bn": 4.751, "accepted_bn": 0.75}, buyback=True)
         self.assertEqual(op["announced_maximum"], "$0.750 billion")
         self.assertEqual(op["offered_by_dealers"], "$4.751 billion")
 
