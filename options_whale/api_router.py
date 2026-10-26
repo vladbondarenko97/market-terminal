@@ -1765,6 +1765,40 @@ def api_help():
       <description>The Chaos / Peace block (Forecast Lab card 14) of the latest committed snapshot: score, regime, components, levers, election studies. 503 until a pipeline run has created the database; 404 when the snapshot has no chaos block.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/fed_ops" format="json" source="stored">
+      <description>Fed / Treasury operations (card 15) of the latest committed snapshot: NY Fed repo (Standing Repo Facility, term repo) and reverse repo operations with SOFR, TGCR, BGCR and EFFR; Treasury buybacks (last operations, scheduled ones, monthly, quarterly, yearly and trailing-12-month totals, by security type); Treasury auctions (recent results, upcoming auctions, per-tenor bid-to-cover now and a year earlier, monthly issuance). A part that could not be refreshed is status stale with the date of its stored data. 404 when the snapshot has no card 15 block.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/fed_ops/repo" format="json" source="stored">
+      <description>The repo part of /api/fed_ops.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/fed_ops/buybacks" format="json" source="stored">
+      <description>The buybacks part of /api/fed_ops.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/fed_ops/auctions" format="json" source="stored">
+      <description>The auctions part of /api/fed_ops.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/fed_ops/history/repo" format="json" source="stored">
+      <description>Stored daily repo market history, one row per day: accepted USD bn for rrp, repo and repo_term, the sofr, tgcr, bgcr and effr rates and SOFR volume (from 2014; rates from 2018-04-02). Returns the newest `limit` rows in the range, oldest first, the earliest stored date and the snapshot's repo summaries (monthly averages, latest per market and rate). Same parameters for the two routes below.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/fed_ops/history/buybacks" format="json" source="stored">
+      <description>Every stored Treasury buyback operation since 2024 (max, offered and accepted USD bn) with the monthly, quarterly, yearly and trailing-12-month totals.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/fed_ops/history/auctions" format="json" source="stored">
+      <description>Every stored Treasury auction result since 2021 (size, high yield or bill rate, bid-to-cover, dealer / direct / indirect shares) with the per-tenor and monthly summaries.</description>
+      <parameters>
+        <param name="from" type="string" default="" description="first date, YYYY-MM-DD" />
+        <param name="to" type="string" default="" description="last date, YYYY-MM-DD" />
+        <param name="limit" type="int" default="60" description="newest rows kept (1 to 5000)" />
+        <param name="tenor" type="string" default="" description="auctions: keep tenors containing this text, e.g. 10-Year or Bill" />
+        <param name="security_type" type="string" default="" description="buybacks: keep security types containing this text, e.g. TIPS" />
+      </parameters>
+    </endpoint>
   </group>
 
   <group name="Rule cards and console">
@@ -2840,9 +2874,10 @@ def _latest_forecast(conn):
     hit = data_cache.get(key)
     if hit is None:
         ctx = _v2lake.load_snapshot(conn, row["run_id"])
-        hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining"), "chaos": ctx.get("chaos")}
+        hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining"), "chaos": ctx.get("chaos"),
+               "fed_ops": ctx.get("fed_ops")}
         data_cache.set(key, hit)
-    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"), chaos=hit.get("chaos"))
+    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"), chaos=hit.get("chaos"), fed_ops=hit.get("fed_ops"))
 
 
 @app.route('/api/forecast', methods=['GET'])
@@ -2873,7 +2908,7 @@ def api_forecast():
                     "data": fc.get(ticker), "consensus": (fc.get("consensus") or {}).get(ticker),
                     "positioning": fc.get("positioning"), "silver_fair_value": fc.get("silver_fair_value"),
                     "macro_regime": fc.get("macro_regime"), "source_errors": fc.get("source_errors"),
-                    "refining": fc.get("_refining"), "chaos": fc.get("chaos"),
+                    "refining": fc.get("_refining"), "chaos": fc.get("chaos"), "fed_ops": fc.get("fed_ops"),
                     "scorecard": score, "signals": signals})
 
 
@@ -2979,6 +3014,88 @@ def api_chaos_history():
     else:
         conn.close()
     return jsonify({"status": "success", "data": data})
+
+
+FED_OPS_PARTS = ("repo", "buybacks", "auctions")
+FED_OPS_SUMMARY = {"repo": ("status", "as_of", "reason", "markets", "rates", "rates_status", "monthly", "units", "note"),
+                   "buybacks": ("status", "as_of", "reason", "scheduled", "monthly", "quarterly", "yearly", "t12m", "prior_t12m", "t12m_by_security_type", "units"),
+                   "auctions": ("status", "as_of", "reason", "upcoming", "by_tenor", "monthly", "t12m", "prior_t12m", "tail", "units")}
+
+
+def _fed_ops_section(conn):
+    run, fc = _latest_forecast(conn)
+    sec = (fc or {}).get("fed_ops")
+    return run, sec if sec and sec.get("status") != "error" else None
+
+
+@app.route('/api/fed_ops', methods=['GET'])
+@app.route('/api/fed_ops/repo', methods=['GET'])
+@app.route('/api/fed_ops/buybacks', methods=['GET'])
+@app.route('/api/fed_ops/auctions', methods=['GET'])
+@guarded("Fed operations")
+def api_fed_ops():
+    """Card 15 from the latest committed snapshot: repo and reverse repo operations with the reference rates, Treasury
+    buybacks, Treasury auctions (latest readings and summaries). /api/fed_ops/<part> narrows it to one part."""
+    part = request.path.rsplit("/", 1)[-1]
+    part = part if part in FED_OPS_PARTS else None
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        run, sec = _fed_ops_section(conn)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    if not sec:
+        return json_error("no Fed / Treasury operations data yet: run the pipeline", 404)
+    return jsonify({"status": "success", "run": run, "as_of": sec.get("as_of"), "data": sec[part] if part else sec})
+
+
+@app.route('/api/fed_ops/history/repo', methods=['GET'])
+@app.route('/api/fed_ops/history/buybacks', methods=['GET'])
+@app.route('/api/fed_ops/history/auctions', methods=['GET'])
+@guarded("Fed operations history")
+def api_fed_ops_history():
+    """Stored daily repo / rate rows, buyback operations or auction results between `from` and `to` (the newest `limit`
+    of them, oldest first), with the latest snapshot's precomputed summaries for that kind."""
+    from core import fedops as _v2fo
+    kind = request.path.rsplit("/", 1)[-1]
+    try:
+        start, end = (date.fromisoformat(request.args[k]).isoformat() if request.args.get(k) else None for k in ("from", "to"))
+        limit = max(1, min(int(request.args.get("limit") or 60), 5000))
+    except ValueError:
+        return json_error("from and to must be dates as YYYY-MM-DD; limit a whole number", 400)
+    tenor, sec_type = (request.args.get("tenor") or "").lower(), (request.args.get("security_type") or "").lower()
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        if kind == "repo":
+            metric, rows = _v2fo.REPO, _v2fo.repo_daily(conn, start, end)
+        elif kind == "buybacks":
+            metric = _v2fo.BUYBACK
+            rows = [{k: v for k, v in r.items() if k != "entity"} for r in _v2fo.read(conn, metric, start, end)
+                    if sec_type in (r.get("security_type") or "").lower()]
+        else:
+            metric = _v2fo.AUCTION
+            rows = [{"date": r["date"], "tenor": _v2fo.tenor(r), "cusip": r["entity"], **{k: v for k, v in r.items() if k not in ("date", "entity", "term", "type")}}
+                    for r in _v2fo.read(conn, metric, start, end) if tenor in _v2fo.tenor(r).lower()]
+        first = _v2fo.earliest(conn, metric)
+        run, sec = _fed_ops_section(conn)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    if first is None:
+        return json_error("no stored history yet: run scripts/backfill_fed_ops.py or the pipeline", 404)
+    summary = {k: (sec or {}).get(kind, {}).get(k) for k in FED_OPS_SUMMARY[kind]} if sec else {"status": "missing", "reason": "no snapshot with card 15 yet"}
+    return jsonify({"status": "success", "kind": kind, "earliest_stored": first, "from": start, "to": end, "rows_in_range": len(rows),
+                    "rows": rows[-limit:], "summary": summary, "run": run})
 
 
 _EIA_HISTORY_CACHE = {}

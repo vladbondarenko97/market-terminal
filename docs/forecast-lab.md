@@ -10,9 +10,9 @@ from. How the card looks in the browser is in [Terminal](terminal.md#forecast-la
 
 - The models run **in the pipeline**, once per run. `build_forecast()` in `core/collect.py` fetches the extra inputs
   and calls `build()` in `core/forecast.py` (cards 1 to 9). `build_refining()` in `core/collect.py` builds cards 10
-  and 11 with the pure functions in `core/refining.py`. `build_chaos()` builds card 14 with `core/chaos.py`. Failures are isolated: if a card or a source fails, the run
+  and 11 with the pure functions in `core/refining.py`. `build_chaos()` builds card 14 with `core/chaos.py`. `_guarded_fed_ops()` builds card 15 with `core/fedops.py`. Failures are isolated: if a card or a source fails, the run
   continues (see [Architecture: design rules](architecture.md#design-rules)).
-- The results are stored in the run's snapshot under `forecast`, `refining` and `chaos` (see [Data](data.md)).
+- The results are stored in the run's snapshot under `forecast`, `refining`, `chaos` and `fed_ops` (see [Data](data.md)).
 - `GET /api/forecast?ticker=SPY|SLV` ([API](api.md)) returns the latest snapshot's forecast, refining and chaos blocks plus a
   scorecard computed at request time. The server keeps the snapshot in memory for 60 seconds.
 - The browser (`options_whale/static/forecast.js`) draws the cards. It never computes a model.
@@ -47,6 +47,7 @@ It is `missing` with a reason when the list is unavailable.
 | 10 | Diesel & refining | Crack spreads, EIA refinery runs and stocks, 10-year maintenance-season path, Texas refinery outage filings (TCEQ), CFTC ULSD positioning | Is refining tight, and is a major unit down? | shared | `ctx["refining"]` (`margins`, `fundamentals`, `maintenance`, `outages`, `ulsd_positioning`) |
 | 11 | EIA inventories | Weekly US petroleum stocks against the 5-year same-week average, and days of supply | Are stocks building or drawing against the norm, and how does today compare with past years? | shared | `ctx["refining"]["inventories"]`, full history from `/api/eia_history` |
 | 14 | Chaos / Peace | Twelve stress readings (VIX, VIX/VIX3M, VVIX, SKEW, MOVE, high-yield spread, SPY realised vol and drawdown, policy uncertainty, equity put/call, VIX9D/VIX6M, SPY short-sale share), each a z-score against its own 3 years | How stressed does the market look against its own recent history and against every stress episode since 1931, how often did a calm market turn, and what do the liquidity levers and past election windows look like? | shared | `ctx["chaos"]` (`score`, `regime`, `components`, `levers`, `event_study`, `lever_study`, `long`), also `GET /api/chaos` and `GET /api/chaos/history` |
+| 15 | Fed / Treasury operations | NY Fed repo (Standing Repo Facility, term) and reverse repo results, SOFR, TGCR, BGCR, EFFR (NY Fed); Treasury buyback operations (Fiscal Data); Treasury auction results and calendar (TreasuryDirect) | How much spare cash sits in the reverse repo, is anyone using the Fed's repo backstop, where are funding rates, how much is Treasury buying back against what it offered and how much dealers offered, and how are auctions going against a year ago? | shared | `ctx["fed_ops"]` (`repo`, `buybacks`, `auctions`), also `GET /api/fed_ops*` and `GET /api/fed_ops/history/*` |
 
 `SYM` is `SPY` or `SLV`. Cards 1 to 3, 7 and 8 sit under `forecast[SYM]`; the browser receives that object as `data`.
 
@@ -70,6 +71,14 @@ It is `missing` with a reason when the list is unavailable.
   - Delivered runs send one push (ntfy) for each newly seen MAJOR outage (`_refinery_alerts()` in `main_pipeline.py`).
   - EIA files are reused until the next weekly release (Wednesday 10:30 ET): `_cached_eia()` and `last_eia_release()` in
     `core/sources.py`.
+- **Card 15.** `core/fedops.py`, version `fed_ops_v1`, built by `_guarded_fed_ops()` in `core/collect.py` after card 14 (the
+  Treasury requests are shared). Each run refetches the last 21 days of NY Fed operations and rates, buybacks since 56 days ago
+  and auctions of the last 60 days into the `fedops.*` observations, then builds the block from everything stored
+  (`scripts/backfill_fed_ops.py` loads the years before). Nothing is modelled: daily take-up is the sum of the day's
+  operations, summaries are sums and means by month, quarter, year and trailing 12 months. A part whose fetch failed keeps
+  its stored data with status `stale` and the date it is as of. Auction tails are `missing`: no free official source
+  publishes the when-issued yield. Bill tenors use the auction's own term, coupon tenors the original term (a reopened
+  20-year bond is a 20-year).
 - **Card 14.** `core/chaos.py`, version `chaos_v1`, built by `build_chaos()` in `core/collect.py`.
   - Score = 50 x the mean z-score of the available components, limited to -100 (peace) .. +100 (chaos). Each z-score is
     the latest value against a trailing 3-year window (1,096 calendar days, at least 252

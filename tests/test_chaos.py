@@ -213,12 +213,13 @@ class Fetchers(unittest.TestCase):
         auc = json.loads((FIX / "td.json").read_text())
         with mock.patch("requests.get", return_value=fake_get(200, b"", auc)):
             rows, pid = src.treasury_auctions(self.session(), 60)
-        self.assertEqual(set(rows[0]), {"auctionDate", "securityType", "offeringAmount"})
+        self.assertLessEqual({"auctionDate", "securityType", "offeringAmount"}, set(rows[0]))
+        self.assertEqual(rows[0]["auctionDate"], "2026-10-08")      # TreasuryDirect has no auctionDate: the competitive close date is used
         self.assertEqual(len(rows), len(auc))
         bb = json.loads((FIX / "bb.json").read_text())
         with mock.patch("requests.get", return_value=fake_get(200, b"", bb)):
             rows, pid = src.treasury_buybacks(self.session(), "2026-08-01")
-        self.assertEqual(set(rows[0]), {"operation_date", "total_par_amt_accepted"})
+        self.assertEqual(set(rows[0]), set(src.BUYBACK_KEYS))
         with mock.patch("requests.get", return_value=fake_get(500)):
             with self.assertRaises(SourceUnavailable):
                 src.treasury_buybacks(self.session(), "2026-08-01")

@@ -30,6 +30,22 @@ class ConsoleGuards(unittest.TestCase):
         self.assertIn("Not the engine tickets", assistant.SOURCES["brokerage"][2])
         self.assertIn("Engine positions", assistant.SOURCES["positions"][2])
 
+    def test_vmri_twelve_from_the_signal_count_is_caught(self):
+        # 2026-10-26: "The latest VMRI score is 12, which is in the Tier 2 range" while war_room said 255.72. The brief held no VMRI
+        # but did hold "2 of 12 fired", so the number check passed; the answer still cited a source it never fetched.
+        self.assertTrue(assistant.claims_unfetched_source("The latest VMRI score is 12.\n\nSources: brief, war_room", 0))
+        self.assertFalse(assistant.claims_unfetched_source("The latest VMRI score is 255.72.\n\nSources: war_room", 1))
+        self.assertFalse(assistant.claims_unfetched_source("Nothing fired today.\n\n**Sources:** brief", 0))
+
+    def test_war_room_hides_the_chart_histogram(self):
+        live = {"current": {"vmri": 255.72, "tier": "ELEVATED RISK"}, "hypothetical": {"vmri": 255.72}, "impact": {"vmri_delta": 0},
+                "history": {"counts": [0, 11, 19], "lo": 130, "hi": 360, "min": 138.3, "max": 345.7, "pct_below_current": 83.7,
+                            "pct_below_hypothetical": 83.7}}
+        out = assistant._shape_war_room(live, {})
+        self.assertEqual(set(out["history"]), {"min", "max", "pct_of_readings_below_current"})     # bin edges 130/360 were read as the record range
+        self.assertNotIn("hypothetical", out)
+        self.assertIn("hypothetical", assistant._shape_war_room(live, {"vix_shift_pct": "10"}))
+
     def test_prompt_forbids_substituting_the_latest_value_for_a_past_date(self):
         self.assertIn("no recorded value for that date", assistant.SYSTEM_PROMPT)
 

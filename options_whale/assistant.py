@@ -105,6 +105,22 @@ SOURCES = OrderedDict([
     ("options_scan_evening", ("/api/evening", ("ticker",), "Options flow scan for a ticker, evening preset. Slow (10-30 s).")),
     ("options_whale_hunt", ("/api/custom", ("ticker", "min_vol_oi", "max_dte"),
         "Unusual options activity for a ticker: contracts whose volume exceeds min_vol_oi x open interest, up to max_dte days out. Slow.")),
+    ("repo_ops", ("/api/fed_ops/repo", (), "The NY Fed's repo and reverse repo operations (what people call repo auctions or repo ops), latest run: overnight reverse repo (ON RRP) and repo (Standing Repo "
+        "Facility) and term repo take-up per day (USD bn, rate, counterparties), the reference rates SOFR, TGCR, BGCR, EFFR with their "
+        "4-week change, monthly averages since 2014. Status stale means it could not be refreshed: say the date it is as of.")),
+    ("treasury_buybacks", ("/api/fed_ops/buybacks", (), "US Treasury buyback operations: the last 8 held (date, security type, maturity "
+        "bucket, max_bn offered to buy vs offered_bn by dealers vs accepted_bn), scheduled ones, totals by month, quarter, year "
+        "(with year-to-date against a year earlier), trailing 12 months vs the 12 before, by security type.")),
+    ("treasury_auctions", ("/api/fed_ops/auctions", (), "US Treasury securities auctions (bills, notes, bonds, TIPS, FRNs; CMB = cash "
+        "management bill). Not repo operations: those are repo_ops. The 15 latest results (size, high yield or bill rate, "
+        "bid-to-cover, dealer / direct / indirect shares), upcoming auctions, per tenor the last result and the 12-month mean "
+        "bid-to-cover against the 12 before, monthly bill and coupon issuance. Tails are not available.")),
+    ("repo_history", ("/api/fed_ops/history/repo", ("from", "to", "limit"), "Daily repo market history: accepted USD bn for rrp, repo, "
+        "repo_term and the sofr, tgcr, bgcr, effr rates, from 2014 (rates from 2018-04-02), with monthly averages. from/to=YYYY-MM-DD, limit=N newest rows.")),
+    ("buyback_history", ("/api/fed_ops/history/buybacks", ("from", "to", "limit", "security_type"), "Every Treasury buyback operation "
+        "since 2024 with the monthly, quarterly, yearly (year-over-year) and trailing-12-month totals. security_type=TIPS narrows it.")),
+    ("auction_history", ("/api/fed_ops/history/auctions", ("from", "to", "limit", "tenor"), "Every Treasury auction result since 2021, "
+        "with per-tenor bid-to-cover summaries. tenor=10-Year (or Bill, TIPS) narrows it.")),
     ("tactical_report", ("/api/dump", (), "The full tactical report of the latest run (prices, regime, options, COMEX, execution votes). Large: open parts with path.")),
 ])
 
@@ -314,6 +330,21 @@ def _shape_vmri_history(obj, _params):
                                 for k in cols if k != "driver" and (have := [r for r in rows if isinstance(r.get(k), (int, float))])}}
 
 
+def _shape_war_room(obj, params):
+    """Drop the chart's histogram (30 bin counts between lo and hi, which a model read as the record range), and the what-if
+    block when no shift was asked for (it repeats the live score)."""
+    hist = {k: v for k, v in (obj.get("history") or {}).items() if k not in ("counts", "lo", "hi")}
+    if "pct_below_current" in hist:
+        hist["pct_of_readings_below_current"] = hist.pop("pct_below_current")
+        hist["pct_of_readings_below_hypothetical"] = hist.pop("pct_below_hypothetical", None)
+    out = {**obj, "history": hist}
+    if not params:
+        out.pop("hypothetical", None)
+        out.pop("impact", None)
+        out["history"].pop("pct_of_readings_below_hypothetical", None)
+    return out
+
+
 def _shape_chaos(obj, _params):
     return {"as_of": obj.get("as_of"), "rows": [line for _label, line in narrative.chaos_rows(obj.get("data"))]}
 
@@ -340,7 +371,7 @@ def _shape_brokerage(obj, _params):
     return {k: v for k, v in obj.items() if k != "accounts"}     # account ids are noise; each group already names its account
 
 
-SHAPERS = {"brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+SHAPERS = {"war_room": _shape_war_room, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool
@@ -379,6 +410,8 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
         if source in SHAPERS and isinstance(obj, dict):
             obj = SHAPERS[source](obj, params)
             last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
+        elif source in ("repo_history", "buyback_history", "auction_history") and str(last) == "10":
+            last = params.get("limit") or 60                 # the route's limit already chose the rows
         return shape(obj, path, last, keep=KEEP.get(source, "last"))
     except KeyError as e:
         return f"error: {e.args[0]}"
@@ -464,6 +497,10 @@ def brief(app):
         lines.append("Waiting: " + "; ".join(f"{r['asset']} {r['name']}" for r in sig if not r["fired"]))      # live readings: signal_watch
         lines.append(f"Macro: regime {macro.get('regime')}, 12-month recession odds {macro.get('recession_prob_12m', 0):.0%}, 10-year real yield "
                      f"{macro.get('real_yield_10y')}%, high-yield spread {macro.get('hy_oas')}%.")
+        vm = (json.loads(app.test_client().get("/api/war_room").get_data(as_text=True)).get("current") or {})
+        if vm.get("vmri") is not None:          # a 9B asked for "the VMRI" without fetching gave the Signal Watch count (12) and a made-up tier
+            lines.append(f"VMRI macro risk score (source war_room): {vm['vmri']:.2f}, tier {vm['tier']} (DXY {vm['dxy']}, 10-year yield "
+                         f"{vm['tnx']}%, high-yield spread {vm['oas']}%, VIX {vm['vix']}). Not the Chaos / Peace score and not a Signal Watch count.")
         ch = fc.get("chaos") or {}
         if ch.get("score") is not None:
             el = ch.get("election") or {}
@@ -481,7 +518,8 @@ def brief(app):
     except Exception:
         pass
     lines.append("Not in this brief, fetch them: engine ticket values (positions), the user's real broker holdings, spreads and P&L (brokerage), gamma walls (gex), scanner readings and trigger "
-                 "prices (day_scanner), edge tables (edge_lab), VMRI (war_room), forecasts, history.")
+                 "prices (day_scanner), edge tables (edge_lab), VMRI what-ifs and inputs (war_room), forecasts, history, Fed repo / reverse repo and the reference rates (repo_ops), Treasury buybacks (treasury_buybacks), "
+                 "Treasury auctions (treasury_auctions) and their long histories (repo_history, buyback_history, auction_history).")
     _BRIEF.update(at=time.monotonic(), text="\n".join(lines))
     return _BRIEF["text"]
 
@@ -571,6 +609,18 @@ def _conversation(cid):
 
 UNFETCHED_CLAIM = re.compile(r"not[ _]configured|not linked|unavailable|not available|could(n't| not) (retrieve|find|access|see)|"
                              r"no (data|access|broker)|don't have (access|data)|can(no|')t see", re.I)
+
+
+SOURCES_LINE = re.compile(r"^\W*Sources?\W*:(.*)$", re.I | re.M)
+
+
+def claims_unfetched_source(answer, lookups):
+    """An answer given with zero lookups whose closing 'Sources:' line names a source other than the brief. Seen: a 9B wrote
+    'Sources: brief, war_room, chaos' after fetching nothing."""
+    if lookups:
+        return False
+    named = {w.strip(" .*`").lower() for m in SOURCES_LINE.findall(answer) for w in m.split(",")}
+    return bool(named & set(SOURCES))
 
 
 def unsourced_numbers(answer, messages):
@@ -670,7 +720,8 @@ def run_local(app, conv, question, model, reasoning=None):
         if not calls:
             answer = _clean_answer(content)
             if not lookups and not pushed_back and _round < MAX_ROUNDS and (UNFETCHED_CLAIM.search(answer)
-                                                                           or unsourced_numbers(answer, messages)):
+                                                                           or unsourced_numbers(answer, messages)
+                                                                           or claims_unfetched_source(answer, lookups)):
                 # The model claims data is missing without fetching anything (a 9B told to be brief answered "brokerage not
                 # configured" from the source description, 4 runs out of 4). Push back once: fetch first, then answer.
                 pushed_back = True

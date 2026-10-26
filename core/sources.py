@@ -14,11 +14,12 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from core import lake
+from core.metrics import safe_float as _num      # '', 'null', NaN and junk are missing (None), never 0
 
 PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forexfactory": 1, "databento": 1, "goldapi": 1, "akshare": 1,
                    "ebay": 1, "cme": 1,
                    "cboe": 1, "finra": 1, "treasury": 1, "rss": 6,
-                   "federalreserve": 1,
+                   "federalreserve": 1, "nyfed": 2,
                    "sec": 2}
 
 
@@ -715,39 +716,106 @@ def finra_short_volume(s, day, symbol="SPY"):
     raise SourceUnavailable("finra", "parse", f"{day}: {symbol} absent or zero total volume")
 
 
-def treasury_auctions(s, days=60):
-    """Treasury auctions announced or held in the last `days` days (TreasuryDirect): auctionDate, securityType, offeringAmount (USD, strings)."""
+def _get_json(provider, what, url, params=None):
     import requests
+    r = requests.get(url, params=params, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
+    if r.status_code != 200:
+        raise SourceUnavailable(provider, f"http_{r.status_code}", what)
+    return r.json()
 
+
+def _rows_capture(rows):
+    return json.dumps(rows).encode(), None, {"rows": len(rows)}
+
+
+def auction_row(x):
+    """One TreasuryDirect security record -> a compact auction row. TreasuryDirect has no auctionDate field: the auction
+    date is the competitive close date. `term` is a coupon's original term (a reopened 20-year bond stays a 20-year) but a
+    bill's own term (a 4-week bill can reopen a 17-week bill). Bills quote a discount rate (high_rate) and an investment
+    rate, coupons a high yield. The `auctionDate`, `securityType` and `offeringAmount` keys keep the provider's spelling for the Chaos supply levers."""
+    day = (x.get("auctionDate") or x.get("competitiveAuctionCloseDate") or "")[:10] or None
+    awarded = [_num(x.get(k)) for k in ("primaryDealersCompetitiveParAwarded", "directBiddersCompetitiveParAwarded",
+                                         "indirectBiddersCompetitiveParAwarded")]
+    comp = sum(awarded) if None not in awarded else None
+    share = lambda v: round(v / comp * 100, 2) if v is not None and comp else None
+    size = _num(x.get("offeringAmount"))
+    return {"auctionDate": day, "securityType": x.get("securityType"), "offeringAmount": x.get("offeringAmount"),
+            "date": day, "cusip": x.get("cusip"), "term": x.get("securityTerm") if x.get("type") in ("Bill", "CMB") else x.get("originalSecurityTerm") or x.get("securityTerm"),
+            "type": x.get("type"),
+            "reopening": x.get("reopening") == "Yes", "issue_date": (x.get("issueDate") or "")[:10] or None,
+            "size_bn": size / 1e9 if size is not None else None, "bid_to_cover": _num(x.get("bidToCoverRatio")),
+            "high_yield": _num(x.get("highYield")), "high_rate": _num(x.get("highRate")),
+            "investment_rate": _num(x.get("investmentRate")), "median_yield": _num(x.get("medianYield") or x.get("medianRate")),
+            "low_yield": _num(x.get("lowYield") or x.get("lowRate")),
+            "dealer_pct": share(awarded[0]), "direct_pct": share(awarded[1]), "indirect_pct": share(awarded[2])}
+
+
+def treasury_auctions(s, days=60):
+    """Treasury auctions announced or held in the last `days` days (TreasuryDirect) as auction_row()s."""
     def call():
-        r = requests.get("https://www.treasurydirect.gov/TA_WS/securities/auctioned", timeout=30, headers={"User-Agent": "Mozilla/5.0"},
-                         params={"format": "json", "days": days})
-        if r.status_code != 200:
-            raise SourceUnavailable("treasury", f"http_{r.status_code}", "auctions")
-        rows = r.json()
+        rows = _get_json("treasury", "auctions", "https://www.treasurydirect.gov/TA_WS/securities/auctioned", {"format": "json", "days": days})
         if not rows:
             raise SourceUnavailable("treasury", "empty", "auctions")
         return rows
-    rows, pid = s.fetch("treasury", {"fn": "auctions", "days": days}, call, kind="treasury_auctions", fmt="json",
-                        capture=lambda r: (json.dumps(r).encode(), None, {"rows": len(r)}))
-    return [{k: x.get(k) for k in ("auctionDate", "securityType", "offeringAmount")} for x in rows], pid
+    rows, pid = s.fetch("treasury", {"fn": "auctions", "days": days}, call, kind="treasury_auctions", fmt="json", capture=_rows_capture)
+    return [auction_row(x) for x in rows], pid
+
+
+def treasury_auction_search(s, start, end):
+    """Every Treasury auction whose security record falls between two dates (TreasuryDirect search, ~450 a year) as auction_row()s."""
+    rows, pid = s.fetch("treasury", {"fn": "auction_search", "start": str(start), "end": str(end)},
+                        lambda: _get_json("treasury", "auction_search", "https://www.treasurydirect.gov/TA_WS/securities/search",
+                                          {"startDate": str(start), "endDate": str(end), "format": "json"}),
+                        kind="treasury_auctions", fmt="json", capture=_rows_capture)
+    return [auction_row(x) for x in rows], pid
+
+
+def treasury_upcoming(s):
+    """Announced auctions not yet held (TreasuryDirect) as auction_row()s; results fields are empty until the auction."""
+    rows, pid = s.fetch("treasury", {"fn": "upcoming"}, lambda: _get_json("treasury", "upcoming",
+                        "https://www.treasurydirect.gov/TA_WS/securities/upcoming", {"format": "json"}),
+                        kind="treasury_upcoming", fmt="json", capture=_rows_capture)
+    return [auction_row(x) for x in rows], pid
+
+
+BUYBACK_KEYS = ("operation_date", "settlement_date", "operation_type", "security_type", "maturity_bucket", "max_par_amt_redeemed",
+                "total_par_amt_offered", "total_par_amt_accepted", "nbr_issues_accepted", "nbr_issues_eligible")
 
 
 def treasury_buybacks(s, since):
-    """Treasury buyback operations since a date (Fiscal Data): operation_date, total_par_amt_accepted (USD string, can be 'null')."""
-    import requests
+    """Treasury buyback operations since a date, newest first (Fiscal Data), including announced ones not yet held.
+    Amounts are USD strings; 'null' until the operation's results are out."""
     since = str(since)
 
     def call():
-        r = requests.get("https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/buybacks_operations", timeout=30,
-                         headers={"User-Agent": "Mozilla/5.0"},
-                         params={"filter": f"operation_date:gte:{since}", "sort": "-operation_date", "page[size]": 200})
-        if r.status_code != 200:
-            raise SourceUnavailable("treasury", f"http_{r.status_code}", "buybacks")
-        return r.json().get("data", [])
-    rows, pid = s.fetch("treasury", {"fn": "buybacks", "since": since}, call, kind="treasury_buybacks", fmt="json",
-                        capture=lambda r: (json.dumps(r).encode(), None, {"rows": len(r)}))
-    return [{k: x.get(k) for k in ("operation_date", "total_par_amt_accepted")} for x in rows], pid
+        j = _get_json("treasury", "buybacks", "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/buybacks_operations",
+                      {"filter": f"operation_date:gte:{since}", "sort": "-operation_date", "page[size]": 1000})
+        if (j.get("meta") or {}).get("total-pages", 1) > 1:     # ponytail: one page of 1000 covers ~8 years of operations
+            raise SourceUnavailable("treasury", "truncated", "buybacks: more than one page")
+        return j.get("data", [])
+    rows, pid = s.fetch("treasury", {"fn": "buybacks", "since": since}, call, kind="treasury_buybacks", fmt="json", capture=_rows_capture)
+    return [{k: x.get(k) for k in BUYBACK_KEYS} for x in rows], pid
+
+
+NYFED = "https://markets.newyorkfed.org/api"
+
+
+def nyfed_repo_ops(s, start, end):
+    """Every NY Fed repo (Standing Repo Facility, term repo) and reverse repo operation with results between two dates, raw rows."""
+    rows, pid = s.fetch("nyfed", {"fn": "rp", "start": str(start), "end": str(end)},
+                        lambda: _get_json("nyfed", "rp", f"{NYFED}/rp/results/search.json",
+                                          {"startDate": str(start), "endDate": str(end)})["repo"]["operations"],
+                        kind="nyfed_repo_ops", fmt="json", capture=_rows_capture)
+    return rows, pid
+
+
+def nyfed_ref_rates(s, start, end):
+    """NY Fed reference rates (SOFR, TGCR, BGCR, EFFR, OBFR) between two dates: rate, percentiles, volume, raw rows."""
+    rows, pid = s.fetch("nyfed", {"fn": "rates", "start": str(start), "end": str(end)},
+                        lambda: _get_json("nyfed", "rates", f"{NYFED}/rates/all/search.json",
+                                          {"startDate": str(start), "endDate": str(end)})["refRates"],
+                        kind="nyfed_ref_rates", fmt="json", capture=_rows_capture)
+    return rows, pid
 
 
 def yf_long_history(s, symbol):

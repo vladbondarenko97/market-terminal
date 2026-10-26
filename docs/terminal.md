@@ -288,7 +288,7 @@ Twelve model cards, 1 to 11 and 14 (full reference: [Forecast Lab](forecast-lab.
 - The data loads every time the tab is opened and on each button press. There is no automatic refresh.
 - Each card has **?** (help), **⛶** (full screen) and **COPY**. Esc closes help or leaves full screen.
 - A card whose data is missing or failed shows `Unavailable: <reason>`. That includes cards 4, 9 and 10 when the pipeline
-  recorded an error for their block, card 11 when the whole refining block failed, and card 14 when the chaos block is missing or failed (it prints the reason). If `/api/forecast` itself fails
+  recorded an error for their block, card 11 when the whole refining block failed, card 14 when the chaos block is missing or failed (it prints the reason), and card 15 likewise for `fed_ops`. If `/api/forecast` itself fails
   (for example `503` before the first run), every card shows the server's message.
 
 ## Engine Positions
@@ -381,6 +381,14 @@ Browser storage (`localStorage`, per browser and per origin):
 Three cards are plain rules on stored runs and live Yahoo quotes: no model output. Every row is graded on history
 and only a row with tested evidence can say "Buy"; hover any cell for what it means and where it comes from.
 
+- **15 · Fed / Treasury operations** (`core/fedops.py`, in `/api/forecast` and `/api/fed_ops`): KPIs for ON RRP and
+  Standing Repo Facility take-up (latest day, rate, 5-day average against the 5 before), SOFR and EFFR (with the 4-week change),
+  the last buyback (accepted against the maximum and what dealers offered), buybacks over the last 12 months against the 12
+  before, the next scheduled buyback and the next auction. Two charts: monthly average ON RRP usage with SOFR and EFFR since
+  2018-04, and buybacks accepted per month with one bar per year. Tables: the last 8 buybacks (max, offered, accepted, share of
+  the maximum), the 10 latest auctions (size, high yield or bill rate, bid-to-cover, dealer share), coupon auctions by tenor
+  (bid-to-cover over the last 12 months against the 12 before) and the upcoming auctions. A part the run could not refresh
+  shows an amber line with the date its data is as of.
 - **14 · Chaos / Peace** (`core/chaos.py`, in `/api/forecast` and `/api/chaos`): score from -100 to +100 with regime, components
   "x of 12", trading days to or after the next general election (midterm or presidential), the three largest z-scores, the
   history chart, the regime watch, the components table (missing ones show their reason), the lever panel (labelled as outside
@@ -419,7 +427,7 @@ exits outside the NYSE session. `--dry-run` prints the live states, `--test` sen
 Two sources came with the Briefing: `chaos` (the Chaos / Peace block as labelled rows: score, regime, previous day, the
 components used and missing, drivers, lever rows, the midterm event study with n and grade, the 60-day record) and
 `macro_news`, now dated lines (Chicago time, feed, sentiment, title; newest first) in two lists, `official_sources` and
-`other_sources`, with the run time and feed coverage. The brief carries one Chaos / Peace line. Both shapers are in `core/narrative.py`
+`other_sources`, with the run time and feed coverage. The brief carries one Chaos / Peace line and one VMRI line (score, tier and inputs from `war_room`). The `war_room` source hides the chart's histogram bins and, without shifts, the what-if block. An answer given without any lookup that names a source other than the brief in its "Sources:" line is sent back once to fetch first. Six sources read card 15: `repo_ops`, `treasury_buybacks`, `treasury_auctions` and the histories `repo_history`, `buyback_history`, `auction_history` (`from`, `to`, `limit`). Both shapers are in `core/narrative.py`
 and are shared with the Briefing.
 
 The console answers questions typed in words with a model on this machine. `options_whale/assistant.py` holds
