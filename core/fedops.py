@@ -218,7 +218,7 @@ def repo_periods(daily, key):
     out = []
     for p, rs in sorted(groups.items()):
         row = {"period": p}
-        for k in ("rrp", "repo"):
+        for k in ("rrp", "repo", "repo_term"):         # term repo only in periods that had an operation
             vals = [r.get(f"{k}_bn") for r in rs if r.get(f"{k}_bn") is not None]
             last = next((r for r in reversed(rs) if r.get(f"{k}_bn") is not None), None)
             # the period's last day with an operation: for the current month or year that is the latest day, not a month-end
