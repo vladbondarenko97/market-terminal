@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from core import lake
 from core import sources as src
 
-FEDOPS_VERSION = "fed_ops_v2"        # v2: auctions.upcoming from the newest captured calendar; upcoming_status fresh/stale/missing with as_of
+FEDOPS_VERSION = "fed_ops_v3"        # v3: repo.monthly avg/max/month-end keys, "ago" readings, same-date buyback comparison
 REPO, RATE, BUYBACK, AUCTION = "fedops.repo_day", "fedops.ref_rate", "fedops.buyback", "fedops.auction"
 MARKETS = {"rrp": "Overnight reverse repo (ON RRP)", "repo": "Overnight repo (Standing Repo Facility since July 2021)",
            "repo_term": "Term repo", "rrp_term": "Term reverse repo"}
@@ -191,13 +191,51 @@ def _quarter(d):
     return f"{d[:4]}-Q{(int(d[5:7]) - 1) // 3 + 1}"
 
 
-def repo_monthly(daily):
-    """Monthly means of the daily rows (reverse repo and repo take-up in USD bn, rates in percent)."""
-    months = defaultdict(list)
+def repo_periods(daily, key):
+    """repo_monthly for any period: key(date) -> period label."""
+    groups = defaultdict(list)
     for r in daily:
-        months[r["date"][:7]].append(r)
-    keys = ("rrp_bn", "repo_bn", "sofr", "tgcr", "bgcr", "effr", "sofr_volume_bn")
-    return [{"month": m, **{k: _mean([r.get(k) for r in rs]) for k in keys}} for m, rs in sorted(months.items())]
+        groups[key(r["date"])].append(r)
+    out = []
+    for p, rs in sorted(groups.items()):
+        row = {"period": p}
+        for k in ("rrp", "repo"):
+            vals = [r.get(f"{k}_bn") for r in rs if r.get(f"{k}_bn") is not None]
+            last = next((r for r in reversed(rs) if r.get(f"{k}_bn") is not None), None)
+            # the period's last day with an operation: for the current month or year that is the latest day, not a month-end
+            row.update({f"{k}_avg_bn": _mean(vals), f"{k}_max_bn": max(vals) if vals else None,
+                        f"{k}_last_bn": last[f"{k}_bn"] if last else None, f"{k}_last_date": last["date"] if last else None})
+        row.update({f"{k}_avg": _mean([r.get(k) for r in rs]) for k in ("sofr", "tgcr", "bgcr", "effr")})
+        row["sofr_volume_avg_bn"] = _mean([r.get("sofr_volume_bn") for r in rs])
+        out.append(row)
+    return out
+
+
+def repo_monthly(daily):
+    """Per month: ON RRP and repo take-up as the average, the highest day and the last day with an operation, with its date
+    (USD bn; a daily balance, never summed over the month), the mean of each reference rate (percent) and of SOFR volume (USD bn)."""
+    return [{"month": r.pop("period"), **r} for r in repo_periods(daily, lambda d: d[:7])]
+
+
+def repo_yearly(daily):
+    return [{"year": r.pop("period"), **r} for r in repo_periods(daily, lambda d: d[:4])]
+
+
+AGO = {"1m": 30, "3m": 91, "1y": 365}
+
+
+def ago(rows, key):
+    """The reading on or before 1 month, 3 months and 1 year before the newest row: {"1y": {"date", key}}, None where the
+    history does not reach back that far."""
+    if not rows:
+        return {}
+    last = date.fromisoformat(rows[-1]["date"])
+    out = {}
+    for name, days in AGO.items():
+        cut = (last - timedelta(days=days)).isoformat()
+        before = [r for r in rows if r["date"] <= cut and r.get(key) is not None]
+        out[name] = {"date": before[-1]["date"], key: before[-1][key]} if before else None
+    return out
 
 
 def _buyback_totals(rows):
@@ -228,7 +266,15 @@ def buyback_summary(rows, today):
     for r in last12:
         by_type.setdefault(r["security_type"], []).append(r)
     top = sorted(held, key=lambda r: r["accepted_bn"], reverse=True)[:5]
-    return {"monthly": group(lambda d: d[:7]), "quarterly": group(_quarter), "yearly": years,
+    this_y, last_y = years[-1] if years and years[-1]["year"] == t[:4] else None, next((y for y in years if y["year"] == str(today.year - 1)), None)
+    same = None
+    if this_y and last_y:
+        a, b = this_y["ytd"]["accepted_bn"], last_y["ytd"]["accepted_bn"]
+        same = {"compares": f"Jan 1 to {cut} of {this_y['year']} with Jan 1 to {cut} of {last_y['year']} (the same dates)",
+                this_y["year"]: this_y["ytd"], last_y["year"]: last_y["ytd"],
+                "accepted_change_bn": round(a - b, 3) if a is not None and b is not None else None,
+                "accepted_change_pct": round((a - b) / b * 100, 1) if a is not None and b else None}
+    return {"this_year_vs_last_year_same_dates": same, "monthly": group(lambda d: d[:7]), "quarterly": group(_quarter), "yearly": years,
             "largest_5": [{k: r.get(k) for k in ("date", "operation_type", "security_type", "maturity_bucket", "max_bn", "offered_bn", "accepted_bn")} for r in top],
             "t12m": {"from": y1, **_buyback_totals(last12)},
             "prior_t12m": {"from": y2, **_buyback_totals([r for r in held if y2 < r["date"] <= y1])},
@@ -292,7 +338,7 @@ def build(conn, today, errors=None):
         if not rs or rs[-1]["date"] < (today - timedelta(days=365)).isoformat():     # term reverse repo last ran in 2019
             continue
         acc = [r["accepted_bn"] for r in rs]
-        markets[m] = {"label": label, "earliest": rs[0]["date"], "latest": rs[-1], "last_10": rs[-10:],
+        markets[m] = {"label": label, "earliest": rs[0]["date"], "latest": rs[-1], "ago": ago(rs, "accepted_bn"), "last_10": rs[-10:],
                       "avg_5_bn": _mean(acc[-5:]), "avg_prev_5_bn": _mean(acc[-10:-5]),
                       "max_60d": max(({"date": r["date"], "accepted_bn": r["accepted_bn"]} for r in rs if r["date"] >= since),
                                      key=lambda x: x["accepted_bn"], default=None)}
@@ -301,7 +347,7 @@ def build(conn, today, errors=None):
         rs = [r for r in rate_rows if r["entity"] == name]
         if rs:
             prior = [r for r in rs if r["date"] <= (date.fromisoformat(rs[-1]["date"]) - timedelta(days=28)).isoformat()]
-            rates[name] = {"earliest": rs[0]["date"], "latest": rs[-1],
+            rates[name] = {"earliest": rs[0]["date"], "latest": rs[-1], "ago": ago(rs, "rate"),
                            "change_4w_pp": round(rs[-1]["rate"] - prior[-1]["rate"], 4) if prior else None}
     daily = daily_rows(repo_rows, rate_rows)
     buys = [dict(r, weekday=date.fromisoformat(r["date"]).strftime("%A")) for r in read(conn, BUYBACK)]
@@ -312,7 +358,7 @@ def build(conn, today, errors=None):
         "version": FEDOPS_VERSION, "as_of": t,
         "repo": {**_part(repo_rows, errors, ("nyfed:rp",)), "markets": markets, "rates": rates,
                  "rates_status": _part(rate_rows, errors, ("nyfed:rates",)),
-                 "monthly": repo_monthly(daily), "last_60d": [r for r in daily if r["date"] >= since],
+                 "monthly": repo_monthly(daily), "yearly": repo_yearly(daily), "last_60d": [r for r in daily if r["date"] >= since],
                  "units": "accepted and submitted in USD bn, rates in percent",
                  "note": "Repo rate: the minimum bid rate of the full-allotment overnight repo (the Standing Repo Facility rate) or the "
                          "weighted average of a competitive term operation. Reverse repo rate: the award rate. Days with no operation of a "

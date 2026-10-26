@@ -40,6 +40,10 @@ class ConsoleGuards(unittest.TestCase):
     def test_an_announced_answer_is_not_an_answer(self):
         self.assertTrue(assistant.unfinished("Now I have the comparison. Let me provide the answer.\n\nSources: treasury_buybacks"))
         self.assertTrue(assistant.unfinished("The user is asking for a comparison of buybacks. From the data I fetched: ..."))
+        notes = "Now I have the data I need. Let me analyze the 30-Year Bond data.\n" + "- bid_to_cover_12m: 2.43\n" * 30 + "\nLet me provide a clear answer.\n\nSources: auction_history"
+        self.assertTrue(assistant.unfinished(notes))
+        offer = "2026 so far: **$230.235 billion**.\n" * 20 + "If you want, I'll compare this with 2024.\n\nSources: treasury_buybacks"
+        self.assertFalse(assistant.unfinished(offer))
         self.assertFalse(assistant.unfinished("2026 so far: **$230.235 billion**; 2025: **$195.782 billion**.\n\nSources: treasury_buybacks"))
 
     def test_war_room_hides_the_chart_histogram(self):
