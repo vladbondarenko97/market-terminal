@@ -43,6 +43,16 @@ class Fetchers(unittest.TestCase):
         self.assertEqual(rows[("repo_term", "2026-10-20")]["accepted_bn"], 0.067)
         self.assertNotIn(("repo_term", "2026-10-21"), rows)       # no operation is no row, never a zero
 
+    def test_missing_amounts_and_rates_never_overwrite_or_become_zero(self):
+        ops = load("rp.json")
+        morning, afternoon = [dict(o) for o in ops if o["operationDate"] == "2026-10-22" and o["operationType"] == "Repo"]
+        afternoon["details"] = [{"securityType": "Treasury", "amtSubmitted": 0, "amtAccepted": 0}]       # no rate field at all
+        v = json.loads(fedops.repo_records([morning, afternoon])[0]["value_json"])
+        self.assertEqual(v["rate"], 4.0)
+        afternoon["totalAmtAccepted"] = None
+        v = json.loads(fedops.repo_records([morning, afternoon])[0]["value_json"])
+        self.assertIsNone(v["accepted_bn"])
+
     def test_rates_keep_the_four_reference_rates(self):
         rates, _ = fetch(src.nyfed_ref_rates, {"refRates": load("rates.json")}, "2026-10-22", "2026-10-23")
         recs = fedops.rate_records(rates)
@@ -92,6 +102,18 @@ class History(unittest.TestCase):
         rows = fedops.read(conn, fedops.BUYBACK)
         self.assertEqual([(r["date"], r["accepted_bn"]) for r in rows], [("2026-10-27", 4.08)])
 
+    def test_two_operation_types_on_one_day_are_two_rows(self):
+        conn = fresh_conn()
+        a, b = buyback("2026-10-27", 1.0), buyback("2026-10-27", 2.0)
+        a["operation_type"], b["operation_type"] = "Liquidity Support", "Cash Management"
+        lake.record_observations(conn, fedops.buyback_records([a, b]))
+        self.assertEqual(sorted(r["accepted_bn"] for r in fedops.read(conn, fedops.BUYBACK)), [1.0, 2.0])
+
+    def test_a_buyback_without_security_type_does_not_break_the_summary(self):
+        rows = [dict(date="2026-10-01", security_type=None, max_bn=1.0, offered_bn=2.0, accepted_bn=1.0),
+                dict(date="2026-10-02", security_type="TIPS", max_bn=1.0, offered_bn=2.0, accepted_bn=0.5)]
+        self.assertEqual(set(fedops.buyback_summary(rows, TODAY)["t12m_by_security_type"]), {"None", "TIPS"})
+
     def test_buyback_summary_year_over_year(self):
         rows = [dict(r, date=r["operation_date"], **json.loads(rec["value_json"])) for r, rec in
                 ((b, fedops.buyback_records([b])[0]) for b in (buyback("2024-10-02", 2.0), buyback("2025-03-05", 3.0), buyback("2025-11-05", 4.0),
@@ -135,11 +157,13 @@ class Backfill(unittest.TestCase):
             return [op for op in load("rp.json") if start[:4] == "2026"], None
         with mock.patch.dict(B.JOBS, {fedops.REPO: (repo, fedops.repo_records)}, clear=True), \
              mock.patch.object(B.src, "treasury_buybacks", return_value=([], None)), mock.patch.object(B.fedops, "EARLIEST", {**fedops.EARLIEST, fedops.REPO: "2025-01-01"}):
-            B.work_for(date(2027, 2, 1))(conn, None, "b1")
+            lake.record_observations(conn, fedops.repo_records([dict(load("rp.json")[0], operationDate="2025-12-30")]), run_id="topup")
+            B.work_for(date(2027, 2, 1))(conn, None, "backfill-fed_ops-1")
             self.assertEqual(asked, ["2025-01-01", "2026-01-01", "2027-01-01"])
             asked.clear()
-            B.work_for(date(2027, 2, 1))(conn, None, "b2")
-            self.assertEqual(asked, ["2025-01-01", "2027-01-01"])  # 2026 is stored and finished; empty 2025 and the open year are asked again
+            B.work_for(date(2027, 2, 1))(conn, None, "backfill-fed_ops-2")
+            # 2026 was stored by a backfill and is finished; 2025 holds only a top-up row, so it is asked again, as is the open year
+            self.assertEqual(asked, ["2025-01-01", "2027-01-01"])
 
 
 class Routes(ApiCase):

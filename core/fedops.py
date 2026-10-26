@@ -52,13 +52,15 @@ def repo_records(ops, payload_id=None):
             continue
         market = ("rrp" if op.get("operationType") == "Reverse Repo" else "repo") + ("" if op.get("term") == "Overnight" else "_term")
         d = days[(market, op["operationDate"])]
-        d["submitted_bn"] += (op.get("totalAmtSubmitted") or 0) / 1e9
-        d["accepted_bn"] += (op.get("totalAmtAccepted") or 0) / 1e9
+        for key, field in (("submitted_bn", "totalAmtSubmitted"), ("accepted_bn", "totalAmtAccepted")):
+            v = src._num(op.get(field))           # one missing amount makes the day's total missing, never a smaller number
+            d[key] = None if v is None or d[key] is None else d[key] + v / 1e9
         d["ops"] += 1
         if op.get("acceptedCpty") is not None:
             d["counterparties"] = (d["counterparties"] or 0) + op["acceptedCpty"]
-        if (op.get("closeTime") or "") >= d["_close"]:
-            d["rate"], d["_close"] = _rate(op), op.get("closeTime") or ""
+        rate = _rate(op)
+        if rate is not None and (op.get("closeTime") or "") >= d["_close"]:
+            d["rate"], d["_close"] = rate, op.get("closeTime") or ""
     return [lake.obs(REPO, day, entity=market, value={k: (round(v, 3) if isinstance(v, float) else v) for k, v in d.items() if k != "_close"},
                      source="nyfed", source_field="rp/results", payload_id=payload_id, time_quality="date")
             for (market, day), d in days.items()]
@@ -78,7 +80,8 @@ def rate_records(rows, payload_id=None):
 
 
 def buyback_records(rows, payload_id=None):
-    """Fiscal Data buyback rows (sources.BUYBACK_KEYS) -> one row per operation; amounts in USD bn, None until results are out."""
+    """Fiscal Data buyback rows (sources.BUYBACK_KEYS) -> one row per operation, keyed by date, operation type, security
+    type and maturity bucket; amounts in USD bn, None until results are out."""
     out = []
     for r in rows:
         if not r.get("operation_date"):
@@ -87,7 +90,7 @@ def buyback_records(rows, payload_id=None):
              "maturity_bucket": r.get("maturity_bucket"), "max_bn": _bn(r.get("max_par_amt_redeemed")),
              "offered_bn": _bn(r.get("total_par_amt_offered")), "accepted_bn": _bn(r.get("total_par_amt_accepted")),
              "issues_accepted": src._num(r.get("nbr_issues_accepted")), "issues_eligible": src._num(r.get("nbr_issues_eligible"))}
-        out.append(lake.obs(BUYBACK, r["operation_date"], entity=f"{r.get('security_type')} {r.get('maturity_bucket')}", value=v,
+        out.append(lake.obs(BUYBACK, r["operation_date"], entity=f"{r.get('operation_type')}|{r.get('security_type')} {r.get('maturity_bucket')}", value=v,
                             source="treasury", source_field="buybacks_operations", payload_id=payload_id, time_quality="date"))
     return out
 
@@ -121,10 +124,14 @@ def earliest(conn, metric):
 
 def repo_daily(conn, start=None, end=None):
     """One compact row per day: accepted USD bn per market and the reference rates (percent), SOFR volume (USD bn)."""
+    return daily_rows(read(conn, REPO, start, end), read(conn, RATE, start, end))
+
+
+def daily_rows(repo_rows, rate_rows):
     days = defaultdict(dict)
-    for r in read(conn, REPO, start, end):
+    for r in repo_rows:
         days[r["date"]][f"{r['entity']}_bn"] = r["accepted_bn"]
-    for r in read(conn, RATE, start, end):
+    for r in rate_rows:
         days[r["date"]][r["entity"].lower()] = r["rate"]
         if r["entity"] == "SOFR":
             days[r["date"]]["sofr_volume_bn"] = r.get("volume_bn")
@@ -180,7 +187,7 @@ def buyback_summary(rows, today):
     return {"monthly": group(lambda d: d[:7]), "quarterly": group(_quarter), "yearly": years,
             "t12m": {"from": y1, **_buyback_totals(last12)},
             "prior_t12m": {"from": y2, **_buyback_totals([r for r in held if y2 < r["date"] <= y1])},
-            "t12m_by_security_type": {k: _buyback_totals(v) for k, v in sorted(by_type.items())}}
+            "t12m_by_security_type": {str(k): _buyback_totals(v) for k, v in sorted(by_type.items(), key=lambda kv: str(kv[0]))}}
 
 
 def tenor(r):
@@ -246,7 +253,7 @@ def build(conn, today, upcoming=None, errors=None):
             prior = [r for r in rs if r["date"] <= (date.fromisoformat(rs[-1]["date"]) - timedelta(days=28)).isoformat()]
             rates[name] = {"earliest": rs[0]["date"], "latest": rs[-1],
                            "change_4w_pp": round(rs[-1]["rate"] - prior[-1]["rate"], 4) if prior else None}
-    daily = repo_daily(conn, (today - timedelta(days=3 * 366)).isoformat())
+    daily = daily_rows(repo_rows, rate_rows)
     buys = [dict(r, weekday=date.fromisoformat(r["date"]).strftime("%A")) for r in read(conn, BUYBACK)]
     held = [r for r in buys if r.get("accepted_bn") is not None]
     auctions = read(conn, AUCTION)
@@ -255,7 +262,7 @@ def build(conn, today, upcoming=None, errors=None):
         "version": FEDOPS_VERSION, "as_of": t,
         "repo": {**_part(repo_rows, errors, ("nyfed:rp",)), "markets": markets, "rates": rates,
                  "rates_status": _part(rate_rows, errors, ("nyfed:rates",)),
-                 "monthly": repo_monthly(repo_daily(conn)), "last_60d": [r for r in daily if r["date"] >= since],
+                 "monthly": repo_monthly(daily), "last_60d": [r for r in daily if r["date"] >= since],
                  "units": "accepted and submitted in USD bn, rates in percent",
                  "note": "Repo rate: the minimum bid rate of the full-allotment overnight repo (the Standing Repo Facility rate) or the "
                          "weighted average of a competitive term operation. Reverse repo rate: the award rate. Days with no operation of a "

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from core import lake
+from core.metrics import safe_float as _num      # '', 'null', NaN and junk are missing (None), never 0
 
 PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forexfactory": 1, "databento": 1, "goldapi": 1, "akshare": 1,
                    "ebay": 1, "cme": 1,
@@ -725,14 +726,6 @@ def _get_json(provider, what, url, params=None):
 
 def _rows_capture(rows):
     return json.dumps(rows).encode(), None, {"rows": len(rows)}
-
-
-def _num(v):
-    """A provider number (str or number) as float; '', 'null' and None are missing (None), never 0."""
-    try:
-        return None if v in (None, "", "null") else float(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def auction_row(x):

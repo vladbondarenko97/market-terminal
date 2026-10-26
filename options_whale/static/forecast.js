@@ -1019,7 +1019,6 @@ function renderChaos(j) {
 // ---------------------------------------------------------------- 15. Fed / Treasury operations (ctx["fed_ops"]: stored, nothing live)
 const foBn = v => (v === null || v === undefined) ? '—' : `$${fcNum(v, v >= 100 ? 0 : v >= 10 ? 1 : 2)}B`;
 const foStale = p => p && p.status === 'stale' ? `<div class="fc-warn">⚠ ${fcEsc(p.reason)}</div>` : '';
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function renderFedOps(j) {
     const f = j.fed_ops, el = document.getElementById('fc15');
     if (!f || f.status === 'error') { el.innerHTML = missing(f || { reason: 'not in this run yet (starts with the next pipeline run)' }); return; }
@@ -1050,15 +1049,15 @@ function renderFedOps(j) {
         </div>
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
             <div><div class="fc-sub">LAST BUYBACKS · newest first · max = most Treasury would buy, offered = what dealers offered</div>
-                ${bbRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Securities</th><th>Max</th><th>Offered</th><th>Accepted</th><th>of max</th></tr>${bbRows}</table>` : missing(b)}</div>
+                ${bbRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Securities</th><th>Max</th><th>Offered</th><th>Accepted</th><th>of max</th></tr>${bbRows}</table>` : fcFailed(b) ? missing(b) : '<div class="fc-muted">No buyback held yet.</div>'}</div>
             <div><div class="fc-sub">RECENT AUCTIONS · newest first · r = reopening · high = high yield (bills: discount rate)</div>
-                ${auRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Security</th><th>Size</th><th>High</th><th>Bid/cover</th><th>Dealers</th></tr>${auRows}</table>` : missing(a)}</div>
+                ${auRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Security</th><th>Size</th><th>High</th><th>Bid/cover</th><th>Dealers</th></tr>${auRows}</table>` : fcFailed(a) ? missing(a) : '<div class="fc-muted">No auction stored yet.</div>'}</div>
         </div>
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
             <div><div class="fc-sub">COUPON AUCTIONS BY TENOR · bid-to-cover, last 12 months vs the 12 before</div>
-                ${tnRows ? `<table class="fc-table"><tr><th style="text-align:left">Tenor</th><th>Last</th><th>High</th><th>B/C</th><th>B/C 12m</th><th>prior 12m</th><th>Dealers 12m</th></tr>${tnRows}</table>` : missing(a)}</div>
+                ${tnRows ? `<table class="fc-table"><tr><th style="text-align:left">Tenor</th><th>Last</th><th>High</th><th>B/C</th><th>B/C 12m</th><th>prior 12m</th><th>Dealers 12m</th></tr>${tnRows}</table>` : fcFailed(a) ? missing(a) : '<div class="fc-muted">No coupon auctions stored yet.</div>'}</div>
             <div><div class="fc-sub">UPCOMING AUCTIONS</div>
-                ${upRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Security</th><th>Size</th></tr>${upRows}</table>` : missing(a.upcoming_status)}</div>
+                ${upRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Security</th><th>Size</th></tr>${upRows}</table>` : a.upcoming_status?.status === 'fresh' ? '<div class="fc-muted">None announced yet.</div>' : missing(a.upcoming_status)}</div>
         </div>
         <div class="fc-note">${fcEsc(r.note || '')} Auction tails: ${fcEsc((a.tail || {}).reason || '')}. Sources: NY Fed Markets API, Fiscal Data (buybacks), TreasuryDirect (auctions).</div>`;
     const mo = (r.monthly || []).filter(x => x.month >= '2018-04');
@@ -1071,8 +1070,8 @@ function renderFedOps(j) {
     const years = [...new Set((b.monthly || []).map(x => x.period.slice(0, 4)))];
     const byMonth = Object.fromEntries((b.monthly || []).map(x => [x.period, x.accepted_bn]));
     const yc = [FC_COL.violet, FC_COL.aqua, FC_COL.blue, FC_COL.orange];
-    if (years.length) fcChart('fc15ChartB', { type: 'bar', data: { labels: MONTHS, datasets: years.map((y, i) => ({
-        label: y, data: MONTHS.map((_, k) => byMonth[`${y}-${String(k + 1).padStart(2, '0')}`] ?? null), backgroundColor: yc[(i + yc.length - years.length) % yc.length] })) },
+    if (years.length) fcChart('fc15ChartB', { type: 'bar', data: { labels: CH_MON, datasets: years.map((y, i) => ({
+        label: y, data: CH_MON.map((_, k) => byMonth[`${y}-${String(k + 1).padStart(2, '0')}`] ?? null), backgroundColor: yc[(((i - years.length) % yc.length) + yc.length) % yc.length] })) },      // the newest year is always the last colour
         options: { scales: { x: axis(), y: axis({ beginAtZero: true, title: { display: true, text: '$B accepted', color: FC_COL.ink2, font: { size: 9 } } }) } } });
 }
 

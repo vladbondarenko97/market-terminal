@@ -3017,7 +3017,7 @@ def api_chaos_history():
 
 
 FED_OPS_PARTS = ("repo", "buybacks", "auctions")
-FED_OPS_SUMMARY = {"repo": ("status", "as_of", "markets", "rates", "rates_status", "monthly", "units", "note"),
+FED_OPS_SUMMARY = {"repo": ("status", "as_of", "reason", "markets", "rates", "rates_status", "monthly", "units", "note"),
                    "buybacks": ("status", "as_of", "reason", "scheduled", "monthly", "quarterly", "yearly", "t12m", "prior_t12m", "t12m_by_security_type", "units"),
                    "auctions": ("status", "as_of", "reason", "upcoming", "by_tenor", "monthly", "t12m", "prior_t12m", "tail", "units")}
 

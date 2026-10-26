@@ -3,8 +3,8 @@ BGCR and EFFR (from 2018-04-02, when SOFR starts), every Treasury buyback operat
 Treasury auction results (from 2021).
 
 The pipeline refetches only the last weeks on each run (core/fedops.py, topup), so the years before come from here. It asks
-for one calendar year per request (about 15 requests in all, a few MB each from TreasuryDirect). A past year that already has
-stored rows is skipped, so an interrupted backfill resumes where it stopped and a second run only refreshes the current year.
+for one calendar year per request (about 15 requests in all, a few MB each from TreasuryDirect). A past year that an earlier
+backfill stored is skipped, so an interrupted backfill resumes where it stopped and a second run only refreshes the current year.
 Every row goes into v2_observations through INSERT OR IGNORE: running it twice stores nothing twice.
 
 Takes the run lock, like a pipeline run (exit 75 when a run or another job holds it). The operator reads and runs it; the pipeline never does.
@@ -44,8 +44,10 @@ def years(start, today):
 
 
 def _stored(conn, metric, first, last):
+    """True when an earlier backfill stored this year. Rows from the pipeline's top-up (the last weeks only) do not count."""
     with lake._WRITE_LOCK:
-        return conn.execute("SELECT 1 FROM v2_observations WHERE metric_id = ? AND observed_at >= ? AND observed_at <= ? LIMIT 1",
+        return conn.execute("SELECT 1 FROM v2_observations WHERE metric_id = ? AND observed_at >= ? AND observed_at <= ? "
+                            "AND run_id LIKE 'backfill-fed_ops-%' LIMIT 1",
                             (metric, first.isoformat(), f"{last.isoformat()}T99")).fetchone() is not None
 
 
@@ -55,7 +57,7 @@ def work_for(day):
         for metric, (fetch, to_records) in JOBS.items():
             for first, last in years(fedops.EARLIEST[metric], day):
                 if last < day - timedelta(days=7) and _stored(conn, metric, first, last):
-                    counts["skipped"] += 1           # a finished past year: its rows went in in one transaction
+                    counts["skipped"] += 1           # a finished past year a backfill stored: its rows went in in one transaction
                     continue
                 counts["requests"] += 1
                 try:
