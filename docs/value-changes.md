@@ -42,6 +42,10 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **Fed / Treasury operations, additions** (`fed_ops_v1`, October 2026): new keys `buybacks.largest_5`,
+  `buybacks.yearly[].by_operation_type` and `auctions.by_tenor[].by_year`; `auctions.upcoming` now comes from the stored
+  calendar (`fedops.auction_upcoming`), so a failed calendar fetch shows the stored one as `stale` instead of nothing. No
+  existing value changes meaning.
 - **Fed / Treasury operations** (`fed_ops_v1`, new, October 2026): snapshot key `fed_ops` and observations `fedops.repo_day`,
   `fedops.ref_rate`, `fedops.buyback`, `fedops.auction`; no earlier value changes meaning.
 - **Chaos / Peace Treasury-supply levers** (`chaos_v1`, October 2026): the "Treasury bills offered" and "Treasury coupons

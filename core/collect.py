@@ -1153,8 +1153,7 @@ def _guarded_chaos(conn, session, run_id, today, frames):
 def _guarded_fed_ops(conn, session, run_id, today):
     """Card 15 is optional too: top up the stored repo, rate, buyback and auction history, then summarise it."""
     try:
-        upcoming, errors = fedops.topup(conn, session, run_id, today)
-        return fedops.build(conn, today, upcoming, errors)
+        return fedops.build(conn, today, fedops.topup(conn, session, run_id, today))
     except Exception as e:
         return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
 

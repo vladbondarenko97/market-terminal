@@ -11,6 +11,7 @@ import time
 import warnings
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from urllib.parse import urlparse
 from xml.dom import minidom
 from xml.sax.saxutils import escape as xml_escape
@@ -1795,7 +1796,7 @@ def api_help():
         <param name="from" type="string" default="" description="first date, YYYY-MM-DD" />
         <param name="to" type="string" default="" description="last date, YYYY-MM-DD" />
         <param name="limit" type="int" default="60" description="newest rows kept (1 to 5000)" />
-        <param name="tenor" type="string" default="" description="auctions: keep tenors containing this text, e.g. 10-Year or Bill" />
+        <param name="tenor" type="string" default="" description="auctions: keep matching tenors; spacing and hyphens do not matter: 30 year, 30-Year, 30yr, 10 year note, bond, Bill, TIPS" />
         <param name="security_type" type="string" default="" description="buybacks: keep security types containing this text, e.g. TIPS" />
       </parameters>
     </endpoint>
@@ -3018,14 +3019,27 @@ def api_chaos_history():
 
 FED_OPS_PARTS = ("repo", "buybacks", "auctions")
 FED_OPS_SUMMARY = {"repo": ("status", "as_of", "reason", "markets", "rates", "rates_status", "monthly", "units", "note"),
-                   "buybacks": ("status", "as_of", "reason", "scheduled", "monthly", "quarterly", "yearly", "t12m", "prior_t12m", "t12m_by_security_type", "units"),
-                   "auctions": ("status", "as_of", "reason", "upcoming", "by_tenor", "monthly", "t12m", "prior_t12m", "tail", "units")}
+                   "buybacks": ("status", "as_of", "reason", "last_8", "scheduled", "largest_5", "monthly", "quarterly", "yearly", "t12m", "prior_t12m", "t12m_by_security_type", "units"),
+                   "auctions": ("status", "as_of", "reason", "upcoming", "upcoming_status", "by_tenor", "monthly", "t12m", "prior_t12m", "tail", "units")}
 
 
 def _fed_ops_section(conn):
+    """(run, block): the latest snapshot's fed_ops block; until a run has built one, the same block summarised from the stored
+    history (the backfill), labelled as such and cached for 10 minutes. (run, None) when nothing is stored."""
+    from core import fedops as _v2fo
     run, fc = _latest_forecast(conn)
     sec = (fc or {}).get("fed_ops")
-    return run, sec if sec and sec.get("status") != "error" else None
+    if sec and sec.get("status") != "error":
+        return run, sec
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    key = f"fed_ops_from_history:{today}"
+    sec = data_cache.get(key)
+    if sec is None:
+        if _v2fo.earliest(conn, _v2fo.BUYBACK) is None and _v2fo.earliest(conn, _v2fo.REPO) is None:
+            return run, None
+        sec = dict(_v2fo.build(conn, today), source="stored history: no pipeline run has built this block yet")
+        data_cache.set(key, sec)
+    return run, sec
 
 
 @app.route('/api/fed_ops', methods=['GET'])
@@ -3068,7 +3082,7 @@ def api_fed_ops_history():
         limit = max(1, min(int(request.args.get("limit") or 60), 5000))
     except ValueError:
         return json_error("from and to must be dates as YYYY-MM-DD; limit a whole number", 400)
-    tenor, sec_type = (request.args.get("tenor") or "").lower(), (request.args.get("security_type") or "").lower()
+    tenor, sec_type = request.args.get("tenor") or "", (request.args.get("security_type") or "").lower()
     conn = _open_readonly()
     if conn is None:
         return _not_initialised()
@@ -3082,7 +3096,7 @@ def api_fed_ops_history():
         else:
             metric = _v2fo.AUCTION
             rows = [{"date": r["date"], "tenor": _v2fo.tenor(r), "cusip": r["entity"], **{k: v for k, v in r.items() if k not in ("date", "entity", "term", "type")}}
-                    for r in _v2fo.read(conn, metric, start, end) if tenor in _v2fo.tenor(r).lower()]
+                    for r in _v2fo.read(conn, metric, start, end) if _v2fo.tenor_matches(tenor, _v2fo.tenor(r))]
         first = _v2fo.earliest(conn, metric)
         run, sec = _fed_ops_section(conn)
     except sqlite3.OperationalError as exc:
@@ -3093,7 +3107,13 @@ def api_fed_ops_history():
         conn.close()
     if first is None:
         return json_error("no stored history yet: run scripts/backfill_fed_ops.py or the pipeline", 404)
-    summary = {k: (sec or {}).get(kind, {}).get(k) for k in FED_OPS_SUMMARY[kind]} if sec else {"status": "missing", "reason": "no snapshot with card 15 yet"}
+    summary = {k: (sec or {}).get(kind, {}).get(k) for k in FED_OPS_SUMMARY[kind]} if sec else {"status": "missing", "reason": "no stored history yet"}
+    inside = lambda p: (not start or p >= start[:len(p)]) and (not end or p <= end[:len(p)])     # a month 2026-09, a quarter or year by its first chars
+    for key in ("monthly", "quarterly", "yearly"):
+        if isinstance(summary.get(key), list):
+            summary[key] = [r for r in summary[key] if inside(str(r.get("month") or r.get("period") or r.get("year"))[:7].split("-Q")[0])]
+    if kind == "auctions" and tenor and isinstance(summary.get("by_tenor"), dict):
+        summary["by_tenor"] = {k: v for k, v in summary["by_tenor"].items() if _v2fo.tenor_matches(tenor, k)}
     return jsonify({"status": "success", "kind": kind, "earliest_stored": first, "from": start, "to": end, "rows_in_range": len(rows),
                     "rows": rows[-limit:], "summary": summary, "run": run})
 
