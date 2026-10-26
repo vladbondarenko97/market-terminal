@@ -201,7 +201,10 @@ def repo_periods(daily, key):
         row = {"period": p}
         for k in ("rrp", "repo"):
             vals = [r.get(f"{k}_bn") for r in rs if r.get(f"{k}_bn") is not None]
-            row.update({f"{k}_avg_bn": _mean(vals), f"{k}_max_bn": max(vals) if vals else None, f"{k}_end_bn": vals[-1] if vals else None})
+            last = next((r for r in reversed(rs) if r.get(f"{k}_bn") is not None), None)
+            # the period's last day with an operation: for the current month or year that is the latest day, not a month-end
+            row.update({f"{k}_avg_bn": _mean(vals), f"{k}_max_bn": max(vals) if vals else None,
+                        f"{k}_last_bn": last[f"{k}_bn"] if last else None, f"{k}_last_date": last["date"] if last else None})
         row.update({f"{k}_avg": _mean([r.get(k) for r in rs]) for k in ("sofr", "tgcr", "bgcr", "effr")})
         row["sofr_volume_avg_bn"] = _mean([r.get("sofr_volume_bn") for r in rs])
         out.append(row)
@@ -209,9 +212,13 @@ def repo_periods(daily, key):
 
 
 def repo_monthly(daily):
-    """Per month: ON RRP and repo take-up as the average, the highest day and the month's last day (USD bn; a daily balance,
-    never summed over the month), the mean of each reference rate (percent) and of SOFR volume (USD bn)."""
-    return [{"month": r.pop("period"), **{k.replace("_end_bn", "_month_end_bn"): v for k, v in r.items()}} for r in repo_periods(daily, lambda d: d[:7])]
+    """Per month: ON RRP and repo take-up as the average, the highest day and the last day with an operation, with its date
+    (USD bn; a daily balance, never summed over the month), the mean of each reference rate (percent) and of SOFR volume (USD bn)."""
+    return [{"month": r.pop("period"), **r} for r in repo_periods(daily, lambda d: d[:7])]
+
+
+def repo_yearly(daily):
+    return [{"year": r.pop("period"), **r} for r in repo_periods(daily, lambda d: d[:4])]
 
 
 AGO = {"1m": 30, "3m": 91, "1y": 365}
@@ -347,21 +354,18 @@ def build(conn, today, errors=None):
     held = [r for r in buys if r.get("accepted_bn") is not None]
     auctions = read(conn, AUCTION)
     up, up_at = stored_upcoming(conn, today, [r for r in auctions if r["date"] >= t])
-    summary = buyback_summary(buys, today)
     return {
         "version": FEDOPS_VERSION, "as_of": t,
         "repo": {**_part(repo_rows, errors, ("nyfed:rp",)), "markets": markets, "rates": rates,
                  "rates_status": _part(rate_rows, errors, ("nyfed:rates",)),
-                 "monthly": repo_monthly(daily), "yearly": [{"year": r.pop("period"), **{k.replace("_end_bn", "_year_end_bn"): v for k, v in r.items()}}
-                                                            for r in repo_periods(daily, lambda d: d[:4])], "last_60d": [r for r in daily if r["date"] >= since],
+                 "monthly": repo_monthly(daily), "yearly": repo_yearly(daily), "last_60d": [r for r in daily if r["date"] >= since],
                  "units": "accepted and submitted in USD bn, rates in percent",
                  "note": "Repo rate: the minimum bid rate of the full-allotment overnight repo (the Standing Repo Facility rate) or the "
                          "weighted average of a competitive term operation. Reverse repo rate: the award rate. Days with no operation of a "
                          "kind have no row."},
-        "buybacks": {"this_year_vs_last_year_same_dates": summary.pop("this_year_vs_last_year_same_dates"),     # first: a 9B compared
-                     **_part(held, errors, ("treasury:buybacks",)), "earliest": buys[0]["date"] if buys else None,   # this year with all of last year
+        "buybacks": {**_part(held, errors, ("treasury:buybacks",)), "earliest": buys[0]["date"] if buys else None,
                      "last_8": held[-8:], "scheduled": [r for r in buys if r.get("accepted_bn") is None and r["date"] >= t],
-                     **summary, "units": "USD bn par; max_bn is the most Treasury said it would buy back. Lists run oldest first"},
+                     **buyback_summary(buys, today), "units": "USD bn par; max_bn is the most Treasury said it would buy back. Lists run oldest first"},
         "auctions": {**_part(auctions, errors, ("treasury:auctions",)), "earliest": auctions[0]["date"] if auctions else None,
                      "recent": auctions[-15:],
                      "upcoming": [{k: r.get(k) for k in ("date", "term", "type", "size_bn", "reopening", "issue_date", "cusip")} for r in up],

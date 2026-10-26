@@ -43,9 +43,9 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 Newest first, then the changes that came with the v2 pipeline.
 
 - **Fed / Treasury operations** (`fed_ops_v3`, October 2026): `repo.monthly` keys renamed: `rrp_bn` and `repo_bn` (the
-  month's mean daily balance) are now `rrp_avg_bn` and `repo_avg_bn`, next to the new `*_max_bn` and `*_month_end_bn`; the
+  month's mean daily balance) are now `rrp_avg_bn` and `repo_avg_bn`, next to the new `*_max_bn`, `*_last_bn` and `*_last_date` (the period's last day with an operation); the
   rate means are `sofr_avg`, `tgcr_avg`, `bgcr_avg`, `effr_avg` and SOFR volume is `sofr_volume_avg_bn`. New: `repo.yearly`
-  (same fields per year, `*_year_end_bn`), `ago` on each market and rate, `buybacks.this_year_vs_last_year_same_dates`.
+  (same fields per year), `ago` on each market and rate, `buybacks.this_year_vs_last_year_same_dates`.
 - **Fed / Treasury operations** (`fed_ops_v2`, October 2026): `auctions.upcoming` now comes from the newest captured
   auction calendar, without auctions that already have a stored result, and `auctions.upcoming_status` is `fresh`, `stale`
   (that run's fetch failed: the earlier calendar is shown, with `as_of`) or `missing` (no calendar captured). In `fed_ops_v1`

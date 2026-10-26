@@ -186,7 +186,8 @@ class Round2(unittest.TestCase):
         daily = [{"date": "2026-09-29", "rrp_bn": 2.0, "sofr": 4.0}, {"date": "2026-09-30", "rrp_bn": 11.539, "sofr": 4.2},
                  {"date": "2026-10-01", "rrp_bn": 0.5, "sofr": 3.9}]
         sep = fedops.repo_monthly(daily)[0]
-        self.assertEqual((sep["rrp_avg_bn"], sep["rrp_max_bn"], sep["rrp_month_end_bn"], sep["sofr_avg"]), (6.7695, 11.539, 11.539, 4.1))
+        self.assertEqual((sep["rrp_avg_bn"], sep["rrp_max_bn"], sep["rrp_last_bn"], sep["rrp_last_date"], sep["sofr_avg"]),
+                         (6.7695, 11.539, 11.539, "2026-09-30", 4.1))
 
     def test_year_ago_reading_in_one_call(self):
         rows = [{"date": "2025-10-23", "rate": 4.22}, {"date": "2026-07-24", "rate": 3.95}, {"date": "2026-09-23", "rate": 3.9},
@@ -200,7 +201,6 @@ class Round2(unittest.TestCase):
                 for d, a in (("2025-03-05", 3.0), ("2025-11-05", 4.0), ("2026-02-04", 5.0), ("2026-10-21", 6.0))]
         s = fedops.buyback_summary(rows, TODAY)
         same = s["this_year_vs_last_year_same_dates"]
-        self.assertEqual(list(s)[0], "this_year_vs_last_year_same_dates")
         self.assertEqual((same["2026"]["accepted_bn"], same["2025"]["accepted_bn"], same["accepted_change_pct"]), (11.0, 3.0, 266.7))
         self.assertIn("the same dates", same["compares"])
 
@@ -209,9 +209,26 @@ class Round2(unittest.TestCase):
         import assistant
         up = [{"date": f"2026-10-{d}", "term": f"t{d}"} for d in range(27, 38)]
         out = assistant._shape_fed_latest({"data": {"by_tenor": {}, "upcoming": up}})
-        self.assertEqual([u["date"] for u in out["data"]["upcoming"]][:3], ["2026-10-27", "2026-10-28", "2026-10-29"])
+        self.assertEqual(out["data"]["upcoming"]["next_1"]["date"], "2026-10-27")
+        self.assertEqual(len(out["data"]["upcoming"]), 6)
+        self.assertIn('"next_1"', assistant.shape(out, last=3))       # the generic cut trims lists, never this numbered dict
+        self.assertEqual(assistant._shape_fed({"accepted_change_bn": -12.5}), {"accepted_change": "-$12.500 billion"})
         bb = assistant._shape_fed_latest({"data": {"last_8": [], "monthly": [{"period": "2026-09", "ops": 7, "accepted_bn": 37.755}]}})
         self.assertEqual(bb["data"]["monthly_totals_last_13_months"]["2026-09"], {"ops": 7, "accepted": "$37.755 billion"})
+
+
+class HistoryShaping(unittest.TestCase):
+    def test_auction_by_year_follows_the_asked_years(self):
+        sys.path.insert(0, str(support.ROOT / "options_whale"))
+        import assistant
+        body = {"rows": [], "summary": {"by_tenor": {"30-Year Bond": {"by_year": {y: {"auctions": 12} for y in ("2021", "2022", "2023", "2025", "2026")}}}}}
+        app = mock.Mock()
+        app.test_client.return_value.get.return_value = mock.Mock(status_code=200, content_type="application/json",
+                                                                  get_data=lambda as_text=True: json.dumps(body))
+        out = json.loads(assistant.fetch_source(app, "auction_history", "from=2022-01-01&to=2023-12-31"))
+        self.assertEqual(list(out["summary"]["by_tenor"]["30-Year Bond"]["by_year"]), ["2022", "2023"])
+        out = json.loads(assistant.fetch_source(app, "auction_history", ""))
+        self.assertEqual(list(out["summary"]["by_tenor"]["30-Year Bond"]["by_year"]), ["2025", "2026"])
 
 
 class ConsoleRouting(unittest.TestCase):

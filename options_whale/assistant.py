@@ -398,7 +398,7 @@ def _shape_fed(obj, params=None, drop=FED_DROP):
         if k in drop:
             continue
         if k.endswith("_bn") and isinstance(v, (int, float)) and not isinstance(v, bool):
-            out[k[:-3]] = f"${v:,.3f} billion"
+            out[k[:-3]] = f"{'-' if v < 0 else ''}${abs(v):,.3f} billion"
         elif k.endswith("_bn") and v is None:
             out[k[:-3]] = None
         else:
@@ -414,11 +414,12 @@ def _shape_fed_latest(obj, params=None):
     src = obj.get("data") if isinstance(obj.get("data"), dict) else obj
     if "by_tenor" in src:                                # the auctions part
         drop = drop | {"t12m", "prior_t12m"}
-        # Trim here, in the right direction: the generic cut keeps the last items, and once kept the last 5 of 11 announced
-        # auctions, so "the next auction" was Oct 29 instead of Oct 27
-        for key, cut in (("upcoming", slice(None, 6)), ("recent", slice(-6, None))):     # soonest 6 / newest 6
-            if isinstance(src.get(key), list):
-                src[key] = src[key][cut]
+        # Numbered dicts, not lists: the generic cut keeps the LAST items of a list and once kept the last 5 of 11 announced
+        # auctions, so "the next auction" was Oct 29 instead of Oct 27. A dict is never cut.
+        if isinstance(src.get("upcoming"), list):
+            src["upcoming"] = {f"next_{i + 1}": u for i, u in enumerate(src["upcoming"][:6])}
+        if isinstance(src.get("recent"), list):
+            src["recent"] = {f"latest_{i + 1}": u for i, u in enumerate(reversed(src["recent"][-6:]))}
     if isinstance(src.get("monthly"), list) and "last_8" in src:      # buybacks: a month's total in one place, not summed from rows
         src["monthly_totals_last_13_months"] = {m["period"]: {k: v for k, v in m.items() if k != "period"} for m in src["monthly"][-13:]}
     out = _shape_fed(obj, params, drop)
@@ -486,21 +487,26 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
                     obj["summary"][f"{key}_note"] = (f"the latest 13 of {len(rows)} stored; the history starts {obj.get('earliest_stored')}: "
                                                      "pass from=YYYY-MM-DD for earlier months")
         if source == "auction_history" and "tenor" not in params and isinstance((obj.get("summary") or {}).get("by_tenor"), dict):
-            for v in obj["summary"]["by_tenor"].values():  # every tenor's six years overflow: this year and last fit
+            lo, hi = (params.get("from") or "0000")[:4], (params.get("to") or "9999")[:4]
+            for v in obj["summary"]["by_tenor"].values():  # every tenor's six years overflow: the asked years (or the last 2) fit
                 if isinstance(v.get("by_year"), dict):
-                    v["by_year"] = dict(list(v["by_year"].items())[-2:])
-            obj["summary"]["by_tenor_note"] = "by_year shows this year and last; pass tenor= (e.g. 30 year bond) for every year"
+                    years = [(y, s) for y, s in v["by_year"].items() if lo <= y <= hi]
+                    v["by_year"] = dict(years if "from" in params or "to" in params else years[-2:])
+            obj["summary"]["by_tenor_note"] = ("by_year covers the years of from/to (without them, this year and last); pass tenor= "
+                                               "(e.g. 30 year bond) for every year of one tenor")
         if source in FED_SOURCES and source.endswith("_history") and isinstance(obj.get("rows"), list):
-            n = len(obj["rows"])                          # too big: give up rows before summary lines, which carry the totals
-            while obj["rows"] and len(json.dumps(_shape_fed(obj), default=str)) > MAX_CHARS - 300:
+            # Too long: shorten the monthly list first (summary.yearly covers its range), then give up rows; the totals stay.
+            size = lambda: len(json.dumps(_shape_fed(obj), default=str))
+            months = (obj.get("summary") or {}).get("monthly")
+            while isinstance(months, list) and len(months) > 13 and size() > MAX_CHARS - 300:
+                months = obj["summary"]["monthly"] = months[len(months) // 3:]
+                obj["summary"]["monthly_note"] = (f"latest {len(months)} months shown; the history starts {obj.get('earliest_stored')} "
+                                                  "and summary.yearly covers the whole range")
+            n = len(obj["rows"])
+            while obj["rows"] and size() > MAX_CHARS - 300:
                 obj["rows"] = obj["rows"][len(obj["rows"]) // 2 + 1:] if len(obj["rows"]) > 2 else []
             if len(obj["rows"]) < n:
                 obj["rows_note"] = f"only the latest {len(obj['rows'])} of the {n} rows fit; use the summary for totals, or narrow from/to"
-            months = (obj.get("summary") or {}).get("monthly")
-            while isinstance(months, list) and len(months) > 6 and len(json.dumps(_shape_fed(obj), default=str)) > MAX_CHARS - 300:
-                months = obj["summary"]["monthly"] = months[len(months) // 3:]       # newest kept; the yearly lines cover the rest
-                obj["summary"]["monthly_note"] = (f"latest {len(months)} months shown; the history starts {obj.get('earliest_stored')} "
-                                                  "and summary.yearly covers the whole range")
         if source in SHAPERS and isinstance(obj, dict):
             obj = SHAPERS[source](obj, params)
             last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
@@ -710,12 +716,17 @@ def _conversation(cid):
 UNFINISHED = re.compile(r"\b(let me|i will|i'll|now i will) (now )?(provide|present|calculate|compute|answer|give|summari[sz]e|compare)", re.I)
 
 
+ANNOUNCE_LAST = re.compile(r"^(now,? )?(let me|i will|i'll) (now )?(provide|present|give|write)( you)? (the |a |my )?(clear |final |full )?"
+                           r"(answer|summary|comparison|response)\W*$", re.I)
+
+
 def unfinished(answer):
-    """A reply that only announces the answer, ends by announcing it (working notes followed by "Let me provide a clear
-    answer."), or reasons about the question instead of answering it."""
+    """A short reply that only announces the answer, working notes whose last line is a bare announcement ("Let me provide
+    a clear answer."), or reasoning about the question instead of an answer. An answer ending with an offer is not one."""
     body = SOURCES_LINE.sub("", answer).strip()
-    return (len(body) < 400 and bool(UNFINISHED.search(body)) or bool(UNFINISHED.search(body[-160:]))
-            or body.lower().startswith(("the user is asking", "now i have the data")))
+    last = body.splitlines()[-1].strip() if body else ""
+    return (len(body) < 400 and bool(UNFINISHED.search(body)) or bool(ANNOUNCE_LAST.match(last))
+            or body.lower().startswith("the user is asking"))
 
 
 UNFETCHED_CLAIM = re.compile(r"not[ _]configured|not linked|unavailable|not available|could(n't| not) (retrieve|find|access|see)|"

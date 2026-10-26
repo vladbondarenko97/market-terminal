@@ -1767,7 +1767,7 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/fed_ops" format="json" source="stored">
-      <description>Fed / Treasury operations (card 15) of the latest committed snapshot: NY Fed repo (Standing Repo Facility, term repo) and reverse repo operations with SOFR, TGCR, BGCR and EFFR; Treasury buybacks (last operations, scheduled ones, monthly, quarterly, yearly and trailing-12-month totals, by security type); Treasury auctions (recent results, upcoming auctions, per-tenor bid-to-cover now and a year earlier, monthly issuance). A part that could not be refreshed is status stale with the date of its stored data. 404 when the snapshot has no card 15 block.</description>
+      <description>Fed / Treasury operations (card 15) of the latest committed snapshot, or before the first run the same block summarised from the stored history (every part stale). repo: per market and reference rate (SOFR, TGCR, BGCR, EFFR) the latest day, the 4-week change and `ago` (the reading 1 month, 3 months and 1 year earlier); `monthly` and `yearly` levels (average, highest day, last day with its date, in USD bn; rate means). buybacks: `this_year_vs_last_year_same_dates`, the last operations, scheduled ones, the 5 largest, monthly, quarterly, yearly (with year to date and by operation type) and trailing-12-month totals, by security type. auctions: recent results, the upcoming calendar, per-tenor bid-to-cover now and a year earlier and by year, monthly issuance. A part that could not be refreshed is status stale with the date of its stored data. 404 when nothing is stored.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/fed_ops/repo" format="json" source="stored">
@@ -1783,7 +1783,7 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/fed_ops/history/repo" format="json" source="stored">
-      <description>Stored daily repo market history, one row per day: accepted USD bn for rrp, repo and repo_term, the sofr, tgcr, bgcr and effr rates and SOFR volume (from 2014; rates from 2018-04-02). Returns the newest `limit` rows in the range, oldest first, the earliest stored date and the snapshot's repo summaries (monthly averages, latest per market and rate). Same parameters for the two routes below.</description>
+      <description>Stored daily repo market history, one row per day: accepted USD bn for rrp, repo and repo_term, the sofr, tgcr, bgcr and effr rates and SOFR volume (from 2014; rates from 2018-04-02). Returns the newest `limit` rows in the range, oldest first, the earliest stored date and the repo summaries (yearly and monthly levels: average, highest day, last day with its date; rate means). The latest per market and rate is /api/fed_ops/repo. Same parameters for the two routes below.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/fed_ops/history/buybacks" format="json" source="stored">
