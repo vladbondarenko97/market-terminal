@@ -3018,8 +3018,9 @@ def api_chaos_history():
 
 
 FED_OPS_PARTS = ("repo", "buybacks", "auctions")
-FED_OPS_SUMMARY = {"repo": ("status", "as_of", "reason", "markets", "rates", "rates_status", "monthly", "units", "note"),
-                   "buybacks": ("status", "as_of", "reason", "last_8", "scheduled", "largest_5", "monthly", "quarterly", "yearly", "t12m", "prior_t12m", "t12m_by_security_type", "units"),
+# repo: the latest reading per market and rate is /api/fed_ops/repo; the history carries the period levels only
+FED_OPS_SUMMARY = {"repo": ("status", "as_of", "reason", "rates_status", "yearly", "monthly", "units", "note"),
+                   "buybacks": ("this_year_vs_last_year_same_dates", "status", "as_of", "reason", "last_8", "scheduled", "largest_5", "monthly", "quarterly", "yearly", "t12m", "prior_t12m", "t12m_by_security_type", "units"),
                    "auctions": ("status", "as_of", "reason", "upcoming", "upcoming_status", "by_tenor", "monthly", "t12m", "prior_t12m", "tail", "units")}
 
 

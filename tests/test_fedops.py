@@ -171,12 +171,47 @@ class Matching(unittest.TestCase):
         import assistant
         out = assistant._shape_fed({"max_60d": {"date": "2026-09-30", "accepted_bn": 11.539}, "rows": [{"rrp_bn": 0.2, "sofr": 3.92, "repo_bn": None}]})
         self.assertEqual(out, {"max_60d": {"date": "2026-09-30", "accepted": "$11.539 billion"}, "rows": [{"rrp": "$0.200 billion", "sofr": 3.92, "repo": None}]})
-        latest = assistant._shape_fed_latest({"data": {"yearly": [{"year": y, "accepted_bn": n} for y, n in (("2024", 1.0), ("2025", 2.0), ("2026", 3.0))]}})
+        latest = assistant._shape_fed_latest({"data": {"last_8": [], "yearly": [{"year": y, "accepted_bn": n} for y, n in (("2024", 1.0), ("2025", 2.0), ("2026", 3.0))]}})
         self.assertEqual(list(latest["data"]["yearly"]), ["2025", "2026"])
         self.assertEqual(latest["data"]["yearly"]["2025"]["whole_year"], {"accepted": "$2.000 billion"})
-        y = assistant._shape_fed_latest({"data": {"yearly": [{"year": "2025", "accepted_bn": 9.0, "ytd_to": "10-26", "ytd": {"accepted_bn": 4.0}}]}})
+        y = assistant._shape_fed_latest({"data": {"last_8": [], "yearly": [{"year": "2025", "accepted_bn": 9.0, "ytd_to": "10-26", "ytd": {"accepted_bn": 4.0}}]}})
         self.assertEqual(y["data"]["yearly"]["2025"]["jan_1_to_10-26"], {"accepted": "$4.000 billion"})
         self.assertEqual(assistant._shape_fed_latest({"data": {"by_tenor": {}, "t12m": {"auctions": 432}}}), {"data": {"by_tenor": {}}})
+
+
+class Round2(unittest.TestCase):
+    """The six answers the iMessage assistant still got wrong on 2026-10-26 after PR 27."""
+
+    def test_monthly_levels_are_averages_highs_and_month_ends(self):
+        daily = [{"date": "2026-09-29", "rrp_bn": 2.0, "sofr": 4.0}, {"date": "2026-09-30", "rrp_bn": 11.539, "sofr": 4.2},
+                 {"date": "2026-10-01", "rrp_bn": 0.5, "sofr": 3.9}]
+        sep = fedops.repo_monthly(daily)[0]
+        self.assertEqual((sep["rrp_avg_bn"], sep["rrp_max_bn"], sep["rrp_month_end_bn"], sep["sofr_avg"]), (6.7695, 11.539, 11.539, 4.1))
+
+    def test_year_ago_reading_in_one_call(self):
+        rows = [{"date": "2025-10-23", "rate": 4.22}, {"date": "2026-07-24", "rate": 3.95}, {"date": "2026-09-23", "rate": 3.9},
+                {"date": "2026-10-23", "rate": 3.92}]
+        self.assertEqual(fedops.ago(rows, "rate"), {"1m": {"date": "2026-09-23", "rate": 3.9}, "3m": {"date": "2026-07-24", "rate": 3.95},
+                                                     "1y": {"date": "2025-10-23", "rate": 4.22}})
+        self.assertEqual(fedops.ago(rows[-1:], "rate")["1y"], None)        # history too short: missing, not the latest
+
+    def test_same_date_comparison_comes_first(self):
+        rows = [dict(date=d, operation_type="Liquidity Support", security_type="Nominal Coupons", max_bn=6.0, offered_bn=9.0, accepted_bn=a)
+                for d, a in (("2025-03-05", 3.0), ("2025-11-05", 4.0), ("2026-02-04", 5.0), ("2026-10-21", 6.0))]
+        s = fedops.buyback_summary(rows, TODAY)
+        same = s["this_year_vs_last_year_same_dates"]
+        self.assertEqual(list(s)[0], "this_year_vs_last_year_same_dates")
+        self.assertEqual((same["2026"]["accepted_bn"], same["2025"]["accepted_bn"], same["accepted_change_pct"]), (11.0, 3.0, 266.7))
+        self.assertIn("the same dates", same["compares"])
+
+    def test_console_keeps_the_soonest_auctions_and_a_month_table(self):
+        sys.path.insert(0, str(support.ROOT / "options_whale"))
+        import assistant
+        up = [{"date": f"2026-10-{d}", "term": f"t{d}"} for d in range(27, 38)]
+        out = assistant._shape_fed_latest({"data": {"by_tenor": {}, "upcoming": up}})
+        self.assertEqual([u["date"] for u in out["data"]["upcoming"]][:3], ["2026-10-27", "2026-10-28", "2026-10-29"])
+        bb = assistant._shape_fed_latest({"data": {"last_8": [], "monthly": [{"period": "2026-09", "ops": 7, "accepted_bn": 37.755}]}})
+        self.assertEqual(bb["data"]["monthly_totals_last_13_months"]["2026-09"], {"ops": 7, "accepted": "$37.755 billion"})
 
 
 class ConsoleRouting(unittest.TestCase):

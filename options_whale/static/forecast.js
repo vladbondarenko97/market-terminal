@@ -1062,9 +1062,9 @@ function renderFedOps(j) {
         <div class="fc-note">${fcEsc(r.note || '')} Auction tails: ${fcEsc((a.tail || {}).reason || '')}. Sources: NY Fed Markets API, Fiscal Data (buybacks), TreasuryDirect (auctions).</div>`;
     const mo = (r.monthly || []).filter(x => x.month >= '2018-04');
     if (mo.length > 1) fcChart('fc15ChartA', { type: 'line', data: { labels: mo.map(x => x.month), datasets: [
-        { label: 'ON RRP ($B, avg)', data: mo.map(x => x.rrp_bn), borderColor: FC_COL.blue, backgroundColor: 'rgba(57,135,229,0.15)', fill: true, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y' },
-        { label: 'SOFR (%)', data: mo.map(x => x.sofr), borderColor: FC_COL.orange, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y1' },
-        { label: 'EFFR (%)', data: mo.map(x => x.effr), borderColor: FC_COL.yellow, pointRadius: 0, borderWidth: 1, borderDash: [3, 3], yAxisID: 'y1' }] },
+        { label: 'ON RRP ($B, avg)', data: mo.map(x => x.rrp_avg_bn), borderColor: FC_COL.blue, backgroundColor: 'rgba(57,135,229,0.15)', fill: true, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y' },
+        { label: 'SOFR (%)', data: mo.map(x => x.sofr_avg), borderColor: FC_COL.orange, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y1' },
+        { label: 'EFFR (%)', data: mo.map(x => x.effr_avg), borderColor: FC_COL.yellow, pointRadius: 0, borderWidth: 1, borderDash: [3, 3], yAxisID: 'y1' }] },
         options: { scales: { x: axis({ ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 8 } }), y: axis({ position: 'left', beginAtZero: true }),
                              y1: axis({ position: 'right', grid: { drawOnChartArea: false } }) } } });
     const years = [...new Set((b.monthly || []).map(x => x.period.slice(0, 4)))];

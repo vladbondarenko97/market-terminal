@@ -28,7 +28,7 @@ When you change how a stored value is computed:
 | `VERSION` (`core/forecast.py`) | `forecast_v2` | Forecast Lab cards 1–9 |
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
-| `FEDOPS_VERSION` (`core/fedops.py`) | `fed_ops_v2` | Fed / Treasury operations block and its summaries (card 15) |
+| `FEDOPS_VERSION` (`core/fedops.py`) | `fed_ops_v3` | Fed / Treasury operations block and its summaries (card 15) |
 | `SHANGHAI_VERSION` (`core/metrics.py`) | `shanghai_dated_v1` | Date-paired Shanghai silver spread (`shanghai.dated`) |
 | `EAGLE_VERSION` (`core/metrics.py`) | `eagle_premium_v1` | Silver Eagle premium statistics, units-sold flow and dealer-book summary (`ebay.premium`, `ebay.flow`, `ebay.book`) |
 | `PAPER_PHYSICAL_HISTORY_VERSION` (`core/metrics.py`) | `paper_physical_history_v1` | Paper:physical ratio history statistics (`paper_physical.history`) |
@@ -42,6 +42,10 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **Fed / Treasury operations** (`fed_ops_v3`, October 2026): `repo.monthly` keys renamed: `rrp_bn` and `repo_bn` (the
+  month's mean daily balance) are now `rrp_avg_bn` and `repo_avg_bn`, next to the new `*_max_bn` and `*_month_end_bn`; the
+  rate means are `sofr_avg`, `tgcr_avg`, `bgcr_avg`, `effr_avg` and SOFR volume is `sofr_volume_avg_bn`. New: `repo.yearly`
+  (same fields per year, `*_year_end_bn`), `ago` on each market and rate, `buybacks.this_year_vs_last_year_same_dates`.
 - **Fed / Treasury operations** (`fed_ops_v2`, October 2026): `auctions.upcoming` now comes from the newest captured
   auction calendar, without auctions that already have a stored result, and `auctions.upcoming_status` is `fresh`, `stale`
   (that run's fetch failed: the earlier calendar is shown, with `as_of`) or `missing` (no calendar captured). In `fed_ops_v1`

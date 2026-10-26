@@ -107,8 +107,9 @@ SOURCES = OrderedDict([
         "Unusual options activity for a ticker: contracts whose volume exceeds min_vol_oi x open interest, up to max_dte days out. Slow.")),
     ("repo_ops", ("/api/fed_ops/repo", (), "The NY Fed's repo and reverse repo operations (what people call repo auctions or repo ops), latest readings: overnight reverse repo (ON RRP) and repo (Standing Repo "
         "Facility) and term repo take-up per day (USD bn, rate, counterparties), the reference rates SOFR, TGCR, BGCR, EFFR with their "
-        "4-week change, the 60-day high. Monthly averages and any date range: repo_history. Status stale means it could not be refreshed: say the date it is as of.")),
-    ("treasury_buybacks", ("/api/fed_ops/buybacks", (), "US Treasury buyback operations: the last 8 held (date, security type, maturity "
+        "4-week change, the 60-day high, and the readings 1 month, 3 months and 1 year earlier (ago.1m / 3m / 1y). Monthly "
+        "average, highest day and month-end levels and any date range: repo_history. Status stale means it could not be refreshed: say the date it is as of.")),
+    ("treasury_buybacks", ("/api/fed_ops/buybacks", (), "US Treasury buyback operations: this year vs last year over the same dates (first), month-by-month totals for the last 13 months, the last 8 held (date, security type, maturity "
         "bucket, the most Treasury would buy vs what dealers offered vs what was accepted), scheduled ones, the 5 largest since 2024, totals "
         "by month, quarter, year (with year-to-date against a year earlier and by operation type: liquidity support vs cash management), "
         "trailing 12 months vs the 12 before, by security type.")),
@@ -118,7 +119,9 @@ SOURCES = OrderedDict([
         "bid-to-cover against the 12 before. For one tenor this year vs last year, or any period, call auction_history with tenor "
         "and from: its summary has a by_year table per tenor. Tails are not available.")),
     ("repo_history", ("/api/fed_ops/history/repo", ("from", "to", "limit"), "Daily repo market history: accepted USD bn for rrp, repo, "
-        "repo_term and the sofr, tgcr, bgcr, effr rates, from 2014 (rates from 2018-04-02), with monthly averages. from/to=YYYY-MM-DD, limit=N newest rows.")),
+        "repo_term and the sofr, tgcr, bgcr, effr rates, from 2014 (rates from 2018-04-02). Its summary.monthly has, per month, the ON RRP "
+        "balance as a daily average, highest day and month-end (USD billions, never a sum) and the mean rates. For a change over a "
+        "period compare those monthly levels. from/to=YYYY-MM-DD, limit=N newest rows.")),
     ("buyback_history", ("/api/fed_ops/history/buybacks", ("from", "to", "limit", "security_type"), "Every Treasury buyback operation "
         "since 2024 with the monthly, quarterly, yearly (year-over-year) and trailing-12-month totals. security_type=TIPS narrows it.")),
     ("auction_history", ("/api/fed_ops/history/auctions", ("from", "to", "limit", "tenor"), "Every Treasury auction result since 2021, "
@@ -379,7 +382,7 @@ FED_SOURCES = ("repo_ops", "treasury_buybacks", "treasury_auctions", "repo_histo
 
 # Columns a question never needs; dropping them keeps a source under MAX_CHARS instead of an outline the model must dig through
 FED_DROP = {"issues_accepted", "issues_eligible", "settlement_date", "low_yield", "median_yield", "investment_rate", "cusip", "entity",
-            "issue_date", "direct_pct", "p1", "p99", "units", "note"}
+            "issue_date", "direct_pct", "p1", "p99", "units", "note", "last_10", "last_60d"}     # the daily lists repeat the rows
 # The latest-reading sources leave the period tables to the *_history sources
 FED_LATEST_DROP = {"monthly", "quarterly", "by_year", "last_60d", "last_10", "dealer_pct_12m", "last_dealer_pct"}
 
@@ -408,10 +411,24 @@ def _shape_fed_latest(obj, params=None):
     took one year's breakdown from the next item of a 3-year list). The market-wide issuance totals of the auction block are
     left out too: a 9B reported their auction count as the 30-year's."""
     drop = FED_DROP | FED_LATEST_DROP
-    if "by_tenor" in (obj.get("data") or {}):           # the auctions part
+    src = obj.get("data") if isinstance(obj.get("data"), dict) else obj
+    if "by_tenor" in src:                                # the auctions part
         drop = drop | {"t12m", "prior_t12m"}
+        # Trim here, in the right direction: the generic cut keeps the last items, and once kept the last 5 of 11 announced
+        # auctions, so "the next auction" was Oct 29 instead of Oct 27
+        for key, cut in (("upcoming", slice(None, 6)), ("recent", slice(-6, None))):     # soonest 6 / newest 6
+            if isinstance(src.get(key), list):
+                src[key] = src[key][cut]
+    if isinstance(src.get("monthly"), list) and "last_8" in src:      # buybacks: a month's total in one place, not summed from rows
+        src["monthly_totals_last_13_months"] = {m["period"]: {k: v for k, v in m.items() if k != "period"} for m in src["monthly"][-13:]}
     out = _shape_fed(obj, params, drop)
     data = out.get("data") if isinstance(out.get("data"), dict) else out
+    if "this_year_vs_last_year_same_dates" in data:      # first in what the model reads (the route's JSON sorts keys)
+        first = data.pop("this_year_vs_last_year_same_dates")
+        data = {"this_year_vs_last_year_same_dates": first, **data}
+        out = {**out, "data": data} if isinstance(out.get("data"), dict) else data
+    if isinstance(data.get("yearly"), list) and "last_8" not in data:       # repo: the yearly levels are repo_history's
+        data.pop("yearly")
     if isinstance(data.get("yearly"), list):
         named = lambda y: {"whole_year": {k: y[k] for k in ("ops", "max", "offered", "accepted") if k in y},
                            f"jan_1_to_{y.get('ytd_to')}": y.get("ytd"), "by_operation_type": y.get("by_operation_type")}
@@ -449,7 +466,7 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
                         f"one tenor call {HISTORY_OF[source]} with query=\"{query}\"; its summary has the monthly and yearly totals.")
     try:
         if source in FED_SOURCES and source.endswith("_history") and "limit" not in params:
-            params["limit"] = "24"           # what fits the model's window; rows_in_range says how many there are in all
+            params["limit"] = "12"           # fits the model's window with the summary; rows_in_range says how many there are in all
         resp = app.test_client().get(route, query_string=params)
         body = resp.get_data(as_text=True)
         if "json" in (resp.content_type or ""):
@@ -461,6 +478,29 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
             obj = body
         if resp.status_code >= 400:
             return f"error: {source} returned HTTP {resp.status_code}: {str(obj)[:300]}"
+        if source in FED_SOURCES and source.endswith("_history") and "from" not in params and isinstance(obj.get("summary"), dict):
+            for key in ("monthly", "quarterly"):          # all 154 months of repo history overflow and get cut to the last 5
+                rows = obj["summary"].get(key)
+                if isinstance(rows, list) and len(rows) > 13:
+                    obj["summary"][key] = rows[-13:]
+                    obj["summary"][f"{key}_note"] = (f"the latest 13 of {len(rows)} stored; the history starts {obj.get('earliest_stored')}: "
+                                                     "pass from=YYYY-MM-DD for earlier months")
+        if source == "auction_history" and "tenor" not in params and isinstance((obj.get("summary") or {}).get("by_tenor"), dict):
+            for v in obj["summary"]["by_tenor"].values():  # every tenor's six years overflow: this year and last fit
+                if isinstance(v.get("by_year"), dict):
+                    v["by_year"] = dict(list(v["by_year"].items())[-2:])
+            obj["summary"]["by_tenor_note"] = "by_year shows this year and last; pass tenor= (e.g. 30 year bond) for every year"
+        if source in FED_SOURCES and source.endswith("_history") and isinstance(obj.get("rows"), list):
+            n = len(obj["rows"])                          # too big: give up rows before summary lines, which carry the totals
+            while obj["rows"] and len(json.dumps(_shape_fed(obj), default=str)) > MAX_CHARS - 300:
+                obj["rows"] = obj["rows"][len(obj["rows"]) // 2 + 1:] if len(obj["rows"]) > 2 else []
+            if len(obj["rows"]) < n:
+                obj["rows_note"] = f"only the latest {len(obj['rows'])} of the {n} rows fit; use the summary for totals, or narrow from/to"
+            months = (obj.get("summary") or {}).get("monthly")
+            while isinstance(months, list) and len(months) > 6 and len(json.dumps(_shape_fed(obj), default=str)) > MAX_CHARS - 300:
+                months = obj["summary"]["monthly"] = months[len(months) // 3:]       # newest kept; the yearly lines cover the rest
+                obj["summary"]["monthly_note"] = (f"latest {len(months)} months shown; the history starts {obj.get('earliest_stored')} "
+                                                  "and summary.yearly covers the whole range")
         if source in SHAPERS and isinstance(obj, dict):
             obj = SHAPERS[source](obj, params)
             last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
@@ -602,7 +642,7 @@ Never recompute a source's formula yourself.
 comparison (a month, this year vs last year, the last 12 months, since 2024, the largest, one tenor such as the 30-year or the \
 10-year) call buyback_history, auction_history or repo_history with from/to and tenor: they hold every stored row and a summary. \
 Amounts there are written out with their unit ("$11.539 billion"); keep the unit exactly, never turn billions into trillions. \
-A history result shows at most 24 rows; when rows_in_range is larger, take totals from its summary, never from adding up rows.
+A history result shows at most 12 rows; when rows_in_range is larger, take totals from its summary, never from adding up rows.
 - Copy contract symbols, tickers and numbers exactly as the data gives them.
 - Every number you state must come from the BRIEF or from a result you fetched in this conversation. Never use a \
 number from memory and never invent one. If the data does not contain what is needed, say so plainly.
@@ -671,8 +711,11 @@ UNFINISHED = re.compile(r"\b(let me|i will|i'll|now i will) (now )?(provide|pres
 
 
 def unfinished(answer):
-    """A short reply that only announces the answer, or reasons about the question instead of answering it."""
-    return len(answer) < 400 and bool(UNFINISHED.search(answer)) or answer.lstrip().lower().startswith("the user is asking")
+    """A reply that only announces the answer, ends by announcing it (working notes followed by "Let me provide a clear
+    answer."), or reasons about the question instead of answering it."""
+    body = SOURCES_LINE.sub("", answer).strip()
+    return (len(body) < 400 and bool(UNFINISHED.search(body)) or bool(UNFINISHED.search(body[-160:]))
+            or body.lower().startswith(("the user is asking", "now i have the data")))
 
 
 UNFETCHED_CLAIM = re.compile(r"not[ _]configured|not linked|unavailable|not available|could(n't| not) (retrieve|find|access|see)|"
