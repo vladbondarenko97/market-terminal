@@ -107,7 +107,7 @@ SOURCES = OrderedDict([
         "Unusual options activity for a ticker: contracts whose volume exceeds min_vol_oi x open interest, up to max_dte days out. Slow.")),
     ("repo_ops", ("/api/fed_ops/repo", (), "The NY Fed's repo and reverse repo operations (what people call repo auctions or repo ops), latest readings: overnight reverse repo (ON RRP) and repo (Standing Repo "
         "Facility) and term repo take-up per day (USD bn, rate, counterparties), the reference rates SOFR, TGCR, BGCR, EFFR with their "
-        "4-week change, monthly averages since 2014. Status stale means it could not be refreshed: say the date it is as of.")),
+        "4-week change, the 60-day high. Monthly averages and any date range: repo_history. Status stale means it could not be refreshed: say the date it is as of.")),
     ("treasury_buybacks", ("/api/fed_ops/buybacks", (), "US Treasury buyback operations: the last 8 held (date, security type, maturity "
         "bucket, the most Treasury would buy vs what dealers offered vs what was accepted), scheduled ones, the 5 largest since 2024, totals "
         "by month, quarter, year (with year-to-date against a year earlier and by operation type: liquidity support vs cash management), "
@@ -448,6 +448,8 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
                 return (f"error: {source} holds only the latest readings and takes no {k.strip()}. For a date range, a month, a year or "
                         f"one tenor call {HISTORY_OF[source]} with query=\"{query}\"; its summary has the monthly and yearly totals.")
     try:
+        if source in FED_SOURCES and source.endswith("_history") and "limit" not in params:
+            params["limit"] = "24"           # what fits the model's window; rows_in_range says how many there are in all
         resp = app.test_client().get(route, query_string=params)
         body = resp.get_data(as_text=True)
         if "json" in (resp.content_type or ""):
@@ -463,7 +465,7 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
             obj = SHAPERS[source](obj, params)
             last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
             if source in FED_SOURCES and source.endswith("_history") and str(last) in ("10", "40"):
-                last = params.get("limit") or 24             # the route's limit already chose the rows; 24 fit the model's window
+                last = 60                                    # the route's limit chose the rows; keep every summary row too
         return shape(obj, path, last, keep=KEEP.get(source, "last"))
     except KeyError as e:
         return f"error: {e.args[0]}"
@@ -599,7 +601,8 @@ Never recompute a source's formula yourself.
 - Fed and Treasury operations: the latest readings are in repo_ops, treasury_buybacks and treasury_auctions. For a period or a \
 comparison (a month, this year vs last year, the last 12 months, since 2024, the largest, one tenor such as the 30-year or the \
 10-year) call buyback_history, auction_history or repo_history with from/to and tenor: they hold every stored row and a summary. \
-Amounts there are written out with their unit ("$11.539 billion"); keep the unit exactly, never turn billions into trillions.
+Amounts there are written out with their unit ("$11.539 billion"); keep the unit exactly, never turn billions into trillions. \
+A history result shows at most 24 rows; when rows_in_range is larger, take totals from its summary, never from adding up rows.
 - Copy contract symbols, tickers and numbers exactly as the data gives them.
 - Every number you state must come from the BRIEF or from a result you fetched in this conversation. Never use a \
 number from memory and never invent one. If the data does not contain what is needed, say so plainly.
@@ -663,6 +666,15 @@ def _conversation(cid):
     return conv
 
 
+# "Now I have the comparison. Let me provide the answer." (Qwen3.5-9B, 2026-10-26): working notes instead of the answer
+UNFINISHED = re.compile(r"\b(let me|i will|i'll|now i will) (now )?(provide|present|calculate|compute|answer|give|summari[sz]e|compare)", re.I)
+
+
+def unfinished(answer):
+    """A short reply that only announces the answer, or reasons about the question instead of answering it."""
+    return len(answer) < 400 and bool(UNFINISHED.search(answer)) or answer.lstrip().lower().startswith("the user is asking")
+
+
 UNFETCHED_CLAIM = re.compile(r"not[ _]configured|not linked|unavailable|not available|could(n't| not) (retrieve|find|access|see)|"
                              r"no (data|access|broker)|don't have (access|data)|can(no|')t see", re.I)
 
@@ -703,7 +715,7 @@ def run_local(app, conv, question, model, reasoning=None):
         messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
     messages.append({"role": "user", "content": f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"})
     started, lookups, tokens = time.monotonic(), 0, 0
-    answer, seen, retried, pushed_back = "", set(), False, False
+    answer, seen, retried, pushed_back, nudged = "", set(), False, False, False
     _round = 0
     while _round <= MAX_ROUNDS:
         body = {"model": model, "messages": messages, "stream": True, "temperature": 0, "max_tokens": MAX_TOKENS,
@@ -785,6 +797,12 @@ def run_local(app, conv, question, model, reasoning=None):
                 messages += [{"role": "assistant", "content": content},
                              {"role": "user", "content": "You haven't fetched any source yet. Call fetch_source for the source that holds "
                                                          "this, then answer from the result."}]
+                continue
+            if not nudged and _round < MAX_ROUNDS and unfinished(answer):
+                nudged = True
+                yield {"type": "replace", "text": ""}
+                messages += [{"role": "assistant", "content": content},
+                             {"role": "user", "content": "Write the final answer now, with the numbers, for the user. No working notes."}]
                 continue
             if answer != content:
                 yield {"type": "replace", "text": answer}

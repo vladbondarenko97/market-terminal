@@ -81,12 +81,11 @@ def work_for(day):
             print(f"{fedops.BUYBACK}: {e}")
         counts["requests"] += 1
         try:
-            rows, pid = src.treasury_upcoming(session)
-            counts["stored"] += lake.record_observations(conn, fedops.upcoming_records(rows, pid), run_id=run_id)
-            print(f"{fedops.UPCOMING}: {len(rows)} announced auctions")
+            rows, _ = src.treasury_upcoming(session)          # captured in v2_payloads: the calendar card 15 reads
+            print(f"auction calendar: {len(rows)} announced auctions")
         except src.SourceUnavailable as e:
             counts["failed"] += 1
-            print(f"{fedops.UPCOMING}: {e}")
+            print(f"auction calendar: {e}")
         for metric in (fedops.REPO, fedops.RATE, fedops.BUYBACK, fedops.AUCTION):
             print(f"{metric}: earliest stored {fedops.earliest(conn, metric)}")
         return counts

@@ -37,6 +37,11 @@ class ConsoleGuards(unittest.TestCase):
         self.assertFalse(assistant.claims_unfetched_source("The latest VMRI score is 255.72.\n\nSources: war_room", 1))
         self.assertFalse(assistant.claims_unfetched_source("Nothing fired today.\n\n**Sources:** brief", 0))
 
+    def test_an_announced_answer_is_not_an_answer(self):
+        self.assertTrue(assistant.unfinished("Now I have the comparison. Let me provide the answer.\n\nSources: treasury_buybacks"))
+        self.assertTrue(assistant.unfinished("The user is asking for a comparison of buybacks. From the data I fetched: ..."))
+        self.assertFalse(assistant.unfinished("2026 so far: **$230.235 billion**; 2025: **$195.782 billion**.\n\nSources: treasury_buybacks"))
+
     def test_war_room_hides_the_chart_histogram(self):
         live = {"current": {"vmri": 255.72, "tier": "ELEVATED RISK"}, "hypothetical": {"vmri": 255.72}, "impact": {"vmri_delta": 0},
                 "history": {"counts": [0, 11, 19], "lo": 130, "hi": 360, "min": 138.3, "max": 345.7, "pct_below_current": 83.7,

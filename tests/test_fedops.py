@@ -132,14 +132,19 @@ class History(unittest.TestCase):
         self.assertEqual((empty["repo"]["status"], empty["buybacks"]["status"]), ("missing", "missing"))
         lake.record_observations(conn, fedops.repo_records(load("rp.json")))
         lake.record_observations(conn, fedops.auction_records([src.auction_row(x) for x in load("td.json")]))
-        lake.record_observations(conn, fedops.upcoming_records([src.auction_row(x) for x in load("upcoming.json")]))
+        self.assertEqual(fedops.build(conn, TODAY)["auctions"]["upcoming_status"]["status"], "missing")       # no calendar captured
+        lake.store_payload(conn, source="treasury", kind="treasury_upcoming", content=(FIX / "upcoming.json").read_bytes(), fmt="json",
+                           fetched_at="2026-10-25T12:00:00+00:00")
         sec = fedops.build(conn, TODAY, {"nyfed:rp": "nyfed: http_500 rp", "treasury:upcoming": "treasury: http_500 upcoming"})
         self.assertEqual((sec["repo"]["status"], sec["repo"]["as_of"]), ("stale", "2026-10-23"))
         self.assertIn("as of 2026-10-23", sec["repo"]["reason"])
         self.assertEqual(sec["repo"]["markets"]["rrp"]["latest"]["accepted_bn"], 0.2)
         self.assertEqual(sec["auctions"]["status"], "fresh")
         self.assertEqual([u["date"] for u in sec["auctions"]["upcoming"]], ["2026-10-26", "2026-10-27"])     # stored: there even when today's fetch failed
-        self.assertEqual(sec["auctions"]["upcoming_status"]["status"], "stale")
+        self.assertEqual((sec["auctions"]["upcoming_status"]["status"], sec["auctions"]["upcoming_status"]["as_of"]), ("stale", "2026-10-25"))
+        lake.store_payload(conn, source="treasury", kind="treasury_upcoming", content=json.dumps(load("upcoming.json")[1:]).encode(), fmt="json",
+                           fetched_at="2026-10-26T12:00:00+00:00")
+        self.assertEqual([u["term"] for u in fedops.build(conn, TODAY)["auctions"]["upcoming"]], ["52-Week"])   # dropped from the newest calendar: gone
         self.assertEqual(fedops.build(conn, date(2026, 10, 27))["auctions"]["upcoming"][0]["term"], "52-Week")
         self.assertEqual(sec["auctions"]["by_tenor"]["20-Year Bond"]["by_year"]["2026"]["bid_to_cover_avg"], 2.73)
         self.assertEqual(sec["auctions"]["tail"]["status"], "missing")
@@ -149,13 +154,16 @@ class History(unittest.TestCase):
 
 class Matching(unittest.TestCase):
     def test_question_wording_matches_tenors(self):
-        names = ("30-Year Bond", "30-Year TIPS", "10-Year Note", "13-Week Bill", "20-Year Bond", "2-Year Note")
+        names = ("30-Year Bond", "30-Year TIPS", "10-Year Note", "13-Week Bill", "20-Year Bond", "2-Year Note", "6-Week Bill", "26-Week Bill", "52-Week Bill")
         pick = lambda q: [n for n in names if fedops.tenor_matches(q, n)]
         self.assertEqual(pick("30 year bond"), ["30-Year Bond"])
         self.assertEqual(pick("30yr"), ["30-Year Bond", "30-Year TIPS"])
-        self.assertEqual(pick("bond"), ["30-Year Bond", "20-Year Bond"])
+        self.assertEqual(pick("30 years treasury auctions"), ["30-Year Bond", "30-Year TIPS"])
+        self.assertEqual(pick("bonds"), ["30-Year Bond", "20-Year Bond"])
         self.assertEqual(pick("10 year"), ["10-Year Note"])
-        self.assertEqual(pick("13wk"), ["13-Week Bill"])
+        self.assertEqual(pick("13 weeks"), ["13-Week Bill"])
+        self.assertEqual(pick("6 week"), ["6-Week Bill"])               # not the 26-week
+        self.assertEqual(pick("2 week"), [])                            # not the 52-week
         self.assertEqual(pick(""), list(names))
 
     def test_console_sees_amounts_with_their_unit(self):
@@ -231,17 +239,23 @@ class Routes(ApiCase):
         lake.migrate(conn)
         lake.record_observations(conn, fedops.auction_records([src.auction_row(x) for x in load("td.json")]))
         lake.record_observations(conn, fedops.buyback_records(json.loads((FIX / "bb.json").read_text())["data"]))
+        lake.record_observations(conn, fedops.buyback_records([buyback("2026-02-10", 1.0), buyback("2026-09-10", 2.0)]))
         lake.create_run(conn, "r1", mode="live", trigger="manual", run_folder="Oct-26-26", code_version="t")
         lake.commit_snapshot(conn, "r1", {"run": {"run_id": "r1"}})                  # a snapshot from before card 15
         lake.update_run(conn, "r1", status="completed")
         conn.close()
         j = self.get_json("/api/fed_ops/buybacks")
-        self.assertEqual(j["status"], "success")
+        self.assertEqual((j["status"], j["data"]["status"]), ("success", "stale"))     # nothing was fetched: never "fresh"
+        self.assertIn("no pipeline run has refreshed it yet", j["data"]["reason"])
         self.assertTrue(j["data"]["last_8"])
+        q = self.get_json("/api/fed_ops/history/buybacks?from=2026-09-01&to=2026-09-30")["summary"]
+        self.assertEqual([r["period"] for r in q["quarterly"]], ["2026-Q3"])           # not every quarter of 2026
+        self.assertEqual([r["period"] for r in q["monthly"]], ["2026-09"])
         self.assertIn("stored history", self.get_json("/api/fed_ops")["data"]["source"])
         h = self.get_json("/api/fed_ops/history/auctions?tenor=20 year")
         self.assertEqual([r["tenor"] for r in h["rows"]], ["20-Year Bond"])
         self.assertIn("20-Year Bond", h["summary"]["by_tenor"])
+        self.assertNotIn("t12m", h["summary"])                                          # market-wide totals are not the tenor's
 
 
 if __name__ == "__main__":
