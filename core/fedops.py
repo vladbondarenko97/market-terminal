@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from core import lake
 from core import sources as src
 
-FEDOPS_VERSION = "fed_ops_v3"        # v3: repo.monthly avg/max/month-end keys, "ago" readings, same-date buyback comparison
+FEDOPS_VERSION = "fed_ops_v4"        # v4: peak_12m / peak_all_time, rrp_trend, last bidder shares per tenor
 REPO, RATE, BUYBACK, AUCTION = "fedops.repo_day", "fedops.ref_rate", "fedops.buyback", "fedops.auction"
 MARKETS = {"rrp": "Overnight reverse repo (ON RRP)", "repo": "Overnight repo (Standing Repo Facility since July 2021)",
            "repo_term": "Term repo", "rrp_term": "Term reverse repo"}
@@ -26,6 +26,25 @@ TOPUP_DAYS = 21           # each pipeline run refetches this many days of repo o
 TAIL_REASON = ("an auction tail is the high yield minus the when-issued yield at the bid deadline; no free official source "
                "publishes the when-issued yield, so tails are not computed")
 BILLS = ("Bill", "CMB")
+
+
+def money(bn):
+    """USD billions as words a reader cannot misscale: "$0.563 billion", "$37.755 billion", "$105.993 billion",
+    "$2,553.7 billion ($2.55 trillion)"."""
+    if bn is None:
+        return None
+    sign, a = ("-" if bn < 0 else ""), abs(bn)
+    if a >= 1000:
+        return f"{sign}${a:,.1f} billion ({sign}${a / 1000:.2f} trillion)"
+    return f"{sign}${a:,.3f} billion"
+
+
+def day(d):
+    """'2026-10-27' -> '2026-10-27 (Tuesday)'."""
+    try:
+        return f"{d} ({date.fromisoformat(str(d)[:10]).strftime('%A')})"
+    except (TypeError, ValueError):
+        return d
 
 
 def _bn(v):
@@ -221,6 +240,32 @@ def repo_yearly(daily):
     return [{"year": r.pop("period"), **r} for r in repo_periods(daily, lambda d: d[:4])]
 
 
+def _peak(rows, since=""):
+    """The highest accepted day on or after `since`: {"date", "accepted_bn"}, or None."""
+    return max(({"date": r["date"], "accepted_bn": r["accepted_bn"]} for r in rows if r["date"] >= since and r.get("accepted_bn") is not None),
+               key=lambda x: x["accepted_bn"], default=None)
+
+
+def rrp_trend(markets, monthly, today):
+    """One sentence on ON RRP written by code, so a model can quote it instead of rescaling numbers."""
+    m = markets.get("rrp")
+    if not m or not monthly:
+        return None
+    now = next((r for r in reversed(monthly) if r.get("rrp_avg_bn") is not None), None)
+    if now is None:
+        return None
+    year_ago = f"{int(now['month'][:4]) - 1}{now['month'][4:]}"          # the same month a year before the latest one
+    then = next((r for r in monthly if r["month"] == year_ago), None)
+    parts = [f"ON RRP averaged {money(now['rrp_avg_bn'])} a day in {now['month']}"]
+    if then and then.get("rrp_avg_bn") is not None:
+        parts.append(f"against {money(then['rrp_avg_bn'])} a day in {then['month']}")
+    s = " ".join(parts) + f"; the latest day was {money(m['latest']['accepted_bn'])} on {day(m['latest']['date'])}."
+    for label, p in (("the last 12 months", m.get("peak_12m")), (f"all stored history (since {m['earliest']})", m.get("peak_all_time"))):
+        if p:
+            s += f" The highest day in {label} was {money(p['accepted_bn'])} on {day(p['date'])}."
+    return s
+
+
 AGO = {"1m": 30, "3m": 91, "1y": 365}
 
 
@@ -301,6 +346,7 @@ def auction_summary(rows, today):
         recent, prior = [r for r in rs if r["date"] > y1], [r for r in rs if y2 < r["date"] <= y1]
         tenors[k] = {"last_date": last["date"], "last_high": last.get("high_yield") if last.get("high_yield") is not None else last.get("high_rate"),
                      "last_bid_to_cover": last.get("bid_to_cover"), "last_size_bn": last.get("size_bn"), "last_dealer_pct": last.get("dealer_pct"),
+                     "last_direct_pct": last.get("direct_pct"), "last_indirect_pct": last.get("indirect_pct"),
                      "n_12m": len(recent), "bid_to_cover_12m": _mean(r["bid_to_cover"] for r in recent),
                      "bid_to_cover_prior_12m": _mean(r["bid_to_cover"] for r in prior), "dealer_pct_12m": _mean(r.get("dealer_pct") for r in recent),
                      "by_year": {y: {"auctions": len(ys), "size_bn": _sum(r.get("size_bn") for r in ys),
@@ -340,8 +386,7 @@ def build(conn, today, errors=None):
         acc = [r["accepted_bn"] for r in rs]
         markets[m] = {"label": label, "earliest": rs[0]["date"], "latest": rs[-1], "ago": ago(rs, "accepted_bn"), "last_10": rs[-10:],
                       "avg_5_bn": _mean(acc[-5:]), "avg_prev_5_bn": _mean(acc[-10:-5]),
-                      "max_60d": max(({"date": r["date"], "accepted_bn": r["accepted_bn"]} for r in rs if r["date"] >= since),
-                                     key=lambda x: x["accepted_bn"], default=None)}
+                      "max_60d": _peak(rs, since), "peak_12m": _peak(rs, (today - timedelta(days=365)).isoformat()), "peak_all_time": _peak(rs)}
     rates = {}
     for name in RATES:
         rs = [r for r in rate_rows if r["entity"] == name]
@@ -350,6 +395,7 @@ def build(conn, today, errors=None):
             rates[name] = {"earliest": rs[0]["date"], "latest": rs[-1], "ago": ago(rs, "rate"),
                            "change_4w_pp": round(rs[-1]["rate"] - prior[-1]["rate"], 4) if prior else None}
     daily = daily_rows(repo_rows, rate_rows)
+    months = repo_monthly(daily)
     buys = [dict(r, weekday=date.fromisoformat(r["date"]).strftime("%A")) for r in read(conn, BUYBACK)]
     held = [r for r in buys if r.get("accepted_bn") is not None]
     auctions = read(conn, AUCTION)
@@ -357,8 +403,9 @@ def build(conn, today, errors=None):
     return {
         "version": FEDOPS_VERSION, "as_of": t,
         "repo": {**_part(repo_rows, errors, ("nyfed:rp",)), "markets": markets, "rates": rates,
+                 "rrp_trend": rrp_trend(markets, months, today),
                  "rates_status": _part(rate_rows, errors, ("nyfed:rates",)),
-                 "monthly": repo_monthly(daily), "yearly": repo_yearly(daily), "last_60d": [r for r in daily if r["date"] >= since],
+                 "monthly": months, "yearly": repo_yearly(daily), "last_60d": [r for r in daily if r["date"] >= since],
                  "units": "accepted and submitted in USD bn, rates in percent",
                  "note": "Repo rate: the minimum bid rate of the full-allotment overnight repo (the Standing Repo Facility rate) or the "
                          "weighted average of a competitive term operation. Reverse repo rate: the award rate. Days with no operation of a "

@@ -71,7 +71,7 @@ It is `missing` with a reason when the list is unavailable.
   - Delivered runs send one push (ntfy) for each newly seen MAJOR outage (`_refinery_alerts()` in `main_pipeline.py`).
   - EIA files are reused until the next weekly release (Wednesday 10:30 ET): `_cached_eia()` and `last_eia_release()` in
     `core/sources.py`.
-- **Card 15.** `core/fedops.py`, version `fed_ops_v3`, built by `_guarded_fed_ops()` in `core/collect.py` after card 14 (the
+- **Card 15.** `core/fedops.py`, version `fed_ops_v4`, built by `_guarded_fed_ops()` in `core/collect.py` after card 14 (the
   Treasury requests are shared). Each run refetches the last 21 days of NY Fed operations and rates, buybacks since 56 days ago
   and auctions of the last 60 days into the `fedops.*` observations, then builds the block from everything stored
   (`scripts/backfill_fed_ops.py` loads the years before). Nothing is modelled: daily take-up is the sum of the day's
