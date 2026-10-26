@@ -7,13 +7,14 @@ the last weeks on every run; scripts/backfill_fed_ops.py loads the years before.
 snapshot's fed_ops section: the latest readings plus precomputed monthly, quarterly, yearly and trailing-12-month summaries.
 """
 import json
+import re
 from collections import defaultdict
 from datetime import date, timedelta
 
 from core import lake
 from core import sources as src
 
-FEDOPS_VERSION = "fed_ops_v1"
+FEDOPS_VERSION = "fed_ops_v2"        # v2: auctions.upcoming from the newest captured calendar; upcoming_status fresh/stale/missing with as_of
 REPO, RATE, BUYBACK, AUCTION = "fedops.repo_day", "fedops.ref_rate", "fedops.buyback", "fedops.auction"
 MARKETS = {"rrp": "Overnight reverse repo (ON RRP)", "repo": "Overnight repo (Standing Repo Facility since July 2021)",
            "repo_term": "Term repo", "rrp_term": "Term reverse repo"}
@@ -103,6 +104,43 @@ def auction_records(rows, payload_id=None):
             for r in rows if r.get("date") and r.get("cusip") and r.get("bid_to_cover") is not None]
 
 
+def stored_upcoming(conn, today, auctions=()):
+    """(announced auctions on or after today without a stored result, soonest first; when the calendar was fetched) from the
+    newest captured TreasuryDirect calendar. Only the newest capture counts, so a postponed or cancelled auction drops out."""
+    with lake._WRITE_LOCK:
+        row = conn.execute("SELECT payload_id, fetched_at FROM v2_payloads WHERE kind = 'treasury_upcoming' "
+                           "ORDER BY fetched_at DESC LIMIT 1").fetchone()
+        content = lake.load_payload(conn, row["payload_id"])[1] if row else None
+    if not content:
+        return [], None
+    held = {(r["entity"], r["date"]) for r in auctions}
+    rows = [src.auction_row(x) for x in json.loads(content)]
+    keep = ("date", "term", "type", "size_bn", "reopening", "issue_date", "cusip")
+    return (sorted(({k: r.get(k) for k in keep} for r in rows if r.get("date") and r["date"] >= today.isoformat()
+                    and (r.get("cusip"), r["date"]) not in held), key=lambda r: r["date"]), row["fetched_at"][:10])
+
+
+_UNITS = {"y": "year", "yr": "year", "yrs": "year", "year": "year", "years": "year", "w": "week", "wk": "week", "wks": "week",
+          "week": "week", "weeks": "week", "m": "month", "mo": "month", "month": "month", "months": "month", "d": "day", "day": "day", "days": "day"}
+_KINDS = {"bill": "Bill", "bills": "Bill", "note": "Note", "notes": "Note", "bond": "Bond", "bonds": "Bond", "tips": "TIPS",
+          "frn": "FRN", "frns": "FRN", "cmb": "CMB", "cmbs": "CMB"}
+
+
+def _tenor_parts(text):
+    """'30 years', '30-Year Bond', '13wk bills' -> ((30, 'year') or None, {'Bond'})."""
+    s = str(text or "").lower()
+    m = re.search(r"(\d+)\s*-?\s*(years?|yrs?|y|weeks?|wks?|w|months?|mo|m|days?|d)\b", s)
+    return ((int(m.group(1)), _UNITS[m.group(2)]) if m else None), {_KINDS[w] for w in re.findall(r"[a-z]+", s) if w in _KINDS}
+
+
+def tenor_matches(query, tenor_name):
+    """Whether a question's tenor ('30 year', '30yrs bond', '6 week', 'bills') names this tenor ('30-Year Bond'). The number
+    must match whole ('6 week' is not the 26-week); other words ('treasury', 'auctions') are ignored."""
+    q_len, q_kinds = _tenor_parts(query)
+    t_len, t_kinds = _tenor_parts(tenor_name)
+    return (q_len is None or q_len == t_len) and (not q_kinds or bool(q_kinds & t_kinds))
+
+
 # ---------------------------------------------------------------- reading the stored history
 def read(conn, metric, start=None, end=None, entity=None):
     """Stored rows of one metric as [{date, entity, **value}], oldest first; the latest fetch of each (entity, date) wins."""
@@ -179,12 +217,19 @@ def buyback_summary(rows, today):
     years = []
     for y in sorted({r["date"][:4] for r in held}):
         ytd = [r for r in held if r["date"][:4] == y and r["date"][5:] <= cut]
-        years.append({"year": y, **_buyback_totals([r for r in held if r["date"][:4] == y]), "ytd_to": cut, "ytd": _buyback_totals(ytd)})
+        in_y = [r for r in held if r["date"][:4] == y]
+        types = defaultdict(list)
+        for r in in_y:
+            types[str(r.get("operation_type"))].append(r)
+        years.append({"year": y, **_buyback_totals(in_y), "ytd_to": cut, "ytd": _buyback_totals(ytd),
+                      "by_operation_type": {k: _buyback_totals(v) for k, v in sorted(types.items())}})
     last12 = [r for r in held if r["date"] > y1]
     by_type = {}
     for r in last12:
         by_type.setdefault(r["security_type"], []).append(r)
+    top = sorted(held, key=lambda r: r["accepted_bn"], reverse=True)[:5]
     return {"monthly": group(lambda d: d[:7]), "quarterly": group(_quarter), "yearly": years,
+            "largest_5": [{k: r.get(k) for k in ("date", "operation_type", "security_type", "maturity_bucket", "max_bn", "offered_bn", "accepted_bn")} for r in top],
             "t12m": {"from": y1, **_buyback_totals(last12)},
             "prior_t12m": {"from": y2, **_buyback_totals([r for r in held if y2 < r["date"] <= y1])},
             "t12m_by_security_type": {str(k): _buyback_totals(v) for k, v in sorted(by_type.items(), key=lambda kv: str(kv[0]))}}
@@ -211,7 +256,12 @@ def auction_summary(rows, today):
         tenors[k] = {"last_date": last["date"], "last_high": last.get("high_yield") if last.get("high_yield") is not None else last.get("high_rate"),
                      "last_bid_to_cover": last.get("bid_to_cover"), "last_size_bn": last.get("size_bn"), "last_dealer_pct": last.get("dealer_pct"),
                      "n_12m": len(recent), "bid_to_cover_12m": _mean(r["bid_to_cover"] for r in recent),
-                     "bid_to_cover_prior_12m": _mean(r["bid_to_cover"] for r in prior), "dealer_pct_12m": _mean(r.get("dealer_pct") for r in recent)}
+                     "bid_to_cover_prior_12m": _mean(r["bid_to_cover"] for r in prior), "dealer_pct_12m": _mean(r.get("dealer_pct") for r in recent),
+                     "by_year": {y: {"auctions": len(ys), "size_bn": _sum(r.get("size_bn") for r in ys),
+                                     "bid_to_cover_avg": _mean(r["bid_to_cover"] for r in ys),
+                                     "high_avg": _mean((r.get("high_yield") if r.get("high_yield") is not None else r.get("high_rate")) for r in ys),
+                                     "dealer_pct_avg": _mean(r.get("dealer_pct") for r in ys)}
+                                 for y in sorted({r["date"][:4] for r in rs}) for ys in [[r for r in rs if r["date"][:4] == y]]}}
     months = defaultdict(list)
     for r in rows:
         months[r["date"][:7]].append(r)
@@ -230,8 +280,8 @@ def _part(rows, errors, keys):
     return {"status": "stale" if why else "fresh", "as_of": rows[-1]["date"], **({"reason": f"not refreshed this run ({why}); showing stored data as of {rows[-1]['date']}"} if why else {})}
 
 
-def build(conn, today, upcoming=None, errors=None):
-    """The snapshot's fed_ops section from the stored history. `upcoming` is this run's announced auctions (not stored);
+def build(conn, today, errors=None):
+    """The fed_ops section from the stored history (the snapshot's block, and the routes' fallback before the first run).
     `errors` maps a failed fetch ("nyfed:rp", "nyfed:rates", "treasury:buybacks", "treasury:auctions", "treasury:upcoming") to its reason."""
     errors, t = errors or {}, today.isoformat()
     since = (today - timedelta(days=60)).isoformat()
@@ -257,7 +307,7 @@ def build(conn, today, upcoming=None, errors=None):
     buys = [dict(r, weekday=date.fromisoformat(r["date"]).strftime("%A")) for r in read(conn, BUYBACK)]
     held = [r for r in buys if r.get("accepted_bn") is not None]
     auctions = read(conn, AUCTION)
-    up = sorted((r for r in upcoming or [] if r.get("date") and r["date"] >= t), key=lambda r: r["date"])
+    up, up_at = stored_upcoming(conn, today, [r for r in auctions if r["date"] >= t])
     return {
         "version": FEDOPS_VERSION, "as_of": t,
         "repo": {**_part(repo_rows, errors, ("nyfed:rp",)), "markets": markets, "rates": rates,
@@ -273,7 +323,9 @@ def build(conn, today, upcoming=None, errors=None):
         "auctions": {**_part(auctions, errors, ("treasury:auctions",)), "earliest": auctions[0]["date"] if auctions else None,
                      "recent": auctions[-15:],
                      "upcoming": [{k: r.get(k) for k in ("date", "term", "type", "size_bn", "reopening", "issue_date", "cusip")} for r in up],
-                     "upcoming_status": {"status": "missing", "reason": errors["treasury:upcoming"]} if errors.get("treasury:upcoming") else {"status": "fresh"},
+                     "upcoming_status": {"status": "missing", "reason": errors.get("treasury:upcoming") or "no auction calendar captured yet"} if up_at is None
+                                        else {"status": "stale", "as_of": up_at, "reason": f"not refreshed ({errors['treasury:upcoming']}); calendar as fetched on {up_at}"}
+                                        if errors.get("treasury:upcoming") else {"status": "fresh", "as_of": up_at},
                      **auction_summary(auctions, today), "tail": {"status": "missing", "reason": TAIL_REASON},
                      "units": "size in USD bn; high_yield (coupons) and high_rate (bills, discount basis) in percent; dealer/direct/"
                               "indirect_pct are shares of the competitive award. Lists run oldest first"},
@@ -282,21 +334,18 @@ def build(conn, today, upcoming=None, errors=None):
 
 # ---------------------------------------------------------------- fetching
 def topup(conn, session, run_id, today):
-    """Refetch the recent window of every source into the lake. Returns (upcoming auctions, errors). Never raises for a source failure."""
-    errors, upcoming = {}, []
+    """Refetch the recent window of every source, and the auction calendar, into the lake. Returns the errors. Never raises for a source failure."""
+    errors = {}
     start = (today - timedelta(days=TOPUP_DAYS)).isoformat()
     jobs = (("nyfed:rp", lambda: src.nyfed_repo_ops(session, start, today.isoformat()), repo_records),
             ("nyfed:rates", lambda: src.nyfed_ref_rates(session, start, today.isoformat()), rate_records),
             ("treasury:buybacks", lambda: src.treasury_buybacks(session, (today - timedelta(days=56)).isoformat()), buyback_records),
-            ("treasury:auctions", lambda: src.treasury_auctions(session, 60), auction_records))
+            ("treasury:auctions", lambda: src.treasury_auctions(session, 60), auction_records),
+            ("treasury:upcoming", lambda: src.treasury_upcoming(session), lambda rows, pid: []))     # the captured payload is the calendar
     for key, fetch, to_records in jobs:
         try:
             rows, pid = fetch()
             lake.record_observations(conn, to_records(rows, pid), run_id=run_id)
         except src.SourceUnavailable as e:
             errors[key] = lake.redact(str(e))
-    try:
-        upcoming, _ = src.treasury_upcoming(session)
-    except src.SourceUnavailable as e:
-        errors["treasury:upcoming"] = lake.redact(str(e))
-    return upcoming, errors
+    return errors

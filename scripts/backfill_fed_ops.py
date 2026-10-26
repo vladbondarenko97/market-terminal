@@ -1,6 +1,7 @@
 """Backfill card 15's history: NY Fed repo and reverse repo operations (from 2014), the NY Fed reference rates SOFR, TGCR,
 BGCR and EFFR (from 2018-04-02, when SOFR starts), every Treasury buyback operation since the program restarted in 2024, and
-Treasury auction results (from 2021).
+Treasury auction results (from 2021),
+plus the announced auction calendar.
 
 The pipeline refetches only the last weeks on each run (core/fedops.py, topup), so the years before come from here. It asks
 for one calendar year per request (about 15 requests in all, a few MB each from TreasuryDirect). A past year that an earlier
@@ -78,6 +79,13 @@ def work_for(day):
         except src.SourceUnavailable as e:
             counts["failed"] += 1
             print(f"{fedops.BUYBACK}: {e}")
+        counts["requests"] += 1
+        try:
+            rows, _ = src.treasury_upcoming(session)          # captured in v2_payloads: the calendar card 15 reads
+            print(f"auction calendar: {len(rows)} announced auctions")
+        except src.SourceUnavailable as e:
+            counts["failed"] += 1
+            print(f"auction calendar: {e}")
         for metric in (fedops.REPO, fedops.RATE, fedops.BUYBACK, fedops.AUCTION):
             print(f"{metric}: earliest stored {fedops.earliest(conn, metric)}")
         return counts
