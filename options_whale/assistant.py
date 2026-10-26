@@ -107,7 +107,8 @@ SOURCES = OrderedDict([
         "Unusual options activity for a ticker: contracts whose volume exceeds min_vol_oi x open interest, up to max_dte days out. Slow.")),
     ("repo_ops", ("/api/fed_ops/repo", (), "The NY Fed's repo and reverse repo operations (what people call repo auctions or repo ops), latest readings: overnight reverse repo (ON RRP) and repo (Standing Repo "
         "Facility) and term repo take-up per day (USD bn, rate, counterparties), the reference rates SOFR, TGCR, BGCR, EFFR with their "
-        "4-week change, the 60-day high, and the readings 1 month, 3 months and 1 year earlier (ago.1m / 3m / 1y). Monthly "
+        "4-week change, the highest day in the last 60 days, the last 12 months and since 2014 (peak_12m, peak_all_time), a "
+        "ready-made ON RRP sentence (rrp_trend) and the readings 1 month, 3 months and 1 year earlier (ago.1m / 3m / 1y). Monthly "
         "average, highest day and month-end levels and any date range: repo_history. Status stale means it could not be refreshed: say the date it is as of.")),
     ("treasury_buybacks", ("/api/fed_ops/buybacks", (), "US Treasury buyback operations: this year vs last year over the same dates (first), month-by-month totals for the last 13 months, the last 8 held (date, security type, maturity "
         "bucket, the most Treasury would buy vs what dealers offered vs what was accepted), scheduled ones, the 5 largest since 2024, totals "
@@ -382,7 +383,7 @@ FED_SOURCES = ("repo_ops", "treasury_buybacks", "treasury_auctions", "repo_histo
 
 # Columns a question never needs; dropping them keeps a source under MAX_CHARS instead of an outline the model must dig through
 FED_DROP = {"issues_accepted", "issues_eligible", "settlement_date", "low_yield", "median_yield", "investment_rate", "cusip", "entity",
-            "issue_date", "p1", "p99", "units", "note", "last_10", "last_60d", "weekday"}
+            "issue_date", "p1", "p99", "units", "note", "last_10", "last_60d", "weekday"}     # the daily lists repeat the rows
 DATE_KEYS = {"date", "as_of", "earliest", "earliest_stored", "last_date", "from", "to"}
 BIDDERS = (("dealer_pct", "primary dealers"), ("direct_pct", "direct bidders"), ("indirect_pct", "indirect bidders"))
 
@@ -393,7 +394,7 @@ def _bidder_shares(obj, prefix):
     vals = [obj.get(prefix + k) for k, _ in BIDDERS]
     if any(not isinstance(v, (int, float)) for v in vals):
         return None
-    return {**{label: f"{v:.2f}%" for (_, label), v in zip(BIDDERS, vals)}, "total": f"{sum(vals):.1f}%"}
+    return " / ".join(f"{label} {v:.2f}%" for (_, label), v in zip(BIDDERS, vals)) + f" (one auction, total {sum(vals):.1f}%)"
 
 
 def _year_vs_year(by_year):
@@ -401,6 +402,9 @@ def _year_vs_year(by_year):
     if not isinstance(by_year, dict) or len(by_year) < 2:
         return None
     (y0, a), (y1, b) = list(by_year.items())[-2:]
+    today = datetime.now().date()
+    partial = y1 == str(today.year)        # this year so far against a whole year: counts and sizes are not comparable
+    label = f"{y1} so far (to {today:%m-%d}) vs all of {y0}" if partial else f"{y1} vs {y0}"
 
     def cmp(label, k, unit="", pts=False):
         x, y = b.get(k), a.get(k)
@@ -412,16 +416,16 @@ def _year_vs_year(by_year):
         return f"{label} {x:.3f}{unit} vs {y:.3f}{unit} ({word}{by})"
     parts = [cmp("mean bid-to-cover", "bid_to_cover_avg"), cmp("mean dealer share", "dealer_pct_avg", "%", True),
              cmp("mean high yield", "high_avg", "%", True)]
-    sizes = f"auctions {b.get('auctions')} vs {a.get('auctions')}; total size {fedops.money(b.get('size_bn'))} vs {fedops.money(a.get('size_bn'))}"
-    return f"{y1} vs {y0}: " + "; ".join(p for p in parts if p) + f"; {sizes}"     # the daily lists repeat the rows
+    sizes = (f"auctions {b.get('auctions')} vs {a.get('auctions')}; total size {fedops.money(b.get('size_bn'))} vs {fedops.money(a.get('size_bn'))}"
+             + (f" (the count and size of {y1} are not final: compare the means)" if partial else ""))
+    return f"{label}: " + "; ".join(p for p in parts if p) + f"; {sizes}"
 # The latest-reading sources leave the period tables to the *_history sources
 FED_LATEST_DROP = {"monthly", "quarterly", "by_year", "last_60d", "last_10", "dealer_pct_12m"}
 
 
 def _shape_fed(obj, params=None, drop=FED_DROP):
     """What the model reads, written so it cannot be misread: amounts in words with their unit ("$11.539 billion", "$2,553.7
-    billion ($2.55 trillion)"), every date with its weekday, an auction's bidder shares as one labelled set, "latest" named
-    "latest_available", and a tenor's year-on-year change with its direction spelled out. Seen with a 9B: "$1.03 trillion"
+    billion ($2.55 trillion)"), every date with its weekday, an auction's bidder shares as one labelled set, and a tenor's year-on-year change with its direction spelled out. Seen with a 9B: "$1.03 trillion"
     for $10.3 billion, "Wednesday, October 27" for a Tuesday, shares from two auctions mixed, "lower" for 2.45 vs 2.37."""
     if isinstance(obj, list):
         return [_shape_fed(v, None, drop) for v in obj]
@@ -442,21 +446,30 @@ def _shape_fed(obj, params=None, drop=FED_DROP):
             out[k[:-3]] = fedops.money(v)
         elif (k in DATE_KEYS or k.endswith("_date")) and isinstance(v, str) and re.match(r"\d{4}-\d{2}-\d{2}$", v[:10]):
             out[k] = fedops.day(v[:10]) + v[10:]
-        elif k == "latest":
-            out["latest_available"] = _shape_fed(v, None, drop)
         else:
             out[k] = _shape_fed(v, None, drop)
     return out
 
 
+def _compact_tenor(name, v, coupon_extra=None):
+    """A bill's short line, or a coupon's full entry (plus coupon_extra), for lists of ~35 tenors that overflow in full."""
+    if name.endswith(fedops.BILLS):
+        return {f: v.get(f) for f in ("last_date", "last_high", "last_bid_to_cover", "bid_to_cover_12m", "bid_to_cover_prior_12m")}
+    return {**v, **(coupon_extra or {})}
+
+
 def _today_line():
     """'Monday 2026-10-26; the last business day before today was Friday 2026-10-23': "yesterday" on a Monday is Friday."""
+    from pandas.tseries.holiday import USFederalHolidayCalendar
     from core import market_calendar as MC
     today = datetime.now(MC.NEW_YORK).date()
+    # The Fed and the bond market close on federal holidays (Columbus Day, Veterans Day) when the NYSE is open
+    closed = {d.date() for d in USFederalHolidayCalendar().holidays(today - timedelta(days=14), today)}
     prev = today - timedelta(days=1)
-    while not MC.is_trading_day(prev):
+    while prev.weekday() >= 5 or prev in closed:
         prev -= timedelta(days=1)
-    return f"{today:%A} {today}; the last business day before today was {prev:%A} {prev}. NY Fed rates for a day are published the next business morning."
+    return (f"{today:%A} {today}; the last Fed business day before today was {prev:%A} {prev}. NY Fed rates for a day are "
+            "published the next business morning: for \"yesterday\" use the latest reading and say its date.")
 
 
 def _shape_fed_latest(obj, params=None):
@@ -470,13 +483,16 @@ def _shape_fed_latest(obj, params=None):
         # Numbered dicts, not lists: the generic cut keeps the LAST items of a list and once kept the last 5 of 11 announced
         # auctions, so "the next auction" was Oct 29 instead of Oct 27. A dict is never cut.
         if isinstance(src.get("by_tenor"), dict):            # ~35 tenors in full overflow into an outline: bills get a short line
-            src["by_tenor"] = {k: ({f: v.get(f) for f in ("last_date", "last_high", "last_bid_to_cover", "bid_to_cover_12m")}
-                                   if k.endswith(("Bill", "CMB")) else v) for k, v in src["by_tenor"].items()}
+            src["by_tenor"] = {k: _compact_tenor(k, v) for k, v in src["by_tenor"].items()}
         if isinstance(src.get("upcoming"), list):            # by day, soonest first: every auction of the next day is in the first entry
             days = {}
             for u in src["upcoming"]:
-                if len(days) < 4 or u.get("date") in days:
-                    days.setdefault(u.get("date"), {})[f"{u.get('term')} {u.get('type')}"] = (fedops.money(u.get("size_bn")) or "size not announced yet")
+                d = u.get("date") or "date not announced"
+                if len(days) < 4 or d in days:
+                    slot, name = days.setdefault(d, {}), f"{u.get('term')} {u.get('type')}"
+                    name = name if name not in slot else f"{name} ({sum(k.startswith(name) for k in slot) + 1})"   # two of one kind on a day
+                    slot[name] = (f"{fedops.money(u.get('size_bn')) or 'size not announced yet'}, "
+                                  f"{'reopening' if u.get('reopening') else 'new issue'}")
             src["upcoming"] = {f"{i + 1}. {fedops.day(d)}": v for i, (d, v) in enumerate(days.items())}
         if isinstance(src.get("recent"), list):
             src["recent"] = {f"latest_{i + 1}": u for i, u in enumerate(reversed(src["recent"][-6:]))}
@@ -548,13 +564,11 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
                                                      "pass from=YYYY-MM-DD for earlier months")
         if source == "auction_history" and "tenor" not in params and isinstance((obj.get("summary") or {}).get("by_tenor"), dict):
             lo, hi = (params.get("from") or "0000")[:4], (params.get("to") or "9999")[:4]
-            compact = ("last_date", "last_bid_to_cover", "bid_to_cover_12m", "bid_to_cover_prior_12m")
+            coupon = ("last_date", "last_high", "last_bid_to_cover", "bid_to_cover_12m", "bid_to_cover_prior_12m")
             for name, v in list(obj["summary"]["by_tenor"].items()):   # ~35 tenors in full overflow: a short line each fits
-                years = [(y, s) for y, s in (v.get("by_year") or {}).items() if lo <= y <= hi]
-                line = {k: v.get(k) for k in compact}
-                if not name.endswith(("Bill", "CMB")):                 # coupons: the year-on-year sentence too
-                    line["latest_year_vs_year_before"] = _year_vs_year(dict(years))
-                obj["summary"]["by_tenor"][name] = line
+                years = dict((y, s) for y, s in (v.get("by_year") or {}).items() if lo <= y <= hi)
+                obj["summary"]["by_tenor"][name] = _compact_tenor(name, {f: v.get(f) for f in coupon},
+                                                                  {"latest_year_vs_year_before": _year_vs_year(years)})
             obj["summary"]["by_tenor_note"] = ("a short line per tenor; coupons compare the last two years of from/to (without them, this "
                                                "year and last); pass tenor= (e.g. 10 year note) for one tenor's full results and table by year")
         if source in FED_SOURCES and source.endswith("_history") and isinstance(obj.get("rows"), list):

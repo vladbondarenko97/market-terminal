@@ -251,9 +251,12 @@ def rrp_trend(markets, monthly, today):
     m = markets.get("rrp")
     if not m or not monthly:
         return None
-    now = monthly[-1]
-    then = next((r for r in monthly if r["month"] == f"{today.year - 1}-{today.month:02d}"), None)
-    parts = [f"ON RRP averaged {money(now.get('rrp_avg_bn'))} a day in {now['month']}"]
+    now = next((r for r in reversed(monthly) if r.get("rrp_avg_bn") is not None), None)
+    if now is None:
+        return None
+    year_ago = f"{int(now['month'][:4]) - 1}{now['month'][4:]}"          # the same month a year before the latest one
+    then = next((r for r in monthly if r["month"] == year_ago), None)
+    parts = [f"ON RRP averaged {money(now['rrp_avg_bn'])} a day in {now['month']}"]
     if then and then.get("rrp_avg_bn") is not None:
         parts.append(f"against {money(then['rrp_avg_bn'])} a day in {then['month']}")
     s = " ".join(parts) + f"; the latest day was {money(m['latest']['accepted_bn'])} on {day(m['latest']['date'])}."

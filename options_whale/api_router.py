@@ -3047,8 +3047,11 @@ def _fed_ops_section(conn):
     today = datetime.now(ZoneInfo("America/New_York")).date()
     key = (today, stamp, upcoming, bool(sec), outdated)
     if key not in _FED_OPS_FALLBACK:
-        if outdated:
-            errors, label = {}, f"rebuilt from stored rows with {_v2fo.FEDOPS_VERSION} (the latest run's block is {sec.get('version')})"
+        if outdated:          # what that run could not refresh stays stale
+            parts = {"nyfed:rp": sec.get("repo"), "nyfed:rates": (sec.get("repo") or {}).get("rates_status"), "treasury:buybacks": sec.get("buybacks"),
+                     "treasury:auctions": sec.get("auctions"), "treasury:upcoming": (sec.get("auctions") or {}).get("upcoming_status")}
+            errors = {k: p.get("reason") or "not refreshed by the latest run" for k, p in parts.items() if isinstance(p, dict) and p.get("status") in ("stale", "missing")}
+            label = f"rebuilt from stored rows with {_v2fo.FEDOPS_VERSION} (the latest run's block is {sec.get('version')})"
         else:
             why = "the latest pipeline run could not build card 15" if sec else "no pipeline run has refreshed it yet"
             errors, label = {k: why for k in ("nyfed:rp", "nyfed:rates", "treasury:buybacks", "treasury:auctions", "treasury:upcoming")}, f"stored history ({why})"
