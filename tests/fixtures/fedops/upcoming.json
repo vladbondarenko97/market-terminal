@@ -1,0 +1,28 @@
+[
+ {
+  "cusip": "91282CRU7",
+  "securityType": "Note",
+  "securityTerm": "2-Year",
+  "originalSecurityTerm": "2-Year",
+  "type": "Note",
+  "offeringAmount": "69000000000",
+  "bidToCoverRatio": "",
+  "highYield": "",
+  "competitiveAuctionCloseDate": "2026-10-26T00:00:00",
+  "issueDate": "2026-11-02T00:00:00",
+  "reopening": "No"
+ },
+ {
+  "cusip": "912797WT0",
+  "securityType": "Bill",
+  "securityTerm": "52-Week",
+  "originalSecurityTerm": "52-Week",
+  "type": "Bill",
+  "offeringAmount": "54000000000",
+  "bidToCoverRatio": "",
+  "highYield": "",
+  "competitiveAuctionCloseDate": "2026-10-27T00:00:00",
+  "issueDate": "2026-10-29T00:00:00",
+  "reopening": "No"
+ }
+]

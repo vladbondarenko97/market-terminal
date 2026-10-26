@@ -405,7 +405,7 @@ class TerminalPhoneLayout(unittest.TestCase):
     def test_inventory_legend_goes_to_the_bottom_of_a_narrow_chart_on_phones(self):
         forecast = (STATIC / "forecast.js").read_text(encoding="utf-8")
         self.assertIn("onResize: fcFitLegend", forecast)
-        self.assertNotIn("position: 'right'", forecast)
+        self.assertNotRegex(forecast, r"legend[^}]*position: 'right'")          # a right-hand y axis (card 15) is fine
         if not shutil.which("node"):
             self.skipTest("node is not installed")
         helpers = re.search(r"const FC_LEGEND_SIDE_MIN_WIDTH[^\n]*\nconst fcLegendPosition[^\n]*", forecast).group(0)

@@ -1,6 +1,6 @@
 // ==========================================================================================
 // FORECAST LAB — signal watch, day scanner and edge lab (fc0, fc12, fc13: /api/forecast signals, /api/scanner, /api/edges) plus
-// twelve model cards, fc1..fc11 and fc14 (data: /api/forecast, from the committed v2 snapshot; card 11 also /api/eia_history)
+// thirteen model cards, fc1..fc11, fc14 and fc15 (data: /api/forecast, from the committed v2 snapshot; card 11 also /api/eia_history)
 // ==========================================================================================
 const FC = { ticker: 'SPY', data: null, charts: {}, h1: '1m' };
 const FC_COL = { blue: '#3987e5', orange: '#d95926', aqua: '#199e70', yellow: '#c98500', violet: '#9085e9',
@@ -70,11 +70,11 @@ async function loadForecast(ticker) {
         document.getElementById('fcRunInfo').textContent = `${FC.ticker} · run ${r.run_id || '—'} · ${r.generated_local || ''}`
             + (json.source_errors && Object.keys(json.source_errors).length ? ` · ${Object.keys(json.source_errors).length} source issue(s)` : '');
         [renderSignals, renderImplied, renderVolForecast, renderTrend, renderPositioning, renderFairValue, renderMacro,
-         renderCalendar, renderFlows, renderScorecard, renderDiesel, renderInventories, renderChaos].forEach(fn => {
+         renderCalendar, renderFlows, renderScorecard, renderDiesel, renderInventories, renderChaos, renderFedOps].forEach(fn => {
             try { fn(json); } catch (e) { console.error(fn.name, e); }
         });
     } catch (e) {
-        for (const i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14]) {      // 12 and 13 have their own routes and messages
+        for (const i of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]) {      // 12 and 13 have their own routes and messages
             const b = document.getElementById(`fc${i}`);
             if (b) b.innerHTML = `<div class="fc-neg">Forecast Lab unavailable: ${fcEsc(e.message)}</div>`;
         }
@@ -85,7 +85,7 @@ function copyForecastCard(id) {
     const d = FC.data || {};
     const map = {
         fc0: d.signals, fc12: FC.scanner, fc13: FC.edges, fc1: d.data?.implied, fc2: d.data?.vol_forecast, fc3: d.data?.trend, fc4: d.positioning, fc5: d.silver_fair_value,
-        fc6: d.macro_regime, fc7: d.data?.calendar, fc8: d.data?.flows, fc9: d.scorecard, fc10: d.refining, fc11: d.refining?.inventories, fc14: d.chaos,
+        fc6: d.macro_regime, fc7: d.data?.calendar, fc8: d.data?.flows, fc9: d.scorecard, fc10: d.refining, fc11: d.refining?.inventories, fc14: d.chaos, fc15: d.fed_ops,
     };
     const title = document.querySelector(`#${id}`)?.closest('.rainbow-inner')?.querySelector('.fc-title')?.textContent || id;
     const payload = JSON.stringify({ ticker: FC.ticker, run: d.run?.run_id, card: title, data: map[id] ?? null }, null, 2);
@@ -1016,6 +1016,66 @@ function renderChaos(j) {
         options: { scales: { x: axis({ ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 6 } }), y: axis({ suggestedMin: -100, suggestedMax: 100 }) } } });
 }
 
+// ---------------------------------------------------------------- 15. Fed / Treasury operations (ctx["fed_ops"]: stored, nothing live)
+const foBn = v => (v === null || v === undefined) ? '—' : `$${fcNum(v, v >= 100 ? 0 : v >= 10 ? 1 : 2)}B`;
+const foStale = p => p && p.status === 'stale' ? `<div class="fc-warn">⚠ ${fcEsc(p.reason)}</div>` : '';
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function renderFedOps(j) {
+    const f = j.fed_ops, el = document.getElementById('fc15');
+    if (!f || f.status === 'error') { el.innerHTML = missing(f || { reason: 'not in this run yet (starts with the next pipeline run)' }); return; }
+    const r = f.repo || {}, b = f.buybacks || {}, a = f.auctions || {}, m = r.markets || {}, rt = r.rates || {};
+    const mk = (key, label) => { const x = m[key]; return x ? kpi(label, foBn(x.latest.accepted_bn), `${fcEsc(x.latest.date)} · rate ${fcNum(x.latest.rate, 2)}% · 5-day avg ${foBn(x.avg_5_bn)} (prior 5 ${foBn(x.avg_prev_5_bn)})`) : ''; };
+    const rate = n => { const x = rt[n]; return x ? kpi(n, fcNum(x.latest.rate, 2) + '%', `${fcEsc(x.latest.date)} · 4w ${x.change_4w_pp == null ? '—' : (x.change_4w_pp > 0 ? '+' : '') + fcNum(x.change_4w_pp, 2)} pts${x.latest.volume_bn != null ? ' · vol $' + fcNum(x.latest.volume_bn, 0) + 'B' : ''}`) : ''; };
+    const last = (b.last_8 || []).slice(-1)[0], next = (b.scheduled || [])[0], t12 = b.t12m || {}, p12 = b.prior_t12m || {};
+    const kpis = fcFailed(r) && fcFailed(b) && fcFailed(a) ? missing(r) : `<div class="fc-kpis">
+        ${mk('rrp', 'ON RRP')}${mk('repo', 'Standing repo (SRF)')}${rate('SOFR')}${rate('EFFR')}
+        ${last ? kpi('Last buyback', foBn(last.accepted_bn), `${fcEsc(last.date)} · of ${foBn(last.max_bn)} max · ${foBn(last.offered_bn)} offered · ${fcEsc(last.security_type)} ${fcEsc(last.maturity_bucket)}`) : ''}
+        ${t12.ops ? kpi('Buybacks, 12 months', foBn(t12.accepted_bn), `${t12.ops} ops · prior 12m ${foBn(p12.accepted_bn)} (${p12.ops || 0} ops)`, fcCls((t12.accepted_bn || 0) - (p12.accepted_bn || 0))) : ''}
+        ${next ? kpi('Next buyback', fcEsc(next.date), `up to ${foBn(next.max_bn)} · ${fcEsc(next.security_type)} ${fcEsc(next.maturity_bucket)}`) : ''}
+        ${(a.upcoming || [])[0] ? kpi('Next auction', fcEsc(a.upcoming[0].date), `${fcEsc(a.upcoming[0].term)} ${fcEsc(a.upcoming[0].type)} · ${foBn(a.upcoming[0].size_bn)}`) : ''}
+    </div>`;
+    const bbRows = (b.last_8 || []).slice().reverse().map(x => `<tr><td>${fcEsc(x.date)}</td><td style="text-align:left">${fcEsc(x.security_type)} ${fcEsc(x.maturity_bucket)}</td>
+        <td>${foBn(x.max_bn)}</td><td>${foBn(x.offered_bn)}</td><td>${foBn(x.accepted_bn)}</td><td>${x.max_bn ? fcNum(x.accepted_bn / x.max_bn * 100, 0) + '%' : '—'}</td></tr>`).join('');
+    const auRows = (a.recent || []).slice(-10).reverse().map(x => `<tr><td>${fcEsc(x.date)}</td><td style="text-align:left">${fcEsc(x.term)} ${fcEsc(x.type)}${x.reopening ? ' <span class="fc-muted">r</span>' : ''}</td>
+        <td>${foBn(x.size_bn)}</td><td>${fcNum(x.high_yield ?? x.high_rate, 3)}%</td><td>${fcNum(x.bid_to_cover, 2)}</td><td>${fcNum(x.dealer_pct, 1)}%</td></tr>`).join('');
+    const upRows = (a.upcoming || []).slice(0, 10).map(x => `<tr><td>${fcEsc(x.date)}</td><td style="text-align:left">${fcEsc(x.term)} ${fcEsc(x.type)}${x.reopening ? ' <span class="fc-muted">r</span>' : ''}</td><td>${foBn(x.size_bn)}</td></tr>`).join('');
+    const COUPONS = ['2-Year Note', '3-Year Note', '5-Year Note', '7-Year Note', '10-Year Note', '20-Year Bond', '30-Year Bond', '5-Year TIPS', '10-Year TIPS'];
+    const tnRows = COUPONS.filter(k => (a.by_tenor || {})[k]).map(k => { const x = a.by_tenor[k];
+        return `<tr><td style="text-align:left">${k}</td><td>${fcEsc(x.last_date)}</td><td>${fcNum(x.last_high, 3)}%</td><td>${fcNum(x.last_bid_to_cover, 2)}</td>
+            <td>${fcNum(x.bid_to_cover_12m, 2)}</td><td class="${fcCls((x.bid_to_cover_12m ?? 0) - (x.bid_to_cover_prior_12m ?? 0))}">${fcNum(x.bid_to_cover_prior_12m, 2)}</td><td>${fcNum(x.dealer_pct_12m, 1)}%</td></tr>`; }).join('');
+    el.innerHTML = `${kpis}${foStale(r)}${foStale(b)}${foStale(a)}
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            <div><div class="fc-sub">ON RRP USAGE AND SOFR · monthly averages since 2018-04 (SOFR's first month) · full daily history: /api/fed_ops/history/repo</div><div class="fc-chart"><canvas id="fc15ChartA"></canvas></div></div>
+            <div><div class="fc-sub">TREASURY BUYBACKS ACCEPTED PER MONTH · one bar per year</div><div class="fc-chart"><canvas id="fc15ChartB"></canvas></div></div>
+        </div>
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            <div><div class="fc-sub">LAST BUYBACKS · newest first · max = most Treasury would buy, offered = what dealers offered</div>
+                ${bbRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Securities</th><th>Max</th><th>Offered</th><th>Accepted</th><th>of max</th></tr>${bbRows}</table>` : missing(b)}</div>
+            <div><div class="fc-sub">RECENT AUCTIONS · newest first · r = reopening · high = high yield (bills: discount rate)</div>
+                ${auRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Security</th><th>Size</th><th>High</th><th>Bid/cover</th><th>Dealers</th></tr>${auRows}</table>` : missing(a)}</div>
+        </div>
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            <div><div class="fc-sub">COUPON AUCTIONS BY TENOR · bid-to-cover, last 12 months vs the 12 before</div>
+                ${tnRows ? `<table class="fc-table"><tr><th style="text-align:left">Tenor</th><th>Last</th><th>High</th><th>B/C</th><th>B/C 12m</th><th>prior 12m</th><th>Dealers 12m</th></tr>${tnRows}</table>` : missing(a)}</div>
+            <div><div class="fc-sub">UPCOMING AUCTIONS</div>
+                ${upRows ? `<table class="fc-table"><tr><th>Date</th><th style="text-align:left">Security</th><th>Size</th></tr>${upRows}</table>` : missing(a.upcoming_status)}</div>
+        </div>
+        <div class="fc-note">${fcEsc(r.note || '')} Auction tails: ${fcEsc((a.tail || {}).reason || '')}. Sources: NY Fed Markets API, Fiscal Data (buybacks), TreasuryDirect (auctions).</div>`;
+    const mo = (r.monthly || []).filter(x => x.month >= '2018-04');
+    if (mo.length > 1) fcChart('fc15ChartA', { type: 'line', data: { labels: mo.map(x => x.month), datasets: [
+        { label: 'ON RRP ($B, avg)', data: mo.map(x => x.rrp_bn), borderColor: FC_COL.blue, backgroundColor: 'rgba(57,135,229,0.15)', fill: true, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y' },
+        { label: 'SOFR (%)', data: mo.map(x => x.sofr), borderColor: FC_COL.orange, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y1' },
+        { label: 'EFFR (%)', data: mo.map(x => x.effr), borderColor: FC_COL.yellow, pointRadius: 0, borderWidth: 1, borderDash: [3, 3], yAxisID: 'y1' }] },
+        options: { scales: { x: axis({ ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 8 } }), y: axis({ position: 'left', beginAtZero: true }),
+                             y1: axis({ position: 'right', grid: { drawOnChartArea: false } }) } } });
+    const years = [...new Set((b.monthly || []).map(x => x.period.slice(0, 4)))];
+    const byMonth = Object.fromEntries((b.monthly || []).map(x => [x.period, x.accepted_bn]));
+    const yc = [FC_COL.violet, FC_COL.aqua, FC_COL.blue, FC_COL.orange];
+    if (years.length) fcChart('fc15ChartB', { type: 'bar', data: { labels: MONTHS, datasets: years.map((y, i) => ({
+        label: y, data: MONTHS.map((_, k) => byMonth[`${y}-${String(k + 1).padStart(2, '0')}`] ?? null), backgroundColor: yc[(i + yc.length - years.length) % yc.length] })) },
+        options: { scales: { x: axis(), y: axis({ beginAtZero: true, title: { display: true, text: '$B accepted', color: FC_COL.ink2, font: { size: 9 } } }) } } });
+}
+
 let FC_FULL = null;
 function toggleForecastFullscreen(id) {
     const back = document.getElementById('fcBackdrop');
@@ -1053,6 +1113,16 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', e => { if (e.target && e.target.id === 'fcFaqModal') closeForecastFaq(); });
 
 const FC_FAQ = {
+    fc15: { title: '15 · Fed / Treasury operations — FAQ',
+        what: 'The plumbing behind dollar liquidity, from official sources only: the New York Fed\'s repo and reverse repo operations and its reference rates, the Treasury\'s buybacks of its own debt and its auctions. Stored by the pipeline every run; the history goes back to 2014 (repo), 2018 (SOFR, TGCR, BGCR), 2024 (buybacks) and 2021 (auctions).',
+        read: ['<b>ON RRP</b>: cash money funds park at the Fed overnight. A big balance is spare liquidity; near zero means that buffer is used up.',
+               '<b>Standing repo (SRF)</b>: banks borrow cash from the Fed against Treasuries at the facility rate. Usage above zero means private repo was dearer than the Fed: a sign of funding strain.',
+               '<b>SOFR vs EFFR</b>: SOFR is the overnight Treasury repo rate, EFFR the fed funds rate. SOFR printing above EFFR and near the SRF rate is the classic tight-funding picture.',
+               '<b>Buybacks</b>: max = the most Treasury said it would buy back, offered = what dealers offered to sell, accepted = what Treasury bought. "Liquidity support" operations buy old, hard-to-trade issues; "cash management" ones smooth the Treasury\'s cash balance.',
+               '<b>Auctions</b>: bid-to-cover = bids per dollar sold (higher = more demand); dealers = the share primary dealers had to take (higher = weaker end-investor demand). The tenor table compares the last 12 months with the 12 before.',
+               '<b>Stale</b>: a part the run could not refresh shows its stored data with the date it is as of, and a warning line.'],
+        caveats: ['Auction tails (high yield minus the when-issued yield) are not shown: no free official source publishes the when-issued yield.',
+                  'This card shows what happened, not why. It is not a trading signal and carries no evidence grade.'] },
     fc14: { title: '14 · Chaos / Peace — FAQ',
         what: 'One number for how stressed the market looks today compared with its own last three years. Twelve readings (volatility levels and their term structure, credit spreads, bond volatility, realised volatility, drawdown, policy uncertainty, equity put/call and short-sale share) are each turned into a z-score, averaged and scaled to -100 (peace) .. +100 (chaos). It describes what moved; it does not say why and it does not forecast.',
         read: ['<b>Score and regime</b>: 50 × the mean z-score. Fixed cut-offs, not fitted to any outcome: up to -30 peace, -30..30 neutral, 30..60 stress, above 60 chaos.',

@@ -1,0 +1,134 @@
+[
+ {
+  "effectiveDate": "2026-10-23",
+  "type": "EFFR",
+  "percentRate": 3.88,
+  "percentPercentile1": 3.85,
+  "percentPercentile25": 3.87,
+  "percentPercentile75": 3.89,
+  "percentPercentile99": 3.95,
+  "targetRateFrom": 3.75,
+  "targetRateTo": 4.0,
+  "volumeInBillions": 109,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-23",
+  "type": "OBFR",
+  "percentRate": 3.88,
+  "percentPercentile1": 3.75,
+  "percentPercentile25": 3.87,
+  "percentPercentile75": 3.88,
+  "percentPercentile99": 3.95,
+  "volumeInBillions": 223,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-23",
+  "type": "TGCR",
+  "percentRate": 3.9,
+  "percentPercentile1": 3.83,
+  "percentPercentile25": 3.9,
+  "percentPercentile75": 3.91,
+  "percentPercentile99": 3.92,
+  "volumeInBillions": 1195,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-23",
+  "type": "BGCR",
+  "percentRate": 3.9,
+  "percentPercentile1": 3.84,
+  "percentPercentile25": 3.9,
+  "percentPercentile75": 3.91,
+  "percentPercentile99": 3.95,
+  "volumeInBillions": 1233,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-23",
+  "type": "SOFR",
+  "percentRate": 3.92,
+  "percentPercentile1": 3.85,
+  "percentPercentile25": 3.9,
+  "percentPercentile75": 3.97,
+  "percentPercentile99": 4.0,
+  "volumeInBillions": 3065,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-23",
+  "type": "SOFRAI",
+  "average30day": 3.88887,
+  "average90day": 3.75301,
+  "average180day": 3.70633,
+  "index": 1.26398658,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-22",
+  "type": "EFFR",
+  "percentRate": 3.88,
+  "percentPercentile1": 3.85,
+  "percentPercentile25": 3.87,
+  "percentPercentile75": 3.88,
+  "percentPercentile99": 3.92,
+  "targetRateFrom": 3.75,
+  "targetRateTo": 4.0,
+  "volumeInBillions": 119,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-22",
+  "type": "OBFR",
+  "percentRate": 3.88,
+  "percentPercentile1": 3.78,
+  "percentPercentile25": 3.87,
+  "percentPercentile75": 3.88,
+  "percentPercentile99": 3.94,
+  "volumeInBillions": 242,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-22",
+  "type": "TGCR",
+  "percentRate": 3.88,
+  "percentPercentile1": 3.8,
+  "percentPercentile25": 3.88,
+  "percentPercentile75": 3.89,
+  "percentPercentile99": 3.9,
+  "volumeInBillions": 1192,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-22",
+  "type": "BGCR",
+  "percentRate": 3.88,
+  "percentPercentile1": 3.8,
+  "percentPercentile25": 3.88,
+  "percentPercentile75": 3.89,
+  "percentPercentile99": 3.94,
+  "volumeInBillions": 1222,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-22",
+  "type": "SOFR",
+  "percentRate": 3.9,
+  "percentPercentile1": 3.83,
+  "percentPercentile25": 3.88,
+  "percentPercentile75": 3.95,
+  "percentPercentile99": 3.98,
+  "volumeInBillions": 2945,
+  "revisionIndicator": ""
+ },
+ {
+  "effectiveDate": "2026-10-22",
+  "type": "SOFRAI",
+  "average30day": 3.88787,
+  "average90day": 3.75008,
+  "average180day": 3.70497,
+  "index": 1.26384966,
+  "revisionIndicator": ""
+ }
+]

@@ -28,6 +28,7 @@ When you change how a stored value is computed:
 | `VERSION` (`core/forecast.py`) | `forecast_v2` | Forecast Lab cards 1–9 |
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
+| `FEDOPS_VERSION` (`core/fedops.py`) | `fed_ops_v1` | Fed / Treasury operations block and its summaries (card 15) |
 | `SHANGHAI_VERSION` (`core/metrics.py`) | `shanghai_dated_v1` | Date-paired Shanghai silver spread (`shanghai.dated`) |
 | `EAGLE_VERSION` (`core/metrics.py`) | `eagle_premium_v1` | Silver Eagle premium statistics, units-sold flow and dealer-book summary (`ebay.premium`, `ebay.flow`, `ebay.book`) |
 | `PAPER_PHYSICAL_HISTORY_VERSION` (`core/metrics.py`) | `paper_physical_history_v1` | Paper:physical ratio history statistics (`paper_physical.history`) |
@@ -40,6 +41,13 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 ## Changes
 
 Newest first, then the changes that came with the v2 pipeline.
+
+- **Fed / Treasury operations** (`fed_ops_v1`, new, October 2026): snapshot key `fed_ops` and observations `fedops.repo_day`,
+  `fedops.ref_rate`, `fedops.buyback`, `fedops.auction`; no earlier value changes meaning.
+- **Chaos / Peace Treasury-supply levers** (`chaos_v1`, October 2026): the "Treasury bills offered" and "Treasury coupons
+  offered" lever rows were always `missing` ("no auction records") because the fetcher read an `auctionDate` field TreasuryDirect
+  does not send. The auction date is now the competitive close date, so both rows carry values from the next run. They sit
+  outside the score, so the score is unchanged and the version stays `chaos_v1`.
 
 - **Chaos / Peace long history** (`chaos_v1`, October 2026): new key `chaos.long` (history span, eras, stress episodes, the regime study,
   chart markers) and new observations `chaos.score`, one per day back to 1930. `chaos.election` now follows the next general election

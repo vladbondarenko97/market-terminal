@@ -661,7 +661,7 @@ terminal on this machine. Two endpoints, each behind its own secret path segment
 
 | Endpoint | Tools | Holds |
 |---|---|---|
-| `/<MCP_MARKET_TOKEN>/mcp` | `list_sources`, `get_source`, `search_docs`, `read_doc`, `calculate` | the console's read-only sources (same list and shaping as "Ask the terminal") plus `paper_physical`, `shanghai_spread` and `chaos_history`; the knowledge base (`docs/*.md`, `README.md`, `AGENTS.md` and the model code `core/{metrics,forecast,refining,chaos,edges,watch,market_calendar}.py`, read-only; the broker, source and run code and everything else on disk are out of reach); arithmetic |
+| `/<MCP_MARKET_TOKEN>/mcp` | `list_sources`, `get_source`, `search_docs`, `read_doc`, `calculate` | the console's read-only sources (same list and shaping as "Ask the terminal") plus `paper_physical`, `shanghai_spread` and `chaos_history` (the console's sources include `repo_ops`, `treasury_buybacks`, `treasury_auctions`, `repo_history`, `buyback_history` and `auction_history`); the knowledge base (`docs/*.md`, `README.md`, `AGENTS.md` and the model code `core/{metrics,forecast,refining,chaos,edges,watch,market_calendar}.py`, read-only; the broker, source and run code and everything else on disk are out of reach); arithmetic |
 | `/<MCP_BROKERAGE_TOKEN>/mcp` | `get_brokerage_positions` | your live SnapTrade holdings |
 
 A blank token turns its endpoint off; a token under 24 characters, or the same token twice, stops the server at start; any other path answers an empty 404. The secret path is the only guard, because MCP clients cannot send a header of your own: for the holdings link you can add Cloudflare Access (Zero Trust) in front of that hostname if the client supports it. Anyone with a link can read
@@ -784,7 +784,7 @@ to `CME_Data`, and keeps the legacy ledger tables and CSV headers unchanged. See
 
 ## Backfills
 
-Two one-off loaders fill history the pipeline would otherwise take years to accumulate. You read them and run them; the
+Three one-off loaders fill history the pipeline would otherwise take years to accumulate. You read them and run them; the
 pipeline never does. Both take the run lock (exit 75 when a run or another job holds it), are idempotent (stored days and
 filings are skipped, so re-running only fetches what is missing), are bounded (`--limit`, `--sleep`), print what they
 stored, skipped and failed, store every response in `v2_payloads` through `SourceSession.fetch()`, and record a run row with
@@ -794,6 +794,7 @@ what they do first, a scratch `PORTFOLIO_DATA_DIR`.
 | Script | What it downloads | How long |
 |---|---|---|
 | `scripts/backfill_chaos_history.py [--years 3] [--limit N] [--sleep 0.25]` | For every NYSE trading day of the last `--years` years plus 45 days (newest first) not yet stored: the CBOE daily statistics file (small JSON, about 750 files for 3 years) and FINRA's consolidated short-volume file (about 0.5 MB text each, about 750 files, of which only the header and the SPY line are kept). Stores `chaos.equity_put_call` and `chaos.short_volume_spy`. A day with no file (HTTP 403 or 404) is counted and reported, not retried in that run. | Roughly 15 to 30 minutes for 3 years. Once both series span 3 years, the two Chaos / Peace components stop being `missing`; the pipeline keeps them current with its 5-day catch-up. |
+| `scripts/backfill_fed_ops.py` | One request per calendar year and source: NY Fed repo and reverse repo results from 2014 and the NY Fed reference rates (SOFR, TGCR, BGCR, EFFR) from 2018-04-02 (about 0.2 MB a year each), TreasuryDirect auction records from 2021 (about 3 MB a year) and every Fiscal Data buyback operation since 2024 (one request). A finished past year that already has rows is skipped, so an interrupted run resumes; the current year is always fetched again. Stores `fedops.repo_day`, `fedops.ref_rate`, `fedops.auction`, `fedops.buyback` and prints the earliest date stored for each. | Under a minute. The pipeline then keeps the last 3 weeks current on every run. |
 | `scripts/backfill_form4.py [--symbols A,B] [--years 5] [--limit N] [--sleep 0.3]` | For each Edge Lab tracked symbol (or `--symbols`): the symbol's CIK from SEC's ticker list, its EDGAR submissions file (older files only if `--years` reaches back to them) and one small Form 4 XML per filing not yet stored. Stores one `edgar.form4` observation per filing (see [data](data.md)). A symbol with no CIK (a fund) is reported and skipped. | A few minutes per symbol. Re-run it to pick up new filings; the pipeline does not fetch Form 4 itself. |
 
 `backfill_form4.py` needs `SEC_USER_AGENT` in `.env` (`Name email`, see [configuration](configuration.md)); without it the script stops before any

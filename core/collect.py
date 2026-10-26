@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 import config
-from core import cme, history, importer, lake, metrics
+from core import cme, fedops, history, importer, lake, metrics
 from core import news as newsmod
 from core import sources as src
 from core.sources import SourceUnavailable
@@ -820,6 +820,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
     forecast = timed("forecast_lab", lambda: build_forecast(conn, session, now, today, frames_hist, options, prices, macro))
     refining_ctx = timed("refining", lambda: _guarded_refining(conn, session, run["run_id"], today))
     chaos_ctx = timed("chaos", lambda: _guarded_chaos(conn, session, run["run_id"], today, frames_hist))
+    fed_ops_ctx = timed("fed_ops", lambda: _guarded_fed_ops(conn, session, run["run_id"], today))     # after chaos: the Treasury requests are shared
 
     ctx = {
         "run": {k: run[k] for k in ("run_id", "generated_at", "run_folder", "mode", "code_version", "trigger")}
@@ -835,6 +836,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
         "forecast": forecast, "refining": refining_ctx,
         "news": news,
         "chaos": chaos_ctx,
+        "fed_ops": fed_ops_ctx,
     }
     frames = {"trades": {k: v[1] for k, v in flows.items()}}
     return lake.clean_json(ctx), frames
@@ -1146,6 +1148,15 @@ def _guarded_chaos(conn, session, run_id, today, frames):
         import traceback
         return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}"),
                 "trace": lake.redact(traceback.format_exc()[-1500:])}
+
+
+def _guarded_fed_ops(conn, session, run_id, today):
+    """Card 15 is optional too: top up the stored repo, rate, buyback and auction history, then summarise it."""
+    try:
+        upcoming, errors = fedops.topup(conn, session, run_id, today)
+        return fedops.build(conn, today, upcoming, errors)
+    except Exception as e:
+        return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
 
 
 def fetch_daily_days(conn, session, run_id, name, days, *, limit=None, sleep=0.0):

@@ -99,6 +99,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
 | `core/narrative.py` | The Briefing (analyst note): the brief built from a snapshot, the shared prompts, the validator (numbers, ids, causal and advice wording), the local and Claude Code drivers, the shapers the console reuses |
 | `options_whale/analyst_bin/mtq` | Read-only command the Claude Code analyst may run: one stored console source in-process, from an allowlist (`MTQ_SOURCES`) |
+| `core/fedops.py` | Fed / Treasury operations (card 15): NY Fed repo and reverse repo operations and reference rates, Treasury buybacks and auctions as `fedops.*` observations; the per-run top-up, history reads and summaries |
 | `core/chaos.py` | Chaos / Peace index: twelve stress z-scores, levers and the midterm studies (card 14), pure functions |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
 | `core/brokerage.py` | SnapTrade client for the terminal's Brokerage Positions card: signed REST calls, spread grouping, 60 s cache. Live, not part of the pipeline |
@@ -152,6 +153,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
 | `scripts/backfill_crypto_metals.py` | Adds up to one year of BTC, silver and gold history to `crypto_metrics_history` |
 | `scripts/backfill_chaos_history.py` | Operator-run: loads 3 years of CBOE put/call and FINRA SPY short-volume days (the two Chaos / Peace components that need them). Takes the run lock; see [Backfills](operations.md#backfills) |
+| `scripts/backfill_fed_ops.py` | Operator-run: loads the card 15 history (NY Fed repo from 2014, reference rates from 2018-04-02, buybacks since 2024, auctions since 2021). Takes the run lock; see [Backfills](operations.md#backfills) |
 | `scripts/backfill_form4.py` | Operator-run: loads SEC Form 4 filings for the Edge Lab's tracked symbols (needs `SEC_USER_AGENT`). Takes the run lock |
 | `scripts/console_eval.py` | Grades the console engine: asks a running terminal 22 fixed questions and checks each answer against the terminal's own routes. Read-only; uses the local model and Yahoo through the terminal. Manual only. |
 | `scripts/record_demo.py` | Records `docs/demo.gif` from a terminal that is already running (Playwright video, then ffmpeg). Read-only. |
