@@ -641,6 +641,17 @@ safe to repeat. It takes the run lock and prints how many new rows it recorded. 
 stage failed (the run's `stages_json` has `trade_signal_error`) or after importing runs made by a version that did not
 record positions.
 
+## Deploying to the live machine
+
+`scripts/deploy.sh` brings the checkout that serves `market.vlad.yt` up to `origin/main`. Run it on the Mac mini
+(`scripts/deploy.sh --check` shows what it would do). It deploys only when all of these hold: the checkout is on
+`main` with no uncommitted changes, it can fast-forward, and the GitHub `test` run for that exact commit passed.
+Then it fast-forwards, installs `requirements.txt` if it changed, restarts `com.vlad.optionswhale` and
+`com.vlad.mcpserver`, and waits for the terminal to answer. If it does not answer, it puts the old commit back and
+restarts again. It never starts a pipeline run, sends anything or touches `.env`. When nothing is new it exits quietly,
+so a timer can call it. To deploy automatically after each green merge, call it from a launchd job with
+`StartInterval` 300 (the same plist shape as `com.vlad.mcpserver`).
+
 ## MCP server (Claude chat, ChatGPT, Gemini CLI)
 
 `mcp_server.py` lets MCP clients read the terminal. It is standalone (not in the pipeline) and makes only GET requests to the
