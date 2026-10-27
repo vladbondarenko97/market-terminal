@@ -463,3 +463,13 @@ class Routes(ApiCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Guide(ApiCase):
+    def test_term_finds_the_entry_and_unknown_is_missing(self):
+        c = self.client
+        j = c.get("/api/guide?term=what is a reverse repo program").get_json()
+        self.assertEqual(j["sections"][0]["heading"], "Reverse repo (RRP, ON RRP)")
+        self.assertIn("bid-to-cover", c.get("/api/guide?term=bid to cover").get_json()["sections"][0]["text"].lower())
+        self.assertEqual(c.get("/api/guide?term=zzzz").get_json()["status"], "missing")
+        self.assertIn("VMRI (macro risk index)", c.get("/api/guide").get_json()["headings"])

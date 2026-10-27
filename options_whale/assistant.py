@@ -127,6 +127,9 @@ SOURCES = OrderedDict([
         "since 2024 with the monthly, quarterly, yearly (year-over-year) and trailing-12-month totals. security_type=TIPS narrows it.")),
     ("auction_history", ("/api/fed_ops/history/auctions", ("from", "to", "limit", "tenor"), "Every Treasury auction result since 2021, "
         "with the per-tenor summaries. tenor=30 year (or 10 year note, 13 week, bond, bill, TIPS) narrows it; the last row is the latest auction.")),
+    ("guide", ("/api/guide", ("term",), "Plain-English explanations of every card, term and number in the terminal (reverse repo, SOFR, "
+        "bid-to-cover, VMRI, gamma walls, paper:physical ratio, COT and more) and ten showcase questions. term=reverse repo returns the best "
+        "two entries; no term lists them all. Use it for what something is or means.")),
     ("tactical_report", ("/api/dump", (), "The full tactical report of the latest run (prices, regime, options, COMEX, execution votes). Large: open parts with path.")),
 ])
 
@@ -837,6 +840,8 @@ comparison (a month, this year vs last year, the last 12 months, since 2024, the
 10-year) call buyback_history, auction_history or repo_history with from/to and tenor: they hold every stored row and a summary. \
 Amounts there are written out with their unit ("$11.539 billion"); keep the unit exactly, never turn billions into trillions. \
 A history result shows at most 12 rows; when rows_in_range is larger, take totals from its summary, never from adding up rows.
+- Asked what something is or means (a term, a card, a number's name), call guide with query term=<the thing> and explain \
+it in plain words from that entry; if the user may want today's reading, also fetch the source the entry names.
 - Copy contract symbols, tickers and numbers exactly as the data gives them.
 - Every number you state must come from the BRIEF or from a result you fetched in this conversation. Never use a \
 number from memory and never invent one. If the data does not contain what is needed, say so plainly.

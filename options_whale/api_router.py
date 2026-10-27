@@ -1803,6 +1803,12 @@ def api_help():
   </group>
 
   <group name="Rule cards and console">
+    <endpoint method="GET" path="/api/guide" format="json" source="stored">
+      <description>The plain-English guide (docs/guide.md): the two sections that best match term, or every heading without one. status missing when nothing matches.</description>
+      <parameters>
+        <param name="term" type="string" default="" description="what to explain, e.g. reverse repo, bid-to-cover, VMRI" />
+      </parameters>
+    </endpoint>
     <endpoint method="GET" path="/api/scanner" format="json" source="stored and live">
       <description>Day Scanner (card 12): the dip-in-an-uptrend rule for every ticker on the saved watchlist, with live quotes, trigger prices and evidence, plus the live-watch paper positions. POST with {"symbol": "XYZ"} checks the ticker against Yahoo and adds it (400 with a reason if it is refused).</description>
       <parameters>
@@ -3084,6 +3090,27 @@ def api_fed_ops():
     if not sec:
         return json_error("no Fed / Treasury operations data yet: run the pipeline", 404)
     return jsonify({"status": "success", "run": run, "as_of": sec.get("as_of"), "data": sec[part] if part else sec})
+
+
+GUIDE_SKIP = {"what", "whats", "the", "and", "does", "mean", "means", "explain", "how", "why", "are", "for", "this", "that", "card"}
+
+
+@app.route('/api/guide', methods=['GET'])
+@guarded("guide")
+def api_guide():
+    """The plain-English guide (docs/guide.md): the two sections that best match `term` (heading words first, then text);
+    no term lists the headings."""
+    with open(os.path.join(ROOT_DIR, "docs", "guide.md"), encoding="utf-8") as fh:
+        parts = [p.split("\n", 1) for p in re.split(r"(?m)^#{2,3} ", fh.read())[1:]]
+    sections = [(h.strip(), b.strip()) for h, b in parts if b.strip()]
+    words = [w for w in re.findall(r"[a-z0-9]+", (request.args.get("term") or "").lower()) if len(w) > 2 and w not in GUIDE_SKIP]
+    if not words:
+        return jsonify({"status": "success", "headings": [h for h, _ in sections]})
+    score = lambda s: (sum(w in s[0].lower() for w in words), sum(w in s[1].lower() for w in words))
+    hits = [s for s in sorted(sections, key=score, reverse=True) if any(score(s))][:2]
+    if not hits:
+        return jsonify({"status": "missing", "reason": f"the guide has no entry for {' '.join(words)}", "headings": [h for h, _ in sections]})
+    return jsonify({"status": "success", "sections": [{"heading": h, "text": b} for h, b in hits]})
 
 
 @app.route('/api/fed_ops/history/repo', methods=['GET'])

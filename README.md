@@ -213,6 +213,7 @@ for f in options_whale/static/*.js; do node --check "$f"; done    # syntax check
 | Install it, run it, schedule it, fix a failed run | [Operations](docs/operations.md) |
 | Fill in `.env` or change the data folder or port | [Configuration](docs/configuration.md) |
 | Use the terminal | [Terminal](docs/terminal.md) and [Forecast Lab](docs/forecast-lab.md) |
+| Learn what a card or term means, or what to ask | [Plain-English guide](docs/guide.md) |
 | Understand the code before changing it | [Architecture](docs/architecture.md) (design rules, full repository map) |
 | Know what is stored where | [Data](docs/data.md) |
 | Call the HTTP API | [API](docs/api.md) |

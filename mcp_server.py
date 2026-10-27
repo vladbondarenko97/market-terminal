@@ -200,7 +200,8 @@ def search_text(query, max_hits=25):
 
 def market_server():
     mcp = MCPServer("market-terminal", instructions="Read-only market data from the operator's terminal (SPY/SLV options, dealer gamma, "
-                    "Forecast Lab, VMRI, silver). Call list_sources first. For how a number is defined or computed, use search_docs and read_doc "
+                    "Forecast Lab, VMRI, silver). Call list_sources first. To explain a term or card in plain words, use source guide or read_doc docs/guide.md. "
+                    "For how a number is defined or computed, use search_docs and read_doc "
                     "(the documentation and model code) instead of guessing. Say the run time of stored data when quoting it.")
 
     @mcp.tool()
@@ -220,7 +221,7 @@ def market_server():
 
     @mcp.tool()
     async def read_doc(name: str = "", section: str = "") -> str:
-        """Read a document or model source: docs/*.md (terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md and the model code
+        """Read a document or model source: docs/*.md (guide: plain-English explanations; terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md and the model code
         core/{metrics,forecast,refining,chaos,edges,watch,market_calendar}.py (core/metrics.py has the VMRI and GEX formulas). Empty name lists them. section = a heading (markdown) or a def/class/CONSTANT name (python), e.g. name=core/metrics.py section=VMRI_VERSION."""
         if not name:
             return "error: pass name (and optionally section) from this list:\n" + "\n".join(doc_files()) if section else "\n".join(doc_files())
