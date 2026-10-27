@@ -135,9 +135,10 @@ class McpTests(unittest.TestCase):
         self.assertIn("VMRI", mcp_server.search_text("vmri"))
 
     def test_extra_sources_only_in_the_mcp_copy(self):
-        for name in ("paper_physical", "shanghai_spread", "chaos_history"):
+        self.assertIn("chaos_history", mcp_server.SOURCES)
+        self.assertNotIn("chaos_history", mcp_server.assistant.SOURCES)
+        for name in ("paper_physical", "shanghai_spread", "guide"):       # console sources the MCP inherits
             self.assertIn(name, mcp_server.SOURCES)
-            self.assertNotIn(name, mcp_server.assistant.SOURCES)
         self.assertEqual(mcp_server.SOURCES["chaos_history"][1], ("from",))
         self.assertIn("brokerage", mcp_server.assistant.PRIVATE_SOURCES)
         for name in mcp_server.assistant.PRIVATE_SOURCES:               # the console reads holdings; the public market link must not

@@ -80,6 +80,10 @@ SOURCES = OrderedDict([
     ("macro_ledger", ("/api/macro_ledger_full", ("limit",), "Macro ledger rows per run: VMRI, DXY, yields, OAS, VIX, crude, gold, ratios. limit=N rows.")),
     ("institutional_history", ("/api/institutional_history", ("ticker", "limit"), "Per-run dark-pool and GEX history for SPY or SLV. limit=N rows.")),
     ("arbitrage_history", ("/api/arbitrage_history", ("limit",), "Physical silver vs spot premium history (eBay Silver Eagles). limit=N rows.")),
+    ("paper_physical", ("/api/paper_physical", (), "COMEX paper:physical silver ratio of the latest run: ounces claimed by open futures per registered "
+        "(deliverable) ounce, its tier, inputs and the recorded-ratio history.")),
+    ("shanghai_spread", ("/api/shanghai_spread", (), "Shanghai (SGE) versus COMEX silver price on the same date, raw and with China's 13% VAT "
+        "stripped: latest reading, history, how unusual it is.")),
     ("comex_inventory", ("/api/inventory_data", (), "COMEX silver registered and eligible inventory history.")),
     ("eia_history", ("/api/eia_history", (), "Weekly US petroleum stocks and days of supply since 1982. Use path=series.N and last=N.")),
     ("positions", ("/api/positions", (),
@@ -127,6 +131,9 @@ SOURCES = OrderedDict([
         "since 2024 with the monthly, quarterly, yearly (year-over-year) and trailing-12-month totals. security_type=TIPS narrows it.")),
     ("auction_history", ("/api/fed_ops/history/auctions", ("from", "to", "limit", "tenor"), "Every Treasury auction result since 2021, "
         "with the per-tenor summaries. tenor=30 year (or 10 year note, 13 week, bond, bill, TIPS) narrows it; the last row is the latest auction.")),
+    ("guide", ("/api/guide", ("term",), "Plain-English explanations of every card, term and number in the terminal (reverse repo, SOFR, "
+        "bid-to-cover, VMRI, gamma walls, paper:physical ratio, COT and more) and ten showcase questions. term=reverse repo returns the best "
+        "two entries; no term lists them all. Use it for what something is or means.")),
     ("tactical_report", ("/api/dump", (), "The full tactical report of the latest run (prices, regime, options, COMEX, execution votes). Large: open parts with path.")),
 ])
 
@@ -353,6 +360,29 @@ def _shape_war_room(obj, params):
 
 def _shape_chaos(obj, _params):
     return {"as_of": obj.get("as_of"), "rows": [line for _label, line in narrative.chaos_rows(obj.get("data"))]}
+
+
+def _shape_shanghai(obj, _params):
+    """The latest dated reading as one sentence: a 9B subtracted the raw dollar gap from the Shanghai price and called it the
+    VAT-adjusted price ($54.26, $0.50 under COMEX; the stored adjusted gap was -$0.76, -1.39%)."""
+    d = (obj.get("data") or {}).get("dated") or {}
+    x, s = d.get("latest") or {}, d.get("stats") or {}
+    if not x:
+        return {"status": d.get("status") or "missing", "reason": d.get("reason") or "no dated Shanghai reading stored"}
+    side = lambda v: "above" if v > 0 else "below" if v < 0 else "level with"
+    vat = f"{d['vat']:.0%} " if d.get("vat") is not None else ""
+    ser = d.get("series") or {}
+    rows = [f"{day}: Shanghai ${sh}, COMEX ${cx}, VAT-adjusted {adj:+.2f}%, raw {raw:+.2f}%" for day, sh, cx, adj, raw in
+            zip(*(ser.get(k) or [] for k in ("dates", "shanghai", "comex", "adj_pct", "raw_pct"))) if None not in (sh, cx, adj, raw)]
+    return {"status": d.get("status"), "reading": (
+        f"On {x['date']} ({x['session']} fix) Shanghai silver was ${x['shanghai']:.2f}/oz against COMEX ${x['comex']:.2f}/oz: "
+        f"${abs(x['raw_dollar']):.2f} ({abs(x['raw_pct']):.2f}%) {side(x['raw_dollar'])} COMEX before tax. With China's "
+        f"{vat}VAT taken out, Shanghai was ${abs(x['adj_dollar']):.2f} ({abs(x['adj_pct']):.2f}%) {side(x['adj_dollar'])} COMEX."),
+        "by_date": rows,
+        "vat_adjusted_spread_pct_last_90_days": {k: s.get(k) for k in ("mean", "median", "min", "max", "zscore", "pct_rank")},
+        "vat_adjusted_spread_pct_since": {"first_date": (s.get("history") or {}).get("first_label"), "min": (s.get("history") or {}).get("min"),
+                                          "max": (s.get("history") or {}).get("max")},
+        "changes": s.get("changes"), "run_at": (obj.get("data") or {}).get("run_at")}
 
 
 def _shape_news(obj, _params):
@@ -592,20 +622,26 @@ def _shape_fed_latest(obj, params=None):
 
 
 SHAPERS = {**{n: _shape_fed if n.endswith("_history") else _shape_fed_latest for n in FED_SOURCES},
-           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool
-def fetch_source(app, source, query="", path="", last=10, sources=None):
-    """GET one whitelisted route (from `sources`, default SOURCES) through Flask's test client and return shaped text. Never raises."""
+def resolve_source(source, path="", sources=None):
+    """(source, path) as fetch_source reads them: models sometimes write positions.trades or put the source in path."""
     sources = sources or SOURCES
     source, path = str(source or "").strip(), str(path or "").strip()
-    if source not in sources:                                  # models sometimes write positions.trades or put the source in path
+    if source not in sources:
         for text in (source, path):
             head, _, rest = text.replace(":", ".").replace("/", ".").partition(".")
             if head in sources:
-                source, path = head, rest if text == source and not path else (rest if text == path else path)
-                break
+                return head, rest if text == source and not path else (rest if text == path else path)
+    return source, path
+
+
+def fetch_source(app, source, query="", path="", last=10, sources=None):
+    """GET one whitelisted route (from `sources`, default SOURCES) through Flask's test client and return shaped text. Never raises."""
+    sources = sources or SOURCES
+    source, path = resolve_source(source, path, sources)
     if source not in sources:
         return (f"error: `source` must be one of: {', '.join(sources)}. Example: source=positions, path=trades, last=10. "
                 "Fix the call and try again.")
@@ -783,17 +819,24 @@ def brief(app):
         lines.append(f"Signal Watch (card 0): {len(fired)} of {len(sig)} fired." + ("" if fired else " Nothing fired."))
         lines += [f"- FIRED {r['asset']} {r['name']}: {r['action']}" for r in fired]
         lines.append("Waiting: " + "; ".join(f"{r['asset']} {r['name']}" for r in sig if not r["fired"]))      # live readings: signal_watch
-        lines.append(f"Macro: regime {macro.get('regime')}, 12-month recession odds {macro.get('recession_prob_12m', 0):.0%}, 10-year real yield "
+        lines.append(f"Macro: regime {macro.get('regime')}, 12-month recession odds "
+                     + (f"{macro['recession_prob_12m']:.0%}" if macro.get('recession_prob_12m') is not None else "not recorded")
+                     + (f" ({macro['recession_prob_12m_year_ago']:.0%} a year earlier)" if macro.get('recession_prob_12m_year_ago') is not None else "")
+                     + f", 10-year real yield "
                      f"{macro.get('real_yield_10y')}%, high-yield spread {macro.get('hy_oas')}%.")
-        vm = (json.loads(app.test_client().get("/api/war_room").get_data(as_text=True)).get("current") or {})
+        wr = json.loads(app.test_client().get("/api/war_room").get_data(as_text=True))
+        vm, cut = wr.get("current") or {}, wr.get("thresholds") or {}
         if vm.get("vmri") is not None:          # a 9B asked for "the VMRI" without fetching gave the Signal Watch count (12) and a made-up tier
             lines.append(f"VMRI macro risk score (source war_room): {vm['vmri']:.2f}, tier {vm['tier']} (DXY {vm['dxy']}, 10-year yield "
-                         f"{vm['tnx']}%, high-yield spread {vm['oas']}%, VIX {vm['vix']}). Not the Chaos / Peace score and not a Signal Watch count.")
+                         f"{vm['tnx']}%, high-yield spread {vm['oas']}%, VIX {vm['vix']})."
+                         + (" Tiers: " + ", ".join(f"{k} from {v:g}" for k, v in sorted(cut.items(), key=lambda kv: kv[1])) + "." if cut else "")
+                         + " Not the Chaos / Peace score and not a Signal Watch count.")
         ch = fc.get("chaos") or {}
         if ch.get("score") is not None:
             el = ch.get("election") or {}
             n, kind = el.get("trading_days_to"), "presidential election" if el.get("kind") == "presidential" else "midterm"
-            lines.append(f"Chaos / Peace (card 14): {ch['score']:+.1f}, regime {ch['regime']}" + (f", {n} trading days to the {kind}" if n is not None else "") + ".")
+            lines.append(f"Chaos / Peace (card 14): {ch['score']:+.1f}, regime {ch['regime']}" + (f", {n} trading days to the {kind}" if n is not None else "")
+                         + ". How the S&P 500, VIX and this score moved around past midterm and presidential elections: source chaos.")
         day = lambda d: datetime.fromisoformat(d).strftime("%A %B %-d, %Y") if d else "not known"
         lines += ["Next scheduled events:", f"- CPI inflation report: {day(nxt.get('cpi'))}", f"- Fed (FOMC) rate decision: {day(nxt.get('fomc'))}",
                   f"- Monthly options expiry (OPEX): {day(nxt.get('opex'))}"]
@@ -820,6 +863,9 @@ from the terminal's own data. Everything runs on the user's machine.
 How to work
 - A BRIEF of the terminal's current state follows these instructions. If it fully answers the question, answer from \
 it straight away without calling a tool.
+- A question about what something is or means ("what is", "explain", "what does X mean": a term, a card, a number's \
+name) is answered from the guide: call guide with query term=<the thing> even when you know the answer, explain it in plain \
+words from that entry, and add today's reading from the source the entry names.
 - The BRIEF is a summary, not everything. Whenever the question needs something it does not show (a current option \
 value or P&L, gamma walls, a scanner or edge reading, history, any other number), call `fetch_source` first. Never say \
 that data is missing or unavailable until you have fetched the source that would hold it.
@@ -924,13 +970,32 @@ UNFETCHED_CLAIM = re.compile(r"not[ _]configured|not linked|unavailable|not avai
 SOURCES_LINE = re.compile(r"^\W*Sources?\W*:(.*)$", re.I | re.M)
 
 
-def claims_unfetched_source(answer, lookups):
-    """An answer given with zero lookups whose closing 'Sources:' line names a source other than the brief. Seen: a 9B wrote
-    'Sources: brief, war_room, chaos' after fetching nothing."""
-    if lookups:
-        return False
+def claims_unfetched_source(answer, fetched):
+    """Sources named in the answer's closing 'Sources:' line that were never fetched (`fetched`: the source names called).
+    Seen: a 9B wrote 'Sources: brief, war_room, chaos' after fetching nothing, and 'Sources: guide, repo_ops' with an ON RRP
+    of $809.4 billion (the real one was $0.200 billion) after fetching only guide."""
     named = {w.strip(" .*`").lower() for m in SOURCES_LINE.findall(answer) for w in m.split(",")}
-    return bool(named & set(SOURCES))
+    return sorted((named & set(SOURCES)) - set(fetched))
+
+
+WHAT_IS = re.compile(r"^\W*(what(\W?s| is| are) (a|an)\b|what does .+ mean\b|what(\W?s| is) meant by|explain|define|meaning of)", re.I)
+SHORT_WHAT = re.compile(r"^\W*what(\W?s| is| are)\s", re.I)
+LIVE_WORDS = re.compile(r"\b(today|now|current(ly)?|latest|this (week|month|year)|last|price|level|balance|odds|how much|how many)\b|\d", re.I)
+FILLER = {"what", "whats", "is", "are", "a", "an", "the", "does", "do", "mean", "means", "meant", "by", "explain", "define", "meaning", "of",
+          "it", "my", "me", "i", "im", "for", "when", "to", "like", "new", "this", "that", "in", "simple", "terms", "please", "and", "how"}
+
+
+def guide_entry(app, question):
+    """For a 'what is / explain' question, the guide entry fetched before the model starts: a 9B asked to call guide
+    skipped it and explained zero gamma backwards from memory. None when the guide has no matching entry."""
+    q = question.strip()
+    if not (WHAT_IS.search(q) or SHORT_WHAT.search(q) and len(q.split()) <= 6 and not LIVE_WORDS.search(q)):
+        return None
+    term = " ".join(w for w in re.findall(r"[a-z0-9]+", q.lower().replace("'", "")) if w not in FILLER)
+    if not term:
+        return None
+    result = fetch_source(app, "guide", "term=" + term[:40])
+    return result if '"sections"' in result else None
 
 
 def unsourced_numbers(answer, messages):
@@ -955,8 +1020,15 @@ def run_local(app, conv, question, model, reasoning=None):
     messages = system_messages(app)
     for q, a in conv["turns"][-MAX_TURNS_KEPT:]:
         messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
-    messages.append({"role": "user", "content": f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"})
-    started, lookups, tokens = time.monotonic(), 0, 0
+    asked = f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"
+    started, lookups, tokens, fetched = time.monotonic(), 0, 0, set()
+    entry = guide_entry(app, question)
+    if entry:                       # not counted in lookups: the zero-lookup guards must still catch numbers the model never fetched
+        fetched.add("guide")
+        yield {"type": "tool", "name": "guide", "detail": "fetched for a what-is question", "bytes": len(entry), "failed": False}
+        asked += ("\n\nGuide entry for this question (source guide, already fetched): explain from it, in plain words, and "
+                  f"fetch the source it names for today's reading.\n{entry}")
+    messages.append({"role": "user", "content": asked})
     answer, seen, retried, pushed_back, nudged = "", set(), False, False, False
     _round = 0
     while _round <= MAX_ROUNDS:
@@ -1029,9 +1101,17 @@ def run_local(app, conv, question, model, reasoning=None):
         _round += 1
         if not calls:
             answer = _clean_answer(content)
+            unfetched = claims_unfetched_source(answer, fetched)
+            if unfetched and lookups and not pushed_back and _round < MAX_ROUNDS:
+                pushed_back = True
+                yield {"type": "replace", "text": ""}
+                messages += [{"role": "assistant", "content": content},
+                             {"role": "user", "content": f"You named {', '.join(unfetched)} as a source but never fetched it, so its "
+                                                         "numbers are not real. Call fetch_source for it, then answer from the result."}]
+                continue
             if not lookups and not pushed_back and _round < MAX_ROUNDS and (UNFETCHED_CLAIM.search(answer)
                                                                            or unsourced_numbers(answer, messages)
-                                                                           or claims_unfetched_source(answer, lookups)):
+                                                                           or unfetched):
                 # The model claims data is missing without fetching anything (a 9B told to be brief answered "brokerage not
                 # configured" from the source description, 4 runs out of 4). Push back once: fetch first, then answer.
                 pushed_back = True
@@ -1070,6 +1150,7 @@ def run_local(app, conv, question, model, reasoning=None):
                 yield {"type": "tool", "name": "calc", "detail": f"{args.get('expression', '')} = {result}"}
             elif c["name"] == "fetch_source":
                 lookups += 1
+                fetched.add(resolve_source(args.get("source", ""), args.get("path", ""))[0])
                 result = fetch_source(app, args.get("source", ""), args.get("query", ""), args.get("path", ""), args.get("last", 10))
                 detail = " ".join(str(x) for x in (args.get("query"), args.get("path")) if x)
                 yield {"type": "tool", "name": args.get("source", "?"), "detail": detail, "bytes": len(result),

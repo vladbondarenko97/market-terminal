@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "options_whale"))
 import assistant  # noqa: E402
@@ -33,9 +34,38 @@ class ConsoleGuards(unittest.TestCase):
     def test_vmri_twelve_from_the_signal_count_is_caught(self):
         # 2026-10-26: "The latest VMRI score is 12, which is in the Tier 2 range" while war_room said 255.72. The brief held no VMRI
         # but did hold "2 of 12 fired", so the number check passed; the answer still cited a source it never fetched.
-        self.assertTrue(assistant.claims_unfetched_source("The latest VMRI score is 12.\n\nSources: brief, war_room", 0))
-        self.assertFalse(assistant.claims_unfetched_source("The latest VMRI score is 255.72.\n\nSources: war_room", 1))
-        self.assertFalse(assistant.claims_unfetched_source("Nothing fired today.\n\n**Sources:** brief", 0))
+        self.assertTrue(assistant.claims_unfetched_source("The latest VMRI score is 12.\n\nSources: brief, war_room", set()))
+        self.assertFalse(assistant.claims_unfetched_source("The latest VMRI score is 255.72.\n\nSources: war_room", {"war_room"}))
+        self.assertFalse(assistant.claims_unfetched_source("Nothing fired today.\n\n**Sources:** brief", set()))
+        self.assertEqual(assistant.claims_unfetched_source("ON RRP is $809.4 billion.\n\nSources: guide, repo_ops", {"guide"}), ["repo_ops"])
+
+    def test_shanghai_reading_states_the_vat_adjusted_gap(self):
+        latest = {"date": "2026-10-22", "session": "evening", "shanghai": 61.02, "comex": 54.76, "raw_dollar": 6.26, "raw_pct": 11.43,
+                  "adj_dollar": -0.76, "adj_pct": -1.39}
+        out = assistant._shape_shanghai({"data": {"dated": {"status": "fresh", "vat": 0.13, "latest": latest, "stats": {}}}}, {})
+        self.assertIn("$6.26 (11.43%) above COMEX before tax", out["reading"])
+        self.assertIn("13% VAT taken out, Shanghai was $0.76 (1.39%) below COMEX", out["reading"])
+        self.assertEqual(assistant._shape_shanghai({"data": {"dated": None}}, {})["status"], "missing")
+        series = {"dates": ["2026-10-21", "2026-10-22"], "shanghai": [63.37, 61.02], "comex": [57.42, 54.76], "adj_pct": [-2.34, -1.39],
+                  "raw_pct": [10.35, 11.43]}
+        out = assistant._shape_shanghai({"data": {"dated": {"latest": latest, "series": series, "stats": {}}}}, {})
+        self.assertIn("China's VAT taken out", out["reading"])                                            # no rate stored: none invented
+        self.assertEqual(out["by_date"][-1], "2026-10-22: Shanghai $61.02, COMEX $54.76, VAT-adjusted -1.39%, raw +11.43%")
+
+    def test_what_is_questions_get_the_guide_entry(self):
+        app = mock.Mock()
+        with mock.patch.object(assistant, "fetch_source", return_value='{"sections":[{"heading":"Reverse repo"}]}') as f:
+            self.assertIn("Reverse repo", assistant.guide_entry(app, "what is a reverse repo program?"))
+            self.assertIn("reverse repo", f.call_args[0][2])
+            self.assertIn("Reverse repo", assistant.guide_entry(app, "Explain bid to cover like I'm new"))
+            self.assertIsNone(assistant.guide_entry(app, "How much is in the reverse repo today?"))
+            self.assertIsNone(assistant.guide_entry(app, "What is the reverse repo balance today?"))      # live data, not a definition
+            self.assertIsNone(assistant.guide_entry(app, "What do you think silver does this week?"))
+            self.assertIsNotNone(assistant.guide_entry(app, "what is the VMRI?"))
+            assistant.guide_entry(app, "What does it mean for my silver stack when the paper:physical ratio rises?")
+            self.assertIn("paper physical ratio", f.call_args[0][2])                                     # filler dropped before the cut
+        with mock.patch.object(assistant, "fetch_source", return_value='{"status":"missing"}'):
+            self.assertIsNone(assistant.guide_entry(app, "what is zzz?"))
 
     def test_an_announced_answer_is_not_an_answer(self):
         self.assertTrue(assistant.unfinished("Now I have the comparison. Let me provide the answer.\n\nSources: treasury_buybacks"))

@@ -1,7 +1,7 @@
 """MCP server for the terminal: lets Claude chat, ChatGPT and other MCP clients read its data. Standalone, not part of the pipeline.
 
 Two endpoints, each behind its own secret path segment, so holdings can be shared with fewer clients than market data:
-    /<MCP_MARKET_TOKEN>/mcp      list_sources, get_source (the console's read-only sources plus three more), search_docs, read_doc
+    /<MCP_MARKET_TOKEN>/mcp      list_sources, get_source (the console's read-only sources plus chaos_history), search_docs, read_doc
                                  (docs and the model code in core/), calculate
     /<MCP_BROKERAGE_TOKEN>/mcp   get_brokerage_positions   (live SnapTrade holdings)
 A blank token switches that endpoint off; a token under 24 characters, or the same token twice, stops the server. Only GETs of the whitelisted
@@ -103,8 +103,6 @@ SOURCES = OrderedDict(assistant.SOURCES)
 for _private in assistant.PRIVATE_SOURCES:      # holdings are private: only the holdings endpoint's own tool serves them
     del SOURCES[_private]                       # KeyError (service will not start) if a name goes stale, never a silent leak
 SOURCES.update({
-    "paper_physical": ("/api/paper_physical", (), "Paper-to-physical silver ratio of the latest run: ratio, tier, inputs and the recorded-ratio history."),
-    "shanghai_spread": ("/api/shanghai_spread", (), "Shanghai (SGE) versus COMEX silver spread, VAT-adjusted: latest reading, history, how unusual it is."),
     "chaos_history": ("/api/chaos/history", ("from",), "Recorded Chaos / Peace score history; from=YYYY-MM-DD limits the start."),
 })
 
@@ -200,7 +198,8 @@ def search_text(query, max_hits=25):
 
 def market_server():
     mcp = MCPServer("market-terminal", instructions="Read-only market data from the operator's terminal (SPY/SLV options, dealer gamma, "
-                    "Forecast Lab, VMRI, silver). Call list_sources first. For how a number is defined or computed, use search_docs and read_doc "
+                    "Forecast Lab, VMRI, silver). Call list_sources first. To explain a term or card in plain words, use source guide or read_doc docs/guide.md. "
+                    "For how a number is defined or computed, use search_docs and read_doc "
                     "(the documentation and model code) instead of guessing. Say the run time of stored data when quoting it.")
 
     @mcp.tool()
@@ -220,7 +219,7 @@ def market_server():
 
     @mcp.tool()
     async def read_doc(name: str = "", section: str = "") -> str:
-        """Read a document or model source: docs/*.md (terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md and the model code
+        """Read a document or model source: docs/*.md (guide: plain-English explanations; terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md and the model code
         core/{metrics,forecast,refining,chaos,edges,watch,market_calendar}.py (core/metrics.py has the VMRI and GEX formulas). Empty name lists them. section = a heading (markdown) or a def/class/CONSTANT name (python), e.g. name=core/metrics.py section=VMRI_VERSION."""
         if not name:
             return "error: pass name (and optionally section) from this list:\n" + "\n".join(doc_files()) if section else "\n".join(doc_files())
