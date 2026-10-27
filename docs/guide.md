@@ -149,8 +149,9 @@ a point above its 12-month low) and the high-yield spread. Source: `forecast` pa
 Options dealers hedge what they sell. **GEX** estimates how much stock they must buy or sell as the price moves.
 When dealers are long gamma they sell rallies and buy dips, which calms the market; when short gamma they chase
 moves, which makes them bigger. The **call wall** is the strike with the most positive gamma (often acts as a ceiling),
-the **put wall** the most negative (often a floor), and **zero gamma** the price where dealer hedging flips from
-calming to amplifying. Source: `gex`.
+the **put wall** the most negative (often a floor), and **zero gamma** the price where dealer hedging flips: spot **above** zero gamma means
+dealers are long gamma and their hedging calms moves; spot **below** it means they are short gamma and their hedging
+amplifies moves. Source: `gex`.
 
 ### Market-implied range (card 1)
 
