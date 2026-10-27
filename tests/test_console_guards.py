@@ -39,6 +39,14 @@ class ConsoleGuards(unittest.TestCase):
         self.assertFalse(assistant.claims_unfetched_source("Nothing fired today.\n\n**Sources:** brief", set()))
         self.assertEqual(assistant.claims_unfetched_source("ON RRP is $809.4 billion.\n\nSources: guide, repo_ops", {"guide"}), ["repo_ops"])
 
+    def test_shanghai_reading_states_the_vat_adjusted_gap(self):
+        latest = {"date": "2026-10-22", "session": "evening", "shanghai": 61.02, "comex": 54.76, "raw_dollar": 6.26, "raw_pct": 11.43,
+                  "adj_dollar": -0.76, "adj_pct": -1.39}
+        out = assistant._shape_shanghai({"data": {"dated": {"status": "fresh", "vat": 0.13, "latest": latest, "stats": {}}}}, {})
+        self.assertIn("$6.26 (11.43%) above COMEX before tax", out["reading"])
+        self.assertIn("13% VAT taken out, Shanghai was $0.76 (1.39%) below COMEX", out["reading"])
+        self.assertEqual(assistant._shape_shanghai({"data": {"dated": None}}, {})["status"], "missing")
+
     def test_what_is_questions_get_the_guide_entry(self):
         app = mock.Mock()
         with mock.patch.object(assistant, "fetch_source", return_value='{"sections":[{"heading":"Reverse repo"}]}') as f:

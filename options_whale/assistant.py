@@ -362,6 +362,24 @@ def _shape_chaos(obj, _params):
     return {"as_of": obj.get("as_of"), "rows": [line for _label, line in narrative.chaos_rows(obj.get("data"))]}
 
 
+def _shape_shanghai(obj, _params):
+    """The latest dated reading as one sentence: a 9B subtracted the raw dollar gap from the Shanghai price and called it the
+    VAT-adjusted price ($54.26, $0.50 under COMEX; the stored adjusted gap was -$0.76, -1.39%)."""
+    d = (obj.get("data") or {}).get("dated") or {}
+    x, s = d.get("latest") or {}, d.get("stats") or {}
+    if not x:
+        return {"status": d.get("status") or "missing", "reason": d.get("reason") or "no dated Shanghai reading stored"}
+    side = lambda v: "above" if v > 0 else "below" if v < 0 else "level with"
+    return {"status": d.get("status"), "reading": (
+        f"On {x['date']} ({x['session']} fix) Shanghai silver was ${x['shanghai']:.2f}/oz against COMEX ${x['comex']:.2f}/oz: "
+        f"${abs(x['raw_dollar']):.2f} ({abs(x['raw_pct']):.2f}%) {side(x['raw_dollar'])} COMEX before tax. With China's "
+        f"{d.get('vat', 0):.0%} VAT taken out, Shanghai was ${abs(x['adj_dollar']):.2f} ({abs(x['adj_pct']):.2f}%) {side(x['adj_dollar'])} COMEX."),
+        "vat_adjusted_spread_pct_last_90_days": {k: s.get(k) for k in ("mean", "median", "min", "max", "zscore", "pct_rank")},
+        "vat_adjusted_spread_pct_since": {"first_date": (s.get("history") or {}).get("first_label"), "min": (s.get("history") or {}).get("min"),
+                                          "max": (s.get("history") or {}).get("max")},
+        "changes": s.get("changes"), "run_at": (obj.get("data") or {}).get("run_at")}
+
+
 def _shape_news(obj, _params):
     """The XML articles become dated rows through the same shaper the Briefing uses."""
     root = obj.get("macro_news") or {}
@@ -599,7 +617,7 @@ def _shape_fed_latest(obj, params=None):
 
 
 SHAPERS = {**{n: _shape_fed if n.endswith("_history") else _shape_fed_latest for n in FED_SOURCES},
-           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool

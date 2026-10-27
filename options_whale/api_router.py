@@ -3106,6 +3106,8 @@ def api_guide():
     words = [w for w in re.findall(r"[a-z0-9]+", (request.args.get("term") or "").lower()) if len(w) > 2 and w not in GUIDE_SKIP]
     if not words:
         return jsonify({"status": "success", "headings": [h for h, _ in sections]})
+    if "questions" not in words:            # its example figures are one day's readings; a model quoted them as live
+        sections = [s for s in sections if not s[0].startswith("Ten questions")]
     score = lambda s: (sum(w in s[0].lower() for w in words), sum(w in s[1].lower() for w in words))
     hits = [s for s in sorted(sections, key=score, reverse=True) if any(score(s))][:2]
     if not hits:
