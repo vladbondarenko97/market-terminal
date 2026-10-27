@@ -790,17 +790,21 @@ def brief(app):
         lines.append(f"Signal Watch (card 0): {len(fired)} of {len(sig)} fired." + ("" if fired else " Nothing fired."))
         lines += [f"- FIRED {r['asset']} {r['name']}: {r['action']}" for r in fired]
         lines.append("Waiting: " + "; ".join(f"{r['asset']} {r['name']}" for r in sig if not r["fired"]))      # live readings: signal_watch
-        lines.append(f"Macro: regime {macro.get('regime')}, 12-month recession odds {macro.get('recession_prob_12m', 0):.0%}, 10-year real yield "
+        lines.append(f"Macro: regime {macro.get('regime')}, 12-month recession odds {macro.get('recession_prob_12m', 0):.0%}"
+                     + (f" ({macro['recession_prob_12m_year_ago']:.0%} a year earlier)" if macro.get('recession_prob_12m_year_ago') is not None else "")
+                     + f", 10-year real yield "
                      f"{macro.get('real_yield_10y')}%, high-yield spread {macro.get('hy_oas')}%.")
         vm = (json.loads(app.test_client().get("/api/war_room").get_data(as_text=True)).get("current") or {})
         if vm.get("vmri") is not None:          # a 9B asked for "the VMRI" without fetching gave the Signal Watch count (12) and a made-up tier
             lines.append(f"VMRI macro risk score (source war_room): {vm['vmri']:.2f}, tier {vm['tier']} (DXY {vm['dxy']}, 10-year yield "
-                         f"{vm['tnx']}%, high-yield spread {vm['oas']}%, VIX {vm['vix']}). Not the Chaos / Peace score and not a Signal Watch count.")
+                         f"{vm['tnx']}%, high-yield spread {vm['oas']}%, VIX {vm['vix']}). Tiers: moderate from 150, elevated from 250, systemic from 350. "
+                         "Not the Chaos / Peace score and not a Signal Watch count.")
         ch = fc.get("chaos") or {}
         if ch.get("score") is not None:
             el = ch.get("election") or {}
             n, kind = el.get("trading_days_to"), "presidential election" if el.get("kind") == "presidential" else "midterm"
-            lines.append(f"Chaos / Peace (card 14): {ch['score']:+.1f}, regime {ch['regime']}" + (f", {n} trading days to the {kind}" if n is not None else "") + ".")
+            lines.append(f"Chaos / Peace (card 14): {ch['score']:+.1f}, regime {ch['regime']}" + (f", {n} trading days to the {kind}" if n is not None else "")
+                         + ". How the S&P 500, VIX and this score moved around past midterm and presidential elections: source chaos.")
         day = lambda d: datetime.fromisoformat(d).strftime("%A %B %-d, %Y") if d else "not known"
         lines += ["Next scheduled events:", f"- CPI inflation report: {day(nxt.get('cpi'))}", f"- Fed (FOMC) rate decision: {day(nxt.get('fomc'))}",
                   f"- Monthly options expiry (OPEX): {day(nxt.get('opex'))}"]
@@ -934,13 +938,24 @@ UNFETCHED_CLAIM = re.compile(r"not[ _]configured|not linked|unavailable|not avai
 SOURCES_LINE = re.compile(r"^\W*Sources?\W*:(.*)$", re.I | re.M)
 
 
-def claims_unfetched_source(answer, lookups):
-    """An answer given with zero lookups whose closing 'Sources:' line names a source other than the brief. Seen: a 9B wrote
-    'Sources: brief, war_room, chaos' after fetching nothing."""
-    if lookups:
-        return False
+def claims_unfetched_source(answer, fetched):
+    """Sources named in the answer's closing 'Sources:' line that were never fetched (`fetched`: the source names called).
+    Seen: a 9B wrote 'Sources: brief, war_room, chaos' after fetching nothing, and 'Sources: guide, repo_ops' with an ON RRP
+    of $809.4 billion (the real one was $0.200 billion) after fetching only guide."""
     named = {w.strip(" .*`").lower() for m in SOURCES_LINE.findall(answer) for w in m.split(",")}
-    return bool(named & set(SOURCES))
+    return sorted((named & set(SOURCES)) - set(fetched))
+
+
+WHAT_IS = re.compile(r"^\W*(what(\W?s| is| are| does| do)|explain|define|meaning of)\b", re.I)
+
+
+def guide_entry(app, question):
+    """For a 'what is / explain' question, the guide entry fetched before the model starts: a 9B asked to call guide
+    skipped it and explained zero gamma backwards from memory. None when the guide has no matching entry."""
+    if not WHAT_IS.search(question):
+        return None
+    result = fetch_source(app, "guide", "term=" + re.sub(r"[&=?]", " ", question)[:40])
+    return result if '"sections"' in result else None
 
 
 def unsourced_numbers(answer, messages):
@@ -965,8 +980,16 @@ def run_local(app, conv, question, model, reasoning=None):
     messages = system_messages(app)
     for q, a in conv["turns"][-MAX_TURNS_KEPT:]:
         messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
-    messages.append({"role": "user", "content": f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"})
-    started, lookups, tokens = time.monotonic(), 0, 0
+    asked = f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"
+    started, lookups, tokens, fetched = time.monotonic(), 0, 0, set()
+    entry = guide_entry(app, question)
+    if entry:
+        lookups += 1
+        fetched.add("guide")
+        yield {"type": "tool", "name": "guide", "detail": "fetched for a what-is question", "bytes": len(entry), "failed": False}
+        asked += ("\n\nGuide entry for this question (source guide, already fetched): explain from it, in plain words, and "
+                  f"fetch the source it names for today's reading.\n{entry}")
+    messages.append({"role": "user", "content": asked})
     answer, seen, retried, pushed_back, nudged = "", set(), False, False, False
     _round = 0
     while _round <= MAX_ROUNDS:
@@ -1039,9 +1062,17 @@ def run_local(app, conv, question, model, reasoning=None):
         _round += 1
         if not calls:
             answer = _clean_answer(content)
+            unfetched = claims_unfetched_source(answer, fetched)
+            if unfetched and lookups and not pushed_back and _round < MAX_ROUNDS:
+                pushed_back = True
+                yield {"type": "replace", "text": ""}
+                messages += [{"role": "assistant", "content": content},
+                             {"role": "user", "content": f"You named {', '.join(unfetched)} as a source but never fetched it, so its "
+                                                         "numbers are not real. Call fetch_source for it, then answer from the result."}]
+                continue
             if not lookups and not pushed_back and _round < MAX_ROUNDS and (UNFETCHED_CLAIM.search(answer)
                                                                            or unsourced_numbers(answer, messages)
-                                                                           or claims_unfetched_source(answer, lookups)):
+                                                                           or unfetched):
                 # The model claims data is missing without fetching anything (a 9B told to be brief answered "brokerage not
                 # configured" from the source description, 4 runs out of 4). Push back once: fetch first, then answer.
                 pushed_back = True
@@ -1080,6 +1111,7 @@ def run_local(app, conv, question, model, reasoning=None):
                 yield {"type": "tool", "name": "calc", "detail": f"{args.get('expression', '')} = {result}"}
             elif c["name"] == "fetch_source":
                 lookups += 1
+                fetched.add(str(args.get("source", "")).split(".")[0].strip())
                 result = fetch_source(app, args.get("source", ""), args.get("query", ""), args.get("path", ""), args.get("last", 10))
                 detail = " ".join(str(x) for x in (args.get("query"), args.get("path")) if x)
                 yield {"type": "tool", "name": args.get("source", "?"), "detail": detail, "bytes": len(result),

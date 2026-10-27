@@ -3092,7 +3092,7 @@ def api_fed_ops():
     return jsonify({"status": "success", "run": run, "as_of": sec.get("as_of"), "data": sec[part] if part else sec})
 
 
-GUIDE_SKIP = {"what", "whats", "the", "and", "does", "mean", "means", "explain", "how", "why", "are", "for", "this", "that", "card"}
+GUIDE_SKIP = {"what", "whats", "the", "and", "does", "mean", "means", "explain", "how", "why", "are", "for", "this", "that", "card", "like", "new", "simple", "terms", "program", "tell", "about"}
 
 
 @app.route('/api/guide', methods=['GET'])
