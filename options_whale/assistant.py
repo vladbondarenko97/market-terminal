@@ -80,6 +80,10 @@ SOURCES = OrderedDict([
     ("macro_ledger", ("/api/macro_ledger_full", ("limit",), "Macro ledger rows per run: VMRI, DXY, yields, OAS, VIX, crude, gold, ratios. limit=N rows.")),
     ("institutional_history", ("/api/institutional_history", ("ticker", "limit"), "Per-run dark-pool and GEX history for SPY or SLV. limit=N rows.")),
     ("arbitrage_history", ("/api/arbitrage_history", ("limit",), "Physical silver vs spot premium history (eBay Silver Eagles). limit=N rows.")),
+    ("paper_physical", ("/api/paper_physical", (), "COMEX paper:physical silver ratio of the latest run: ounces claimed by open futures per registered "
+        "(deliverable) ounce, its tier, inputs and the recorded-ratio history.")),
+    ("shanghai_spread", ("/api/shanghai_spread", (), "Shanghai (SGE) versus COMEX silver price on the same date, raw and with China's 13% VAT "
+        "stripped: latest reading, history, how unusual it is.")),
     ("comex_inventory", ("/api/inventory_data", (), "COMEX silver registered and eligible inventory history.")),
     ("eia_history", ("/api/eia_history", (), "Weekly US petroleum stocks and days of supply since 1982. Use path=series.N and last=N.")),
     ("positions", ("/api/positions", (),
@@ -823,6 +827,9 @@ from the terminal's own data. Everything runs on the user's machine.
 How to work
 - A BRIEF of the terminal's current state follows these instructions. If it fully answers the question, answer from \
 it straight away without calling a tool.
+- A question about what something is or means ("what is", "explain", "what does X mean": a term, a card, a number's \
+name) is answered from the guide: call guide with query term=<the thing> even when you know the answer, explain it in plain \
+words from that entry, and add today's reading from the source the entry names.
 - The BRIEF is a summary, not everything. Whenever the question needs something it does not show (a current option \
 value or P&L, gamma walls, a scanner or edge reading, history, any other number), call `fetch_source` first. Never say \
 that data is missing or unavailable until you have fetched the source that would hold it.
@@ -840,8 +847,6 @@ comparison (a month, this year vs last year, the last 12 months, since 2024, the
 10-year) call buyback_history, auction_history or repo_history with from/to and tenor: they hold every stored row and a summary. \
 Amounts there are written out with their unit ("$11.539 billion"); keep the unit exactly, never turn billions into trillions. \
 A history result shows at most 12 rows; when rows_in_range is larger, take totals from its summary, never from adding up rows.
-- Asked what something is or means (a term, a card, a number's name), call guide with query term=<the thing> and explain \
-it in plain words from that entry; if the user may want today's reading, also fetch the source the entry names.
 - Copy contract symbols, tickers and numbers exactly as the data gives them.
 - Every number you state must come from the BRIEF or from a result you fetched in this conversation. Never use a \
 number from memory and never invent one. If the data does not contain what is needed, say so plainly.

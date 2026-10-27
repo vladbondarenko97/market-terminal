@@ -28,8 +28,8 @@ exchange data the pipeline stores, with its date.
    (overnight repo $152.75 billion on 2020-03-17 at the Covid panic; $0.005 billion on 2026-10-26.) Source: `repo_ops`.
 3. **"How much more of its own debt has the Treasury bought back this year than last year?"**
    ($230.2 billion vs $153.9 billion over the same dates, +49.6%.) Sources: `treasury_buybacks`, `buyback_history`.
-4. **"How many Treasury bills were auctioned in the last 4 weeks?"**
-   ($2.297 trillion of bills offered in the last 28 days, up $687 billion on four weeks earlier.) Source: `chaos`.
+4. **"Are options dealers calming SPY right now, or amplifying its moves?"**
+   (SPY $759.97 below zero gamma at $769.15: dealers short gamma, so their hedging adds to moves.) Source: `gex` (live).
 5. **"How many ounces of paper silver exist for every ounce of deliverable COMEX silver?"**
    (5.72 ounces of futures claims per registered ounce.) Sources: `paper_physical`, `comex_inventory`.
 6. **"How much more does silver cost in Shanghai than in New York?"**
