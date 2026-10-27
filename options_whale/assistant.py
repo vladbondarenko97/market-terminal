@@ -370,10 +370,15 @@ def _shape_shanghai(obj, _params):
     if not x:
         return {"status": d.get("status") or "missing", "reason": d.get("reason") or "no dated Shanghai reading stored"}
     side = lambda v: "above" if v > 0 else "below" if v < 0 else "level with"
+    vat = f"{d['vat']:.0%} " if d.get("vat") is not None else ""
+    ser = d.get("series") or {}
+    rows = [f"{day}: Shanghai ${sh}, COMEX ${cx}, VAT-adjusted {adj:+.2f}%, raw {raw:+.2f}%" for day, sh, cx, adj, raw in
+            zip(*(ser.get(k) or [] for k in ("dates", "shanghai", "comex", "adj_pct", "raw_pct"))) if None not in (sh, cx, adj, raw)]
     return {"status": d.get("status"), "reading": (
         f"On {x['date']} ({x['session']} fix) Shanghai silver was ${x['shanghai']:.2f}/oz against COMEX ${x['comex']:.2f}/oz: "
         f"${abs(x['raw_dollar']):.2f} ({abs(x['raw_pct']):.2f}%) {side(x['raw_dollar'])} COMEX before tax. With China's "
-        f"{d.get('vat', 0):.0%} VAT taken out, Shanghai was ${abs(x['adj_dollar']):.2f} ({abs(x['adj_pct']):.2f}%) {side(x['adj_dollar'])} COMEX."),
+        f"{vat}VAT taken out, Shanghai was ${abs(x['adj_dollar']):.2f} ({abs(x['adj_pct']):.2f}%) {side(x['adj_dollar'])} COMEX."),
+        "by_date": rows,
         "vat_adjusted_spread_pct_last_90_days": {k: s.get(k) for k in ("mean", "median", "min", "max", "zscore", "pct_rank")},
         "vat_adjusted_spread_pct_since": {"first_date": (s.get("history") or {}).get("first_label"), "min": (s.get("history") or {}).get("min"),
                                           "max": (s.get("history") or {}).get("max")},
@@ -621,16 +626,22 @@ SHAPERS = {**{n: _shape_fed if n.endswith("_history") else _shape_fed_latest for
 
 
 # ---------------------------------------------------------------- the one data tool
-def fetch_source(app, source, query="", path="", last=10, sources=None):
-    """GET one whitelisted route (from `sources`, default SOURCES) through Flask's test client and return shaped text. Never raises."""
+def resolve_source(source, path="", sources=None):
+    """(source, path) as fetch_source reads them: models sometimes write positions.trades or put the source in path."""
     sources = sources or SOURCES
     source, path = str(source or "").strip(), str(path or "").strip()
-    if source not in sources:                                  # models sometimes write positions.trades or put the source in path
+    if source not in sources:
         for text in (source, path):
             head, _, rest = text.replace(":", ".").replace("/", ".").partition(".")
             if head in sources:
-                source, path = head, rest if text == source and not path else (rest if text == path else path)
-                break
+                return head, rest if text == source and not path else (rest if text == path else path)
+    return source, path
+
+
+def fetch_source(app, source, query="", path="", last=10, sources=None):
+    """GET one whitelisted route (from `sources`, default SOURCES) through Flask's test client and return shaped text. Never raises."""
+    sources = sources or SOURCES
+    source, path = resolve_source(source, path, sources)
     if source not in sources:
         return (f"error: `source` must be one of: {', '.join(sources)}. Example: source=positions, path=trades, last=10. "
                 "Fix the call and try again.")
@@ -808,15 +819,18 @@ def brief(app):
         lines.append(f"Signal Watch (card 0): {len(fired)} of {len(sig)} fired." + ("" if fired else " Nothing fired."))
         lines += [f"- FIRED {r['asset']} {r['name']}: {r['action']}" for r in fired]
         lines.append("Waiting: " + "; ".join(f"{r['asset']} {r['name']}" for r in sig if not r["fired"]))      # live readings: signal_watch
-        lines.append(f"Macro: regime {macro.get('regime')}, 12-month recession odds {macro.get('recession_prob_12m', 0):.0%}"
+        lines.append(f"Macro: regime {macro.get('regime')}, 12-month recession odds "
+                     + (f"{macro['recession_prob_12m']:.0%}" if macro.get('recession_prob_12m') is not None else "not recorded")
                      + (f" ({macro['recession_prob_12m_year_ago']:.0%} a year earlier)" if macro.get('recession_prob_12m_year_ago') is not None else "")
                      + f", 10-year real yield "
                      f"{macro.get('real_yield_10y')}%, high-yield spread {macro.get('hy_oas')}%.")
-        vm = (json.loads(app.test_client().get("/api/war_room").get_data(as_text=True)).get("current") or {})
+        wr = json.loads(app.test_client().get("/api/war_room").get_data(as_text=True))
+        vm, cut = wr.get("current") or {}, wr.get("thresholds") or {}
         if vm.get("vmri") is not None:          # a 9B asked for "the VMRI" without fetching gave the Signal Watch count (12) and a made-up tier
             lines.append(f"VMRI macro risk score (source war_room): {vm['vmri']:.2f}, tier {vm['tier']} (DXY {vm['dxy']}, 10-year yield "
-                         f"{vm['tnx']}%, high-yield spread {vm['oas']}%, VIX {vm['vix']}). Tiers: moderate from 150, elevated from 250, systemic from 350. "
-                         "Not the Chaos / Peace score and not a Signal Watch count.")
+                         f"{vm['tnx']}%, high-yield spread {vm['oas']}%, VIX {vm['vix']})."
+                         + (" Tiers: " + ", ".join(f"{k} from {v:g}" for k, v in sorted(cut.items(), key=lambda kv: kv[1])) + "." if cut else "")
+                         + " Not the Chaos / Peace score and not a Signal Watch count.")
         ch = fc.get("chaos") or {}
         if ch.get("score") is not None:
             el = ch.get("election") or {}
@@ -964,15 +978,23 @@ def claims_unfetched_source(answer, fetched):
     return sorted((named & set(SOURCES)) - set(fetched))
 
 
-WHAT_IS = re.compile(r"^\W*(what(\W?s| is| are| does| do)|explain|define|meaning of)\b", re.I)
+WHAT_IS = re.compile(r"^\W*(what(\W?s| is| are) (a|an)\b|what does .+ mean\b|what(\W?s| is) meant by|explain|define|meaning of)", re.I)
+SHORT_WHAT = re.compile(r"^\W*what(\W?s| is| are)\s", re.I)
+LIVE_WORDS = re.compile(r"\b(today|now|current(ly)?|latest|this (week|month|year)|last|price|level|balance|odds|how much|how many)\b|\d", re.I)
+FILLER = {"what", "whats", "is", "are", "a", "an", "the", "does", "do", "mean", "means", "meant", "by", "explain", "define", "meaning", "of",
+          "it", "my", "me", "i", "im", "for", "when", "to", "like", "new", "this", "that", "in", "simple", "terms", "please", "and", "how"}
 
 
 def guide_entry(app, question):
     """For a 'what is / explain' question, the guide entry fetched before the model starts: a 9B asked to call guide
     skipped it and explained zero gamma backwards from memory. None when the guide has no matching entry."""
-    if not WHAT_IS.search(question):
+    q = question.strip()
+    if not (WHAT_IS.search(q) or SHORT_WHAT.search(q) and len(q.split()) <= 6 and not LIVE_WORDS.search(q)):
         return None
-    result = fetch_source(app, "guide", "term=" + re.sub(r"[&=?]", " ", question)[:40])
+    term = " ".join(w for w in re.findall(r"[a-z0-9]+", q.lower().replace("'", "")) if w not in FILLER)
+    if not term:
+        return None
+    result = fetch_source(app, "guide", "term=" + term[:40])
     return result if '"sections"' in result else None
 
 
@@ -1001,8 +1023,7 @@ def run_local(app, conv, question, model, reasoning=None):
     asked = f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"
     started, lookups, tokens, fetched = time.monotonic(), 0, 0, set()
     entry = guide_entry(app, question)
-    if entry:
-        lookups += 1
+    if entry:                       # not counted in lookups: the zero-lookup guards must still catch numbers the model never fetched
         fetched.add("guide")
         yield {"type": "tool", "name": "guide", "detail": "fetched for a what-is question", "bytes": len(entry), "failed": False}
         asked += ("\n\nGuide entry for this question (source guide, already fetched): explain from it, in plain words, and "
@@ -1129,7 +1150,7 @@ def run_local(app, conv, question, model, reasoning=None):
                 yield {"type": "tool", "name": "calc", "detail": f"{args.get('expression', '')} = {result}"}
             elif c["name"] == "fetch_source":
                 lookups += 1
-                fetched.add(str(args.get("source", "")).split(".")[0].strip())
+                fetched.add(resolve_source(args.get("source", ""), args.get("path", ""))[0])
                 result = fetch_source(app, args.get("source", ""), args.get("query", ""), args.get("path", ""), args.get("last", 10))
                 detail = " ".join(str(x) for x in (args.get("query"), args.get("path")) if x)
                 yield {"type": "tool", "name": args.get("source", "?"), "detail": detail, "bytes": len(result),

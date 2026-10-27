@@ -3101,8 +3101,8 @@ def api_guide():
     """The plain-English guide (docs/guide.md): the two sections that best match `term` (heading words first, then text);
     no term lists the headings."""
     with open(os.path.join(ROOT_DIR, "docs", "guide.md"), encoding="utf-8") as fh:
-        parts = [p.split("\n", 1) for p in re.split(r"(?m)^#{2,3} ", fh.read())[1:]]
-    sections = [(h.strip(), b.strip()) for h, b in parts if b.strip()]
+        parts = [p.partition("\n") for p in re.split(r"(?m)^#{2,3} ", fh.read())[1:]]
+    sections = [(h.strip(), b.strip()) for h, _, b in parts if b.strip()]
     words = [w for w in re.findall(r"[a-z0-9]+", (request.args.get("term") or "").lower()) if len(w) > 2 and w not in GUIDE_SKIP]
     if not words:
         return jsonify({"status": "success", "headings": [h for h, _ in sections]})

@@ -461,10 +461,6 @@ class Routes(ApiCase):
         self.assertNotIn("t12m", h["summary"])                                          # market-wide totals are not the tenor's
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Guide(ApiCase):
     def test_term_finds_the_entry_and_unknown_is_missing(self):
         c = self.client
@@ -476,3 +472,8 @@ class Guide(ApiCase):
         heads = lambda term: [s["heading"] for s in c.get("/api/guide", query_string={"term": term}).get_json()["sections"]]
         self.assertNotIn("Ten questions worth asking", heads("odds of a recession a year ago"))   # one day's figures, never quoted as live
         self.assertEqual(heads("showcase questions")[0], "Ten questions worth asking")
+
+
+if __name__ == "__main__":
+    unittest.main()
+

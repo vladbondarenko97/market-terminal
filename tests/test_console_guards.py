@@ -46,6 +46,11 @@ class ConsoleGuards(unittest.TestCase):
         self.assertIn("$6.26 (11.43%) above COMEX before tax", out["reading"])
         self.assertIn("13% VAT taken out, Shanghai was $0.76 (1.39%) below COMEX", out["reading"])
         self.assertEqual(assistant._shape_shanghai({"data": {"dated": None}}, {})["status"], "missing")
+        series = {"dates": ["2026-10-21", "2026-10-22"], "shanghai": [63.37, 61.02], "comex": [57.42, 54.76], "adj_pct": [-2.34, -1.39],
+                  "raw_pct": [10.35, 11.43]}
+        out = assistant._shape_shanghai({"data": {"dated": {"latest": latest, "series": series, "stats": {}}}}, {})
+        self.assertIn("China's VAT taken out", out["reading"])                                            # no rate stored: none invented
+        self.assertEqual(out["by_date"][-1], "2026-10-22: Shanghai $61.02, COMEX $54.76, VAT-adjusted -1.39%, raw +11.43%")
 
     def test_what_is_questions_get_the_guide_entry(self):
         app = mock.Mock()
@@ -54,6 +59,11 @@ class ConsoleGuards(unittest.TestCase):
             self.assertIn("reverse repo", f.call_args[0][2])
             self.assertIn("Reverse repo", assistant.guide_entry(app, "Explain bid to cover like I'm new"))
             self.assertIsNone(assistant.guide_entry(app, "How much is in the reverse repo today?"))
+            self.assertIsNone(assistant.guide_entry(app, "What is the reverse repo balance today?"))      # live data, not a definition
+            self.assertIsNone(assistant.guide_entry(app, "What do you think silver does this week?"))
+            self.assertIsNotNone(assistant.guide_entry(app, "what is the VMRI?"))
+            assistant.guide_entry(app, "What does it mean for my silver stack when the paper:physical ratio rises?")
+            self.assertIn("paper physical ratio", f.call_args[0][2])                                     # filler dropped before the cut
         with mock.patch.object(assistant, "fetch_source", return_value='{"status":"missing"}'):
             self.assertIsNone(assistant.guide_entry(app, "what is zzz?"))
 
