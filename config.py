@@ -186,6 +186,11 @@ SCHEDULED_RUNS = flag_env("SCHEDULED_RUNS")
 
 # Per-machine and standalone-tool settings
 OPTIONS_WHALE_PORT = int_env("OPTIONS_WHALE_PORT", 8080, minimum=1, maximum=65535)
+# Loopback by default (the server has no login); 0.0.0.0 opens every interface. Only these two: deploy.sh, setup.sh, the menu
+# bar and mcp_server.py all reach the terminal on 127.0.0.1, which a single-address bind (a Tailscale IP) would cut off.
+OPTIONS_WHALE_HOST = (optional_env("OPTIONS_WHALE_HOST") or "127.0.0.1").strip()
+if OPTIONS_WHALE_HOST not in ("127.0.0.1", "0.0.0.0"):
+    raise ConfigError(f"OPTIONS_WHALE_HOST must be 127.0.0.1 or 0.0.0.0 (or blank for 127.0.0.1), not {OPTIONS_WHALE_HOST!r}")
 ALPHAFLOW_DEBUG = flag_env("ALPHAFLOW_DEBUG")
 
 # Source limits

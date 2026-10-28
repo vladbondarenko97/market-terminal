@@ -23,6 +23,7 @@ import requests
 import yfinance as yf
 from flask import Flask, jsonify, render_template_string, Response, request, render_template
 from werkzeug.exceptions import HTTPException
+from werkzeug.serving import WSGIRequestHandler
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if ROOT_DIR not in sys.path:
@@ -3216,6 +3217,12 @@ import assistant as _assistant
 _assistant.register(app)
 
 
+class QuietHandler(WSGIRequestHandler):
+    """No Werkzeug or Python version in the Server header."""
+    def version_string(self):
+        return "market-terminal"
+
+
 if __name__ == "__main__":
-    # Port 8080 unless OPTIONS_WHALE_PORT is set in .env (per-machine, never committed)
-    app.run(host='0.0.0.0', port=config.OPTIONS_WHALE_PORT)
+    # 127.0.0.1:8080 unless OPTIONS_WHALE_HOST / OPTIONS_WHALE_PORT are set in .env (per-machine, never committed)
+    app.run(host=config.OPTIONS_WHALE_HOST, port=config.OPTIONS_WHALE_PORT, request_handler=QuietHandler)
