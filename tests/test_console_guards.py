@@ -52,6 +52,30 @@ class ConsoleGuards(unittest.TestCase):
         self.assertIn("China's VAT taken out", out["reading"])                                            # no rate stored: none invented
         self.assertEqual(out["by_date"][-1], "2026-10-22: Shanghai $61.02, COMEX $54.76, VAT-adjusted -1.39%, raw +11.43%")
 
+    def test_eia_reading_answers_days_of_supply_now_and_a_month_ago(self):
+        """"how many days of supply left for diesel, SPR, and jet fuel? what was it at a month ago?" was answered from forecast SLV."""
+        dates = [f"2026-{m:02d}-{d:02d}" for m in range(1, 11) for d in (2, 9, 16, 23)][-40:]
+        n = len(dates)
+        obj = {"status": "success", "as_of": dates[-1], "dates": dates, "note": "weekly", "series": [
+            {"key": "dist_stocks", "label": "Distillate / diesel", "mbbl": [100.0 + i for i in range(n)],
+             "vs_5y_pct": [-9.0] * n, "days_of_supply": [20.0 + i / 10 for i in range(n)]},
+            {"key": "jet_stocks", "label": "Jet fuel", "mbbl": [40.0] * n, "vs_5y_pct": [None] * n, "days_of_supply": [24.5] * n},
+            {"key": "spr_stocks", "label": "Strategic Petroleum Reserve", "mbbl": [None] * 30 + [282.7] * 10, "vs_5y_pct": [None] * n}]}
+        out = assistant._shape_eia(obj, {})
+        self.assertEqual(out["week_ending"], dates[-1])
+        dist = out["stocks"]["Distillate / diesel"]
+        self.assertEqual(dist[0], f"latest week ({dates[-1]}): 139.0 million barrels, 23.9 days of supply, -9.0% vs 5-year average")
+        self.assertEqual(dist[2], f"a month ago (4 weeks) ({dates[-5]}): 135.0 million barrels, 23.5 days of supply, -9.0% vs 5-year average; "
+                         "change since then +4.0 million barrels (+3.0%), +0.4 days")
+        self.assertIn("a week ago", dist[1])
+        self.assertEqual(out["stocks"]["Jet fuel"][2], f"a month ago (4 weeks) ({dates[-5]}): 40.0 million barrels, 24.5 days of supply; "
+                         "change since then +0.0 million barrels (+0.0%), +0.0 days")
+        spr = out["stocks"]["Strategic Petroleum Reserve"]
+        self.assertNotIn("days of supply,", " ".join(spr))                                      # none invented for the SPR
+        self.assertIn("EIA publishes no days of supply", spr[-1])
+        self.assertFalse(any("a year ago" in r for r in spr))                                     # before its first week: left out
+        self.assertEqual(assistant._shape_eia({"status": "missing", "reason": "no EIA data"}, {})["status"], "missing")
+
     def test_what_is_questions_get_the_guide_entry(self):
         app = mock.Mock()
         with mock.patch.object(assistant, "fetch_source", return_value='{"sections":[{"heading":"Reverse repo"}]}') as f:

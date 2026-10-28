@@ -239,7 +239,9 @@ come before reversals. Source: `forecast` path `positioning`.
 **Crack spreads** are the margin for refining crude into diesel or gasoline; high cracks mean products are tight. The
 card adds refinery runs, the maintenance season and Texas outage filings. Card 11 compares weekly US crude and product
 stocks with the five-year average for the same week, and **days of supply** (stocks divided by daily demand). The
-**SPR** is the government's emergency crude stockpile. Sources: `forecast` path `refining`, `eia_history`, `chaos`.
+**SPR** is the government's emergency crude stockpile; EIA publishes no days of supply for it, only barrels.
+Sources: `eia_history` (stocks and days of supply now, a week, a month, 3 months and a year ago), `forecast` path
+`refining`, `chaos`.
 
 ## Rules and the engine
 
