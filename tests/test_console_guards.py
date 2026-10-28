@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+from datetime import date, timedelta
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "options_whale"))
@@ -54,7 +55,7 @@ class ConsoleGuards(unittest.TestCase):
 
     def test_eia_reading_answers_days_of_supply_now_and_a_month_ago(self):
         """"how many days of supply left for diesel, SPR, and jet fuel? what was it at a month ago?" was answered from forecast SLV."""
-        dates = [f"2026-{m:02d}-{d:02d}" for m in range(1, 11) for d in (2, 9, 16, 23)][-40:]
+        dates = [(date(2026, 10, 16) - timedelta(weeks=k)).isoformat() for k in range(39, -1, -1)]
         n = len(dates)
         obj = {"status": "success", "as_of": dates[-1], "dates": dates, "note": "weekly", "series": [
             {"key": "dist_stocks", "label": "Distillate / diesel", "mbbl": [100.0 + i for i in range(n)],
@@ -72,9 +73,13 @@ class ConsoleGuards(unittest.TestCase):
                          "change since then +0.0 million barrels (+0.0%), +0.0 days")
         spr = out["stocks"]["Strategic Petroleum Reserve"]
         self.assertNotIn("days of supply,", " ".join(spr))                                      # none invented for the SPR
-        self.assertIn("EIA publishes no days of supply", spr[-1])
+        self.assertIn("EIA publishes none for the SPR", spr[-1])
         self.assertFalse(any("a year ago" in r for r in spr))                                     # before its first week: left out
         self.assertEqual(assistant._shape_eia({"status": "missing", "reason": "no EIA data"}, {})["status"], "missing")
+        gap = dict(obj, dates=dates[:-1] + ["2026-10-17"])                                       # an extra date: still 4 calendar weeks
+        self.assertIn(f"({dates[-5]})", assistant._shape_eia(gap, {})["stocks"]["Jet fuel"][2])
+        obj["series"][1]["mbbl"][-5] = 0.0                                                      # a zero reading: no division
+        self.assertIn("change since then +40.0 million barrels,", assistant._shape_eia(obj, {})["stocks"]["Jet fuel"][2])
 
     def test_what_is_questions_get_the_guide_entry(self):
         app = mock.Mock()
