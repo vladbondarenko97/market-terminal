@@ -224,8 +224,9 @@ for f in options_whale/static/*.js; do node --check "$f"; done    # syntax check
 
 ## Security and platform
 
-The terminal server has no authentication and listens on all network interfaces. Keep it on a private network (for
-example Tailscale) and do not expose it to the internet.
+The terminal server has no authentication. It listens on `127.0.0.1` (this Mac only) unless `OPTIONS_WHALE_HOST=0.0.0.0`
+opens it to every network interface, which is how other devices reach it without a reverse proxy. Either way, keep
+whatever reaches it on a private network (for example Tailscale) and off the internet.
 
 macOS. The CME browser login, the Mail import, the launchd services and the menu bar icon are Mac-specific. The tests
 and offline runs (`main_pipeline.py run --offline`) also work on Linux, which is where CI runs them.

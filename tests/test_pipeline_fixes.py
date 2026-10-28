@@ -142,6 +142,10 @@ class ConfigParsing(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stderr[-1500:])
             got = json.loads(out.stdout.strip().splitlines()[-1])
             self.assertEqual((got["smtp"], got["web"], got["host"]), (587, 8080, "127.0.0.1"))   # blank host: loopback, not the LAN
+            for bad in ("100.64.0.1", "0.0.0.O"):                   # a single address would cut off deploy.sh, the menu bar, MCP
+                out = subprocess.run([sys.executable, "-c", code, str(proj)], env={**env, "OPTIONS_WHALE_HOST": bad},
+                                     capture_output=True, text=True)
+                self.assertIn("OPTIONS_WHALE_HOST must be 127.0.0.1 or 0.0.0.0", out.stderr)
             self.assertEqual(got["key"], "alias-key")
             self.assertTrue(got["debug"])
             self.assertFalse(got["report"])

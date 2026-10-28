@@ -163,6 +163,9 @@ class HelpPage(ApiCase):
 
 # ============================================================ security
 class SecurityModel(ApiCase):
+    def test_server_header_names_no_versions(self):
+        self.assertEqual(api_router.QuietHandler.version_string(None), "market-terminal")
+
     def test_no_cors_headers_are_sent(self):
         r = self.client.get("/help", headers={"Origin": "http://evil.example"})
         self.assertNotIn("Access-Control-Allow-Origin", r.headers)
