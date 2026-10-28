@@ -12,6 +12,7 @@ The model cannot reach the network or the disk. `fetch_source` only makes GET re
 through Flask's test client. Any OpenAI-compatible chat endpoint works (Ollama here; LM Studio and llama.cpp speak it too).
 """
 import ast
+import bisect
 import json
 import math
 import operator
@@ -21,7 +22,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 from flask import Response, jsonify, request, stream_with_context
@@ -87,7 +88,8 @@ SOURCES = OrderedDict([
     ("comex_inventory", ("/api/inventory_data", (), "COMEX silver registered and eligible inventory history.")),
     ("eia_history", ("/api/eia_history", (), "EIA weekly US petroleum stocks: crude, distillate (diesel), gasoline, jet fuel, "
         "the Strategic Petroleum Reserve (SPR), Cushing, propane, residual. Each with its latest week, days of supply and the "
-        "readings a week, a month, 3 months and a year earlier, from the Weekly Petroleum Status Report.")),
+        "readings a week, a month, 3 months and a year earlier, from the Weekly Petroleum Status Report. Fetch it without "
+        "path first; only for weeks older than a year use path=series.N (raw weekly arrays since 1982, aligned with path=dates).")),
     ("positions", ("/api/positions", (),
         "Engine positions: every trade ticket the execution engine issued (one per pipeline run), newest first, with local "
         "time, contract, entry mid, value now and after 1 day / 1 week / 2 weeks. `today` holds today's tickets. For "
@@ -390,27 +392,35 @@ def _shape_shanghai(obj, _params):
 def _shape_eia(obj, _params):
     """One line per stock at the latest week and a week, a month, 3 months and a year back, each with its change to the latest
     week: the console answered a diesel question from forecast SLV, misread the aligned arrays, mis-subtracted, and took
-    "1 week earlier" for a month ago."""
+    "1 week earlier" for a month ago. Older history: fetch_source keeps path= on the raw arrays."""
     dates, out = obj.get("dates") or [], {}
     for s in obj.get("series") or []:
-        mb, dos = s.get("mbbl") or [], s.get("days_of_supply")
+        mb, dos, vs5 = s.get("mbbl") or [], s.get("days_of_supply"), s.get("vs_5y_pct") or []
         idx = [i for i, v in enumerate(mb) if v is not None]
         if not idx:
             continue
         i, row = idx[-1], []
+        basis = f" ({s['supply_basis']})" if s.get("supply_basis") else ""
         for back, when in ((0, "latest week"), (1, "a week ago"), (4, "a month ago (4 weeks)"), (13, "3 months ago (13 weeks)"),
                            (52, "a year ago (52 weeks)")):
-            j = i - back
+            target = (date.fromisoformat(dates[i]) - timedelta(weeks=back)).isoformat()
+            j = bisect.bisect_right(dates, target) - 1          # by calendar date, so a gap or an extra date cannot shift it
             if j < 0 or mb[j] is None:
                 continue
-            day = f", {dos[j]:.1f} days of supply" if dos and dos[j] is not None else ""
-            vs = f", {s['vs_5y_pct'][j]:+.1f}% vs 5-year average" if (s.get("vs_5y_pct") or [None] * (j + 1))[j] is not None else ""
-            since = "" if not back else (f"; change since then {mb[i] - mb[j]:+.1f} million barrels ({(mb[i] / mb[j] - 1) * 100:+.1f}%)"
-                                         + (f", {dos[i] - dos[j]:+.1f} days" if day and dos[i] is not None else ""))
-            row.append(f"{when} ({dates[j]}): {mb[j]:.1f} million barrels{day}{vs}{since}")
+            now, then = round(mb[i], 1), round(mb[j], 1)         # changes from the printed numbers, so they add up
+            line = f"{when} ({dates[j]}): {then:.1f} million barrels"
+            if dos and dos[j] is not None:
+                line += f", {dos[j]:.1f} days of supply{basis}"
+            if j < len(vs5) and vs5[j] is not None:
+                line += f", {vs5[j]:+.1f}% vs 5-year average"
+            if back:
+                line += f"; change since then {now - then:+.1f} million barrels" + (f" ({(now / then - 1) * 100:+.1f}%)" if then else "")
+                if dos and dos[i] is not None and dos[j] is not None:
+                    line += f", {round(dos[i], 1) - round(dos[j], 1):+.1f} days"
+            row.append(line)
         if dos is None:
-            row.append("EIA publishes no days of supply for this stock" + (": the SPR is an emergency reserve, not drawn to meet demand"
-                                                                            if s["key"] == "spr_stocks" else ""))
+            row.append("no days of supply: EIA publishes none for the SPR, an emergency reserve not drawn to meet demand"
+                       if s["key"] == "spr_stocks" else "no days of supply: the terminal has no matching demand series for this stock")
         out[s["label"]] = row
     if not out:
         return {"status": obj.get("status") or "missing", "reason": obj.get("reason") or "no EIA inventory stored"}
@@ -762,7 +772,7 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
                 keep = len(items) - len(items) // 3
                 summary[key] = items[-keep:] if isinstance(items, list) else dict(list(items.items())[-keep:])
                 summary[f"{key}_note"] = f"the latest {keep} shown to fit; the history starts {obj.get('earliest_stored')}: narrow from/to for older ones"
-        if source in SHAPERS and isinstance(obj, dict):
+        if source in SHAPERS and isinstance(obj, dict) and not (source == "eia_history" and path):   # path= reads the raw arrays
             obj = SHAPERS[source](obj, params)
             last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
             if source in FED_SOURCES and source.endswith("_history") and str(last) in ("10", "40"):
