@@ -85,7 +85,9 @@ SOURCES = OrderedDict([
     ("shanghai_spread", ("/api/shanghai_spread", (), "Shanghai (SGE) versus COMEX silver price on the same date, raw and with China's 13% VAT "
         "stripped: latest reading, history, how unusual it is.")),
     ("comex_inventory", ("/api/inventory_data", (), "COMEX silver registered and eligible inventory history.")),
-    ("eia_history", ("/api/eia_history", (), "Weekly US petroleum stocks and days of supply since 1982. Use path=series.N and last=N.")),
+    ("eia_history", ("/api/eia_history", (), "EIA weekly US petroleum stocks: crude, distillate (diesel), gasoline, jet fuel, "
+        "the Strategic Petroleum Reserve (SPR), Cushing, propane, residual. Each with its latest week, days of supply and the "
+        "readings a week, a month, 3 months and a year earlier, from the Weekly Petroleum Status Report.")),
     ("positions", ("/api/positions", (),
         "Engine positions: every trade ticket the execution engine issued (one per pipeline run), newest first, with local "
         "time, contract, entry mid, value now and after 1 day / 1 week / 2 weeks. `today` holds today's tickets. For "
@@ -385,6 +387,37 @@ def _shape_shanghai(obj, _params):
         "changes": s.get("changes"), "run_at": (obj.get("data") or {}).get("run_at")}
 
 
+def _shape_eia(obj, _params):
+    """One line per stock at the latest week and a week, a month, 3 months and a year back, each with its change to the latest
+    week: the console answered a diesel question from forecast SLV, misread the aligned arrays, mis-subtracted, and took
+    "1 week earlier" for a month ago."""
+    dates, out = obj.get("dates") or [], {}
+    for s in obj.get("series") or []:
+        mb, dos = s.get("mbbl") or [], s.get("days_of_supply")
+        idx = [i for i, v in enumerate(mb) if v is not None]
+        if not idx:
+            continue
+        i, row = idx[-1], []
+        for back, when in ((0, "latest week"), (1, "a week ago"), (4, "a month ago (4 weeks)"), (13, "3 months ago (13 weeks)"),
+                           (52, "a year ago (52 weeks)")):
+            j = i - back
+            if j < 0 or mb[j] is None:
+                continue
+            day = f", {dos[j]:.1f} days of supply" if dos and dos[j] is not None else ""
+            vs = f", {s['vs_5y_pct'][j]:+.1f}% vs 5-year average" if (s.get("vs_5y_pct") or [None] * (j + 1))[j] is not None else ""
+            since = "" if not back else (f"; change since then {mb[i] - mb[j]:+.1f} million barrels ({(mb[i] / mb[j] - 1) * 100:+.1f}%)"
+                                         + (f", {dos[i] - dos[j]:+.1f} days" if day and dos[i] is not None else ""))
+            row.append(f"{when} ({dates[j]}): {mb[j]:.1f} million barrels{day}{vs}{since}")
+        if dos is None:
+            row.append("EIA publishes no days of supply for this stock" + (": the SPR is an emergency reserve, not drawn to meet demand"
+                                                                            if s["key"] == "spr_stocks" else ""))
+        out[s["label"]] = row
+    if not out:
+        return {"status": obj.get("status") or "missing", "reason": obj.get("reason") or "no EIA inventory stored"}
+    return {"status": obj.get("status"), "source": "EIA Weekly Petroleum Status Report", "week_ending": obj.get("as_of"),
+            "stocks": out, "note": obj.get("note")}
+
+
 def _shape_news(obj, _params):
     """The XML articles become dated rows through the same shaper the Briefing uses."""
     root = obj.get("macro_news") or {}
@@ -622,7 +655,7 @@ def _shape_fed_latest(obj, params=None):
 
 
 SHAPERS = {**{n: _shape_fed if n.endswith("_history") else _shape_fed_latest for n in FED_SOURCES},
-           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "eia_history": _shape_eia, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool
