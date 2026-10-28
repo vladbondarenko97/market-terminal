@@ -65,7 +65,10 @@ class ConsoleGuards(unittest.TestCase):
         out = assistant._shape_eia(obj, {})
         self.assertEqual(out["week_ending"], dates[-1])
         dist = out["stocks"]["Distillate / diesel"]
-        self.assertEqual(dist.pop(0), "terminal's verdict (not an EIA rating): LOW for this time of year, 9.0% below the 5-year average (within 5% counts as normal)")
+        verdicts = out["terminal_verdicts_not_eia_ratings"]
+        self.assertEqual(verdicts["Distillate / diesel"], "LOW for this time of year, 9.0% below the 5-year average")
+        self.assertEqual(set(verdicts), {"rule", "Distillate / diesel"})                         # jet: no average; SPR: never
+        self.assertTrue(dist[0].startswith("latest week"))
         self.assertEqual(dist[0], f"latest week ({dates[-1]}): 139.0 million barrels, 23.9 days of supply, -9.0% vs 5-year average")
         self.assertEqual(dist[2], f"a month ago (4 weeks) ({dates[-5]}): 135.0 million barrels, 23.5 days of supply, -9.0% vs 5-year average; "
                          "change since then +4.0 million barrels (+3.0%), +0.4 days")
@@ -77,6 +80,13 @@ class ConsoleGuards(unittest.TestCase):
         self.assertIn("EIA publishes none for the SPR", spr[-1])
         self.assertFalse(any("a year ago" in r for r in spr))                                     # before its first week: left out
         self.assertEqual(assistant._shape_eia({"status": "missing", "reason": "no EIA data"}, {})["status"], "missing")
+        for pct, want in ((-4.96, "LOW for this time of year, 5.0% below"), (-4.94, "NORMAL for this time of year, 4.9% below"),
+                          (5.0, "HIGH for this time of year, 5.0% above"), (2.0, "NORMAL for this time of year, 2.0% above"),
+                          (-0.04, "NORMAL for this time of year, at the 5-year")):
+            obj["series"][0]["vs_5y_pct"][-1] = pct
+            self.assertTrue(assistant._shape_eia(obj, {})["terminal_verdicts_not_eia_ratings"]["Distillate / diesel"].startswith(want), pct)
+        obj["series"][2]["vs_5y_pct"] = [-34.6] * n
+        self.assertNotIn("Strategic Petroleum Reserve", assistant._shape_eia(obj, {})["terminal_verdicts_not_eia_ratings"])
         gap = dict(obj, dates=dates[:-1] + ["2026-10-17"])                                       # an extra date: still 4 calendar weeks
         self.assertIn(f"({dates[-5]})", assistant._shape_eia(gap, {})["stocks"]["Jet fuel"][2])
         obj["series"][1]["mbbl"][-5] = 0.0                                                      # a zero reading: no division
