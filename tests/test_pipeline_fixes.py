@@ -129,19 +129,19 @@ class ConfigParsing(unittest.TestCase):
             proj.mkdir()
             home.mkdir()
             shutil.copy(ROOT / "config.py", proj / "config.py")
-            env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home), "SMTP_PORT": "", "OPTIONS_WHALE_PORT": "",
+            env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home), "SMTP_PORT": "", "OPTIONS_WHALE_PORT": "", "OPTIONS_WHALE_HOST": "",
                    "DATABENTO_API_KEY": "", "DB_API_KEY": "alias-key", "REPORT_UPLOAD": "", "ALPHAFLOW_DEBUG": "1",
                    "DASHBOARD_URL": "https://dash.invalid", "UPLOAD_URL": "https://up.invalid/r.php",
                    "UPLOAD_TOKEN": "tok"}
             code = ("import sys, json; sys.path.insert(0, sys.argv[1]); import config as c; "
-                    "print(json.dumps({'smtp': c.SMTP_PORT, 'web': c.OPTIONS_WHALE_PORT, 'key': c.DATABENTO_API_KEY, "
+                    "print(json.dumps({'smtp': c.SMTP_PORT, 'web': c.OPTIONS_WHALE_PORT, 'host': c.OPTIONS_WHALE_HOST, 'key': c.DATABENTO_API_KEY, "
                     "'debug': c.ALPHAFLOW_DEBUG, 'report': c.REPORT_UPLOAD, 'dash': c.DASHBOARD_URL, "
                     "'url': c.UPLOAD_URL, 'token': c.UPLOAD_TOKEN, 'explicit': c.DATA_DIR_EXPLICIT, "
                     "'data': str(c.DATA_DIR)}))")
             out = subprocess.run([sys.executable, "-c", code, str(proj)], env=env, capture_output=True, text=True)
             self.assertEqual(out.returncode, 0, out.stderr[-1500:])
             got = json.loads(out.stdout.strip().splitlines()[-1])
-            self.assertEqual((got["smtp"], got["web"]), (587, 8080))
+            self.assertEqual((got["smtp"], got["web"], got["host"]), (587, 8080, "127.0.0.1"))   # blank host: loopback, not the LAN
             self.assertEqual(got["key"], "alias-key")
             self.assertTrue(got["debug"])
             self.assertFalse(got["report"])

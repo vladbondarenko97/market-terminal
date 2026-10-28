@@ -186,6 +186,8 @@ SCHEDULED_RUNS = flag_env("SCHEDULED_RUNS")
 
 # Per-machine and standalone-tool settings
 OPTIONS_WHALE_PORT = int_env("OPTIONS_WHALE_PORT", 8080, minimum=1, maximum=65535)
+# Loopback by default: Caddy fronts the terminal, and the server has no login. 0.0.0.0 opens it to the whole LAN.
+OPTIONS_WHALE_HOST = optional_env("OPTIONS_WHALE_HOST", default="127.0.0.1")
 ALPHAFLOW_DEBUG = flag_env("ALPHAFLOW_DEBUG")
 
 # Source limits

@@ -3217,5 +3217,7 @@ _assistant.register(app)
 
 
 if __name__ == "__main__":
-    # Port 8080 unless OPTIONS_WHALE_PORT is set in .env (per-machine, never committed)
-    app.run(host='0.0.0.0', port=config.OPTIONS_WHALE_PORT)
+    from werkzeug.serving import WSGIRequestHandler
+    WSGIRequestHandler.version_string = lambda self: "market-terminal"     # no Werkzeug/Python versions in the Server header
+    # 127.0.0.1:8080 unless OPTIONS_WHALE_HOST / OPTIONS_WHALE_PORT are set in .env (per-machine, never committed)
+    app.run(host=config.OPTIONS_WHALE_HOST, port=config.OPTIONS_WHALE_PORT)
