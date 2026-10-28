@@ -389,6 +389,9 @@ def _shape_shanghai(obj, _params):
         "changes": s.get("changes"), "run_at": (obj.get("data") or {}).get("run_at")}
 
 
+NEAR_5Y = 5.0      # % from the 5-year same-week average still called normal
+
+
 def _shape_eia(obj, _params):
     """One line per stock at the latest week and a week, a month, 3 months and a year back, each with its change to the latest
     week: the console answered a diesel question from forecast SLV, misread the aligned arrays, mis-subtracted, and took
@@ -418,6 +421,11 @@ def _shape_eia(obj, _params):
                 if dos and dos[i] is not None and dos[j] is not None:
                     line += f", {round(dos[i], 1) - round(dos[j], 1):+.1f} days"
             row.append(line)
+        v = vs5[i] if i < len(vs5) else None
+        if v is not None:                    # the 9B said diesel was "not low" at 9.1% under the average: state the verdict for it
+            word = "LOW" if v <= -NEAR_5Y else "HIGH" if v >= NEAR_5Y else "NORMAL"
+            row.insert(0, f"terminal's verdict (not an EIA rating): {word} for this time of year, {abs(v):.1f}% {'below' if v < 0 else 'above'} the 5-year average "
+                          f"(within {NEAR_5Y:.0f}% counts as normal)")
         if dos is None:
             row.append("no days of supply: EIA publishes none for the SPR, an emergency reserve not drawn to meet demand"
                        if s["key"] == "spr_stocks" else "no days of supply: the terminal has no matching demand series for this stock")

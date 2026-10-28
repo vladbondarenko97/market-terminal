@@ -65,6 +65,7 @@ class ConsoleGuards(unittest.TestCase):
         out = assistant._shape_eia(obj, {})
         self.assertEqual(out["week_ending"], dates[-1])
         dist = out["stocks"]["Distillate / diesel"]
+        self.assertEqual(dist.pop(0), "terminal's verdict (not an EIA rating): LOW for this time of year, 9.0% below the 5-year average (within 5% counts as normal)")
         self.assertEqual(dist[0], f"latest week ({dates[-1]}): 139.0 million barrels, 23.9 days of supply, -9.0% vs 5-year average")
         self.assertEqual(dist[2], f"a month ago (4 weeks) ({dates[-5]}): 135.0 million barrels, 23.5 days of supply, -9.0% vs 5-year average; "
                          "change since then +4.0 million barrels (+3.0%), +0.4 days")
