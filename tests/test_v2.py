@@ -558,6 +558,21 @@ class T10Assistant(unittest.TestCase):
         self.assertIn("769.43", text)
         self.assertIn("showing the middle 10 of 101", text)                     # strikes are cut around the centre
 
+    def test_gex_falls_back_to_the_last_stored_run_with_its_date(self):
+        sys.path.insert(0, str(ROOT / "options_whale"))
+        import assistant as A
+        import json
+        from flask import Flask, jsonify
+        app, ledger = Flask(__name__), {"labels": ["2026-10-29 14:45", "2026-10-30 08:31"], "spot_price": [47.06, 44.99],
+                                        "gex_call_wall": [50.0, 45.0], "gex_put_wall": [47.0, 44.0], "gex_zero_gamma": [47.97, 44.87]}
+        app.add_url_rule("/api/gex", "gex", lambda: (jsonify({"status": "error", "message": "Could not fetch the spot price."}), 502))
+        app.add_url_rule("/api/institutional_history", "ih", lambda: jsonify({"status": "success", "data": ledger}))
+        out = json.loads(A.fetch_source(app, "gex", "ticker=SLV"))
+        self.assertEqual((out["as_of"], out["call_wall"], out["put_wall"], out["zero_gamma"]), ("2026-10-30 08:31", 45.0, 44.0, 44.87))
+        self.assertIn("unavailable", out["live"])                                            # says it is not live
+        ledger.update(gex_call_wall=[None], gex_put_wall=[None], gex_zero_gamma=[None], labels=["x"], spot_price=[None])
+        self.assertTrue(A.fetch_source(app, "gex", "ticker=SLV").startswith("error: gex returned HTTP 502"))   # nothing stored: the error stays
+
     def test_every_source_is_a_get_route_without_side_effects(self):
         sys.path.insert(0, str(ROOT / "options_whale"))
         import assistant as A

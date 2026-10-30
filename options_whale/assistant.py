@@ -692,6 +692,22 @@ def resolve_source(source, path="", sources=None):
     return source, path
 
 
+def _stored_gex(app, params, live_error):
+    """The live gex read failed (a provider offline, often overnight): the last stored run's levels, dated, so the answer is
+    "as of <run>" rather than "no data". None when the ledger has no row either."""
+    try:
+        d = app.test_client().get("/api/institutional_history", query_string={"ticker": params.get("ticker", "SPY"), "limit": "1"}).get_json()["data"]
+        row = {k: d[k][-1] for k in ("labels", "spot_price", "gex_call_wall", "gex_put_wall", "gex_zero_gamma")}
+    except Exception:
+        return None
+    if not row["labels"] or all(row[k] is None for k in ("gex_call_wall", "gex_put_wall", "gex_zero_gamma")):
+        return None
+    return json.dumps({"live": f"unavailable ({str(live_error)[:120]})", "as_of": row["labels"],
+                       "note": "the last stored run's dealer gamma, not live: quote it with its as_of time",
+                       "spot_at_run": row["spot_price"], "call_wall": row["gex_call_wall"], "put_wall": row["gex_put_wall"],
+                       "zero_gamma": row["gex_zero_gamma"]})
+
+
 def fetch_source(app, source, query="", path="", last=10, sources=None):
     """GET one whitelisted route (from `sources`, default SOURCES) through Flask's test client and return shaped text. Never raises."""
     sources = sources or SOURCES
@@ -723,6 +739,8 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
         else:
             obj = body
         if resp.status_code >= 400:
+            if source == "gex" and (stored := _stored_gex(app, params, obj)):
+                return stored
             return f"error: {source} returned HTTP {resp.status_code}: {str(obj)[:300]}"
         if source in FED_SOURCES and source.endswith("_history") and "from" not in params and isinstance(obj.get("summary"), dict):
             for key in ("monthly", "quarterly"):          # all 154 months of repo history overflow and get cut to the last 5
