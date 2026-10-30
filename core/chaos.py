@@ -417,7 +417,8 @@ def regime_study(hist):
     for key, label in SIGNALS:
         c = conds[key].astype(float)
         onset = (c == 1) & (c.shift(1).rolling(20).max() == 0) & isc
-        today = None if not calm[-1] or pd.isna(c.iloc[-1]) else bool(c.iloc[-1] == 1)
+        # a day already above the line is past the point the rates describe
+        today = None if not pre[-1] or pd.isna(c.iloc[-1]) else bool(c.iloc[-1] == 1)
         on = (c == 1).to_numpy()
         k = 0
         while today and k < n and on[n - 1 - k]:

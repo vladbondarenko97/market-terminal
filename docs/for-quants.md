@@ -51,7 +51,8 @@ third run still returns B.
 
 Columns: `observed_at, observed_tz, metric_id, entity, dims_json, value_num, value_text, value_json, unit, status,
 reason, source, derivation, run_id, fetched_at`. `--since` and `--until` compare the date as written in `observed_at`,
-with no time-zone conversion. Rows with `status=missing` are kept with an empty `value_num`. The command is read-only and does not
+with no time-zone conversion. Most rows are written in UTC (see `observed_tz`), so a US evening value can carry the
+next calendar date. Rows with `status=missing` are kept with an empty `value_num`. The command is read-only and does not
 take the run lock, so it is safe while a run is in progress.
 
 ```python

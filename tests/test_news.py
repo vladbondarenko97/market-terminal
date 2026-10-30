@@ -294,7 +294,7 @@ class CalendarDates(unittest.TestCase):
     def test_build_works_without_the_new_inputs(self):
         out = F.build({"today": date(2026, 10, 9), "frames": {}, "spot": {}, "chains": {}, "gex": {}, "fred": {}, "cot": {},
                        "slv_trust": None, "slv_trust_history": [], "fomc": None, "cpi": None, "aum": {}})
-        self.assertEqual(out["version"], "forecast_v2")
+        self.assertEqual(out["version"], "forecast_v3")
         self.assertEqual(out["SPY"]["calendar"]["status"], "missing")
 
 

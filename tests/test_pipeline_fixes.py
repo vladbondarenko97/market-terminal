@@ -680,7 +680,7 @@ class ExportCommand(unittest.TestCase):
             conn.execute(ins, ("a", "chaos.score", "", "2024-01-02", 41.5, "pts", "ok", None, "chaos", "r1", "2024-01-02T21:00:00Z"))
             conn.execute(ins, ("b", "chaos.vix", "", "2024-01-02", None, None, "missing", "no vix feed", "chaos", "r1", "2024-01-02T21:00:00Z"))
             conn.execute(ins, ("c", "eia.x", "", "2024-01-02", 1.0, None, "ok", None, "eia", "r1", "2024-01-02T21:00:00Z"))
-            conn.execute(ins, ("d", "chaos.score", "", "2024-01-05T20:30:00-05:00", 12.0, "pts", "ok", None, "chaos", "r2", "2024-01-06T01:31:00Z"))
+            conn.execute(ins, ("d", "chaos.score", "", "2024-01-05T20:30:00-06:00", 12.0, "pts", "ok", None, "chaos", "r2", "2024-01-06T01:31:00Z"))
             conn.execute(ins, ("e", "chaos_x", "", "2024-01-02", 9.0, None, "ok", None, "chaos", "r1", "2024-01-02T21:00:00Z"))
         conn.close()
         out = tmp / "out.csv"
@@ -694,7 +694,7 @@ class ExportCommand(unittest.TestCase):
         self.assertEqual(list(rows[0]), list(mp.EXPORT_COLUMNS))
         self.assertEqual([r["metric_id"] for r in rows], ["chaos.score", "chaos.vix"])  # '.' is literal: chaos_x is out
         self.assertEqual((rows[1]["value_num"], rows[1]["reason"]), ("", "no vix feed"))
-        # the date as written (Chicago evening of the 5th), not shifted to UTC
+        # the date as written (Chicago evening of the 5th, UTC-6), not shifted to UTC
         self.assertEqual([r["value_num"] for r in export("--metric", "chaos.score", "--since", "2024-01-05", "--until", "2024-01-05")], ["12.0"])
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             mp.main(["export", "--since", "2024/01/05"])

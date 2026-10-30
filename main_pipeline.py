@@ -810,11 +810,12 @@ def export_observations(metric=None, since=None, until=None, out="-"):
         sql += " AND substr(observed_at, 1, 10) <= ?"
         args.append(until.isoformat())
     sql += " ORDER BY metric_id, entity, observed_at, fetched_at"
-    n = 0
-    conn = lake.connect_readonly(DB_PATH)
+    n, conn, tmp = 0, None, None
     try:
+        conn = lake.connect_readonly(DB_PATH)
         cur = conn.execute(sql, args)
-        fh = sys.stdout if out == "-" else open(out, "w", newline="", encoding="utf-8")
+        # a file is written beside its target and renamed at the end, so a failure never leaves a short CSV behind
+        fh = sys.stdout if out == "-" else open(tmp := f"{out}.partial", "w", newline="", encoding="utf-8")
         try:
             w = csv.writer(fh)
             w.writerow(EXPORT_COLUMNS)
@@ -825,14 +826,19 @@ def export_observations(metric=None, since=None, until=None, out="-"):
         finally:
             if fh is not sys.stdout:
                 fh.close()
+        if tmp:
+            os.replace(tmp, out)
     except BrokenPipeError:  # `export | head`
         sys.stdout = open(os.devnull, "w")
         return 0
     except (sqlite3.Error, OSError) as e:
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
         print(f"export failed: {e}", file=sys.stderr)
         return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     print(f"{n} row(s) exported", file=sys.stderr)
     return 0
 

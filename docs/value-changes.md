@@ -25,7 +25,7 @@ When you change how a stored value is computed:
 | `DIVERGENCE_VERSION` (`core/metrics.py`) | `oi_divergence_v2` | OI divergence |
 | `EXECUTION_VERSION` (`core/metrics.py`) | `execution_v2` | Execution engine votes and ticket |
 | `FEATURES_VERSION` (`core/metrics.py`) | `features_v1` | `<model_features>` block in the tactical XML |
-| `VERSION` (`core/forecast.py`) | `forecast_v2` | Forecast Lab cards 1–9 |
+| `VERSION` (`core/forecast.py`) | `forecast_v3` | Forecast Lab cards 1–9 |
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
 | `STUDY_VERSION` (`core/chaos.py`) | `regime_study_v2` | The regime study of card 14 (`chaos.long.study`: base rates, early-warning onsets) |
@@ -48,13 +48,17 @@ Newest first, then the changes that came with the v2 pipeline.
   as an onset or as a base day. Those days were near-certain hits. On the history up to 2026-10-30, VIX ≥ VIX3M goes
   from `tested` (n 38, 44.7% vs 13.5%) to `none` (n 23, 21.7% vs 12.1%), breadth from 45.0% (n 60) to 37.0% (n 46),
   momentum from 17.2% to 13.1%, and the 20-day base rate from 13.8% to 12.3%. "Score 15 to 30" keeps 38.9% (n 54). The
-  score itself (`chaos_v1`) does not change. The study block now carries `version`.
-- **Signal Watch, engine row** (`forecast_v2`, 2026-10-30): the row's evidence grade is `none` instead of a hard-coded
+  score itself (`chaos_v1`) does not change. The study block now carries `version`. On a day already above 30 but
+  not yet in an episode, the conditions read as not active (`null`), because the hit rates do not describe such days.
+- **Signal Watch, engine row** (`forecast_v3`, 2026-10-30): the row's evidence grade is `none` instead of a hard-coded
   `thin`. A fired engine ticket now reads "No trade on this alone; use as confirmation" instead of "Buy … · half size
   (small sample)", and its phone alert is no longer a high-priority Buy. The engine passes no evidence gate.
 - **Evidence gate** (`core/watch.py` `grade()`, 2026-10-30): the "better than baseline in both halves" test now needs
   cases in both halves. Before, a rule whose cases all fell in one half passed that test by default. This affects the
-  Day Scanner, Edge Lab and the Chaos study grades.
+  Day Scanner, Edge Lab, the regime study (`regime_study_v2`) and card 14's election and lever studies. Those two stay
+  under `chaos_v1`, because that constant is also the stored key of the daily score history (`chaos.score` rows are read
+  back by `derivation`), so bumping it would orphan the history. Compare their grades across this date with this note
+  in mind.
 
 - **Fed / Treasury operations** (`fed_ops_v4`, October 2026): new keys only: `repo.markets.*.peak_12m` and `peak_all_time`,
   `repo.rrp_trend` (a sentence), `auctions.by_tenor.*.last_direct_pct` and `last_indirect_pct`. The terminal rebuilds an
