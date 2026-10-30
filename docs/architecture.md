@@ -150,6 +150,10 @@ These rules hold across the codebase. A change that breaks one needs a very good
 |---|---|
 | `docs/plan-oracle-move.md` | Not-started plan to move the pipeline, terminal and data to the Oracle server, with a read-only copy on the Mac |
 | `docs/guide.md` | Plain-English guide to every card and term, plus ten showcase questions; served by `/api/guide` (console source `guide`) and the MCP `read_doc` |
+| `docs/README.md` | Docs index by reader and task |
+| `docs/for-quants.md`, `docs/for-traders.md`, `docs/for-teams.md` | Entry pages per reader (point-in-time data and export; session use; deployment, security, licensing) |
+| `docs/methodology.md` | Index of every computed value: owner, version constant, method, link to the detail |
+| `docs/case-study-2026-10-30.md` | The Chaos / Peace stress flip of 2026-10-30, from the stored snapshots |
 | `mcp_server.py` | Standalone MCP server (GET-only proxy of the terminal's read-only sources and the brokerage card), two secret-path endpoints; see [Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli) |
 | `scripts/sync_secrets.sh` | Operator-run: Bitwarden item `market-terminal` <-> macOS Keychain <-> `.env` (see [Configuration](configuration.md#secrets-in-bitwarden-and-the-keychain)) |
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
@@ -188,6 +192,11 @@ Thin wrappers kept so old entry points still work. Each reads the latest snapsho
 | Page | Covers |
 |---|---|
 | [README](../README.md) | What the project is, quick start |
+| [Docs index](README.md) | Every page, by reader and by task |
+| [For quants](for-quants.md), [for traders](for-traders.md), [for teams](for-teams.md) | Entry pages per reader: point-in-time data and export, session use, deployment and licensing |
+| [Methodology](methodology.md) | Every computed value with its owner, version and method |
+| [Case study 2026-10-30](case-study-2026-10-30.md) | The stress flip of 2026-10-30 as stored, run by run |
+| [Guide](guide.md) | Plain-English meaning of every card and term |
 | [Operations](operations.md) | Setup, commands, schedule, CME login, delivery, troubleshooting |
 | [Configuration](configuration.md) | Every `.env` setting, data folder, ports |
 | [Data](data.md) | SQLite tables, snapshot contents, daily files, ledgers |

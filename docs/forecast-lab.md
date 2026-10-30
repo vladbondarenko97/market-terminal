@@ -43,7 +43,7 @@ return with `n`, `mean_pct`, `hit_rate`, `t_vs_baseline` and `grade`: `core.watc
 days with at least one speech by the Chair, a Vice Chair or a Governor (regional bank presidents are not counted), close-to-close, graded the same way.
 It is `missing` with a reason when the list is unavailable.
 | 8 | Mechanical flows | Vol-control funds, leveraged-ETF rebalancing, dealer gamma, CTA sensitivity | Who is forced to buy or sell after a move of 1% to 5%? | per ticker | `forecast[SYM].flows` |
-| 9 | Forecast scorecard | Every logged forecast graded after its target date, plus walk-forward backtests | Were past forecasts right? Hit rate, 68% coverage, Brier score | per ticker | not in the snapshot: graded per request from `v2_forecasts` |
+| 9 | Forecast scorecard | Every logged forecast graded after its target date, plus backtests (card 2 a holdout, card 3 a historical signal test, card 5 in-sample) | Were past forecasts right? Hit rate, 68% coverage, Brier score | per ticker | not in the snapshot: graded per request from `v2_forecasts` |
 | 10 | Diesel & refining | Crack spreads, EIA refinery runs and stocks, 10-year maintenance-season path, Texas refinery outage filings (TCEQ), CFTC ULSD positioning | Is refining tight, and is a major unit down? | shared | `ctx["refining"]` (`margins`, `fundamentals`, `maintenance`, `outages`, `ulsd_positioning`) |
 | 11 | EIA inventories | Weekly US petroleum stocks against the 5-year same-week average, and days of supply | Are stocks building or drawing against the norm, and how does today compare with past years? | shared | `ctx["refining"]["inventories"]`, full history from `/api/eia_history` |
 | 14 | Chaos / Peace | Twelve stress readings (VIX, VIX/VIX3M, VVIX, SKEW, MOVE, high-yield spread, SPY realised vol and drawdown, policy uncertainty, equity put/call, VIX9D/VIX6M, SPY short-sale share), each a z-score against its own 3 years | How stressed does the market look against its own recent history and against every stress episode since 1931, how often did a calm market turn, and what do the liquidity levers and past election windows look like? | shared | `ctx["chaos"]` (`score`, `regime`, `components`, `levers`, `event_study`, `lever_study`, `long`), also `GET /api/chaos` and `GET /api/chaos/history` |
@@ -116,7 +116,7 @@ It is `missing` with a reason when the list is unavailable.
     in a row above 30 and ends on the fifth in a row below 15. These four numbers are fixed and not fitted. The study
     uses only the days with 4 or more components. It gives the current state, the median length of an episode and of the
     calm between two, how often an episode began within 20, 60 and 120 trading days of a calm day (all, and by the day's
-    regime), and four conditions fixed in advance (a 15-point rise in 20 days, a score between 15 and 30, a third of
+    regime), and four conditions fixed in code on 2026-10-10 and not tuned since (a 15-point rise in 20 days, a score between 15 and 30, a third of
     the components at z >= 1, VIX at or above VIX3M), each tested on its onsets with the evidence test of the rule cards
     (`core.watch.grade`). It describes one history: neighbouring days overlap, two of the conditions are partly
     arithmetic, and a 50% hit rate is also a 50% false-alarm rate.
@@ -209,7 +209,10 @@ Card 9 grades the forecasts the pipeline logged.
   stored data. Hit rate is the share of correct directions, coverage is the share of closes inside the 68% range
   (ideal 0.68), and Brier is the squared error of the stated probability (lower is better; 0.25 is a coin flip).
 - **Card.** Four counters (Logged forecasts, Awaiting grade, Graded groups, Prices through), a LIVE GRADES table, and
-  WALK-FORWARD BACKTESTS taken from cards 2, 3 and (for SLV) 5.
+  BACKTESTS taken from cards 2, 3 and (for SLV) 5. They are not all walk-forward. Card 2 is a single 60/20/20 holdout
+  (`oos_days` is the last 20%). Card 3 tests the fixed trend signal at each date against the forward return, with
+  overlapping windows and no fitted parameters. Card 5's hit rate uses in-sample residuals from one fit on the full
+  window, so it is in-sample and optimistic.
 
 ## Adding a Forecast Lab card
 
@@ -412,5 +415,5 @@ instead:
 Three cards on this tab are rules, not models, and are not part of the snapshot: **0 · Signal Watch** reads the
 latest snapshot's forecast (plus live quotes for price-driven rows), **12 · Day Scanner** and **13 · Edge Lab** read
 Yahoo price history and live quotes directly. They are described in
-[terminal.md](terminal.md#rule-cards-and-alerts). Unlike the model cards they compute at request time; see
+[terminal.md](terminal.md#rule-cards-and-alerts-forecast-lab-tab-top). Unlike the model cards they compute at request time; see
 [known-issues.md](known-issues.md).

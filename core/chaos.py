@@ -13,6 +13,7 @@ from core import market_calendar as MC
 from core.watch import grade
 
 CHAOS_VERSION = "chaos_v1"
+STUDY_VERSION = "regime_study_v2"   # v2: days already above the start bound are not onsets or base days
 WINDOW = "1096D"                  # 3 years of calendar days; a day-based window keeps the 7-days-a-week EPU series on 3 years too
 MIN_PERIODS = 252
 SPAN_DAYS = 3 * 365 - 30          # a series must span 3 years less a 30-day tolerance (FRED returns exactly 3 years for HY)
@@ -387,6 +388,9 @@ def regime_study(hist):
         in_ep[s:(n if e is None else e + 1)] = True
         starts[s] = 1
     calm = ~in_ep
+    # A day already above the start bound is not calm for the study: an episode starts on its 3rd day above the bound, so
+    # counting days 1-2 as onsets (or in the base) scores near-certain hits. The card's "today" still reads `calm`.
+    pre = calm & (sc <= EPISODE_START_BOUND).to_numpy()
     cs = np.concatenate([[0], np.cumsum(starts)])
 
     def outcome(hz):          # 1 when an episode starts within the next hz days; NaN where that is not known yet
@@ -399,7 +403,7 @@ def regime_study(hist):
     for hz in HORIZONS:
         o = outcome(hz)
         row = {"horizon": hz}
-        for name, m in (("all", calm), ("peace", calm & (regime == "peace").to_numpy()), ("neutral", calm & (regime == "neutral").to_numpy())):
+        for name, m in (("all", pre), ("peace", pre & (regime == "peace").to_numpy()), ("neutral", pre & (regime == "neutral").to_numpy())):
             v = o[m].dropna()
             row[name] = {"p": round(float(v.mean()), 3) if len(v) else None, "n": len(v)}
         base_rates.append(row)
@@ -408,12 +412,13 @@ def regime_study(hist):
              "near_bound": ((sc >= EPISODE_END_BOUND) & (sc <= EPISODE_START_BOUND)).astype(float),
              "breadth": (h["hot"] / h["used"] >= 1 / 3).astype(float),
              "term_inversion": h["inverted"].map(lambda v: np.nan if pd.isna(v) else float(v)).astype(float)}
-    isc = pd.Series(calm, index=h.index)
+    isc = pd.Series(pre, index=h.index)
     signals = []
     for key, label in SIGNALS:
         c = conds[key].astype(float)
         onset = (c == 1) & (c.shift(1).rolling(20).max() == 0) & isc
-        today = None if not calm[-1] or pd.isna(c.iloc[-1]) else bool(c.iloc[-1] == 1)
+        # a day already above the line is past the point the rates describe
+        today = None if not pre[-1] or pd.isna(c.iloc[-1]) else bool(c.iloc[-1] == 1)
         on = (c == 1).to_numpy()
         k = 0
         while today and k < n and on[n - 1 - k]:
@@ -434,13 +439,13 @@ def regime_study(hist):
     now = float(sc.iloc[-1])
     state = {"in_episode": ep_in, "since": h.index[si].date().isoformat(), "days": n - si, "score": round(now, 1), "regime": regime_of(now),
              "change_20d": round(now - float(sc.iloc[-21]), 1) if n > 20 else None, "to_stress": None if ep_in else round(EPISODE_START_BOUND - now, 1)}
-    return {"status": "fresh", "reason": None,
+    return {"status": "fresh", "reason": None, "version": STUDY_VERSION,
             "period": {"first": h.index[0].date().isoformat(), "last": h.index[-1].date().isoformat(), "days": n, "min_components": STUDY_MIN_COMPONENTS},
             "state": state,
             "durations": {"episodes": len(ends), "median_episode_days": med([e - s + 1 for s, e in spans if e is not None]),
                           "median_calm_days": med(gaps)},
             "base_rates": base_rates, "signals": signals,
-            "note": "Descriptive counts over one history. The conditions were fixed in advance and not fitted to it, neighbouring days overlap "
+            "note": "Descriptive counts over one history. The conditions were fixed in code on 2026-10-10 and not tuned since, neighbouring days overlap "
                     "so a t-value is optimistic, and none of it says why an episode began. A score that is already near the line, or already has "
                     "several components elevated, needs less to cross it, so part of those two hit rates is arithmetic. A hit rate of 50% "
                     "also means the other half were false alarms. The rates describe the first day of a stretch, so a "

@@ -6,8 +6,8 @@ non-trivial change.
 
 ## What this is
 
-A personal market-data system for one operator. A batch **pipeline** (`main_pipeline.py`) collects market data twice
-a day, stores every raw response in SQLite, computes models and commits one immutable **snapshot** per run, then
+A personal market-data system for one operator. A batch **pipeline** (`main_pipeline.py`) collects market data three
+times a day, stores every raw response in SQLite, computes models and commits one immutable **snapshot** per run, then
 renders files and sends an email and a phone push. A Flask **terminal** (`options_whale/api_router.py`) shows the
 results in a browser. Target platform is macOS. The tests and offline runs also work on Linux.
 

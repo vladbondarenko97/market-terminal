@@ -96,12 +96,13 @@ class Study(unittest.TestCase):
         st = CH.regime_study(self.build())
         self.assertEqual(st["period"]["days"], 700)
         r20 = st["base_rates"][0]
-        self.assertEqual((r20["all"]["n"], r20["all"]["p"]), (662, round(60 / 662, 3)))      # 680 usable days less 18 episode days
+        # 680 usable days less 18 episode days and the 6 days already above the start bound (sure hits, not onsets)
+        self.assertEqual((r20["all"]["n"], r20["all"]["p"]), (656, round(54 / 656, 3)))
         self.assertEqual((r20["peace"]["n"], r20["peace"]["p"]), (656, round(54 / 656, 3)))  # the 2 'stress' days before each start are not peace
         self.assertEqual((r20["neutral"]["n"], r20["neutral"]["p"]), (0, None))
         self.assertEqual(st["durations"], {"episodes": 3, "median_episode_days": 6.0, "median_calm_days": 194.0})
         mom = next(s for s in st["signals"] if s["key"] == "momentum")
-        self.assertEqual(mom["h20"]["n"], 3)                                                # true on 7 days in a row, counted once per spike
+        self.assertEqual(mom["h20"]["n"], 0)        # each spike jumps straight above the start bound: no onset while still below it
         self.assertIs(mom["active"], False)
         self.assertIsNone(next(s for s in st["signals"] if s["key"] == "term_inversion")["active"])     # no VIX / VIX3M input
         self.assertFalse(st["state"]["in_episode"])

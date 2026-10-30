@@ -729,6 +729,8 @@ class T09EdgeLab(unittest.TestCase):
         g = edges._grade(flip, base)                                           # strong first half, worse second half
         self.assertGreaterEqual(g["t"], 2)
         self.assertEqual(g["edge"], "none")
+        one_half = pd.Series(0.03 + rng.normal(0, 0.01, 35), index=base.index[200::5][:35])
+        self.assertEqual(edges._grade(one_half, base)["edge"], "none")         # every case in one half: not steady
         few = edges._grade(good.iloc[:7], base)
         self.assertIsNone(few["p"])
         self.assertEqual(few["edge"], "none")

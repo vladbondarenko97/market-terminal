@@ -23,7 +23,7 @@ import pandas as pd
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-VERSION = "forecast_v2"
+VERSION = "forecast_v3"   # v3: the engine row of Signal Watch is graded none (never a Buy)
 HORIZONS = [{"key": "1d", "days": 1, "td": 1}, {"key": "1w", "days": 7, "td": 5},
             {"key": "1m", "days": 30, "td": 21}, {"key": "1y", "days": 365, "td": 252}]
 R = 0.05
@@ -952,7 +952,7 @@ def signal_watch(fc, ticket=None):
             "bullish" if ticket["position_type"] == "CALL" else "bearish",
             "Stay in cash" if cash else f"Buy SPY {ticket['expiration']} {ticket['strike']:g} {ticket['position_type'].lower()}"
             + (f" near {ticket['entry_mid']:.2f}" if ticket.get("entry_mid") else ""),
-            "live track record is on the Engine Positions card", "thin")
+            "no evidence gate", "none")   # never a Buy on its own
 
     fv = fc.get("silver_fair_value") or {}
     z, slv = fv.get("residual_z"), fc.get("SLV") or {}

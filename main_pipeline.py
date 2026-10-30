@@ -9,6 +9,8 @@
   python main_pipeline.py backfill-positions                     # record engine tickets for old live runs that have none
   python main_pipeline.py resend [--run RUN_ID]                  # explicit resend of a saved email.eml
   python main_pipeline.py catalog [--run RUN_ID]                 # variable catalog + lineage (Markdown)
+  python main_pipeline.py export [--metric PREFIX] [--since DATE] [--until DATE] [--out FILE|-]
+                                                                 # observations as CSV (read-only; fetched_at = when it was known)
   python main_pipeline.py narrative [--engine local|claude] [--model NAME] [--run RUN_ID] [--budget-usd X]
                                                                  # write + validate + store a Briefing for a saved run; delivers nothing
   python main_pipeline.py status                                 # last 10 runs + the current run's status
@@ -19,7 +21,7 @@ snapshot is committed, but a stage or a configured delivery channel failed; see 
 the run lock (nothing was started), 1 = failed before the snapshot was committed. A channel that is not configured
 at all (no SMTP settings, no NTFY_URL, no UPLOAD_URL/UPLOAD_TOKEN) is skipped and is not a warning.
 `run`, `cme-login`, `import-history` and `backfill-positions` take the run lock and exit 75 when it is held; `replay`,
-`resend`, `catalog`, `status` and `ntfy-test` do not. `resend` exits 0 when SMTP accepted the message, 2 when it did
+`resend`, `catalog`, `export`, `status` and `ntfy-test` do not. `resend` exits 0 when SMTP accepted the message, 2 when it did
 not, 1 when there is nothing to resend. `ntfy-test` exits 0 when the brief was sent and 2 when it was not.
 An offline run writes its files to <data>/<day folder>/offline_<run id>/ and never to the shared day files.
 """
@@ -28,11 +30,12 @@ import csv
 import json
 import os
 import secrets
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import config
@@ -786,6 +789,60 @@ def print_catalog(run_id=None):
     return 0
 
 
+EXPORT_COLUMNS = ("observed_at", "observed_tz", "metric_id", "entity", "dims_json", "value_num", "value_text", "value_json",
+                  "unit", "status", "reason", "source", "derivation", "run_id", "fetched_at")
+
+
+def export_observations(metric=None, since=None, until=None, out="-"):
+    """Write v2_observations as CSV (stdout or a file). Read-only; a missing value is an empty cell, never 0.
+    since/until are dates compared with the date as written in observed_at (no time-zone conversion)."""
+    if not DB_PATH.exists():
+        print(f"No database at {DB_PATH}: nothing to export.", file=sys.stderr)
+        return 1
+    sql, args = f"SELECT {', '.join(EXPORT_COLUMNS)} FROM v2_observations WHERE 1=1", []
+    if metric:  # a range, not LIKE: '_' would be a wildcard, and a range can use ix_v2_obs_metric
+        sql += " AND metric_id >= ? AND metric_id < ? || char(1114111)"
+        args += [metric, metric]
+    if since:
+        sql += " AND substr(observed_at, 1, 10) >= ?"
+        args.append(since.isoformat())
+    if until:
+        sql += " AND substr(observed_at, 1, 10) <= ?"
+        args.append(until.isoformat())
+    sql += " ORDER BY metric_id, entity, observed_at, fetched_at"
+    n, conn, tmp = 0, None, None
+    try:
+        conn = lake.connect_readonly(DB_PATH)
+        cur = conn.execute(sql, args)
+        # a file is written beside its target and renamed at the end, so a failure never leaves a short CSV behind
+        fh = sys.stdout if out == "-" else open(tmp := f"{out}.partial", "w", newline="", encoding="utf-8")
+        try:
+            w = csv.writer(fh)
+            w.writerow(EXPORT_COLUMNS)
+            for r in cur:  # streamed, not fetchall()
+                w.writerow(["" if v is None else v for v in tuple(r)])
+                n += 1
+            fh.flush()
+        finally:
+            if fh is not sys.stdout:
+                fh.close()
+        if tmp:
+            os.replace(tmp, out)
+    except BrokenPipeError:  # `export | head`
+        sys.stdout = open(os.devnull, "w")
+        return 0
+    except (sqlite3.Error, OSError) as e:
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
+        print(f"export failed: {e}", file=sys.stderr)
+        return 1
+    finally:
+        if conn is not None:
+            conn.close()
+    print(f"{n} row(s) exported", file=sys.stderr)
+    return 0
+
+
 def status():
     held = lock_is_held()
     conn = lake.connect(DB_PATH, readonly=True)
@@ -913,6 +970,11 @@ def main(argv=None):
     rs.add_argument("--run", help="run id to resend (default: the latest committed snapshot)")
     c = sub.add_parser("catalog", help="print the variable catalog + lineage (Markdown) for a run")
     c.add_argument("--run", help="run id (default: the latest committed snapshot)")
+    ex = sub.add_parser("export", help="write stored observations as CSV (read-only); fetched_at is when the value became known")
+    ex.add_argument("--metric", help="metric_id prefix, e.g. chaos.")
+    ex.add_argument("--since", type=date.fromisoformat, help="first observed date, YYYY-MM-DD")
+    ex.add_argument("--until", type=date.fromisoformat, help="last observed date, YYYY-MM-DD")
+    ex.add_argument("--out", default="-", help="output file (default - = stdout)")
     sub.add_parser("status", help="print the last 10 runs and the current run's status ('interrupted' = the run died)")
     sub.add_parser("cme-login", help="log in to CME in a browser window (MFA) and save the session (takes the run lock)")
     sub.add_parser("ntfy-test", help="send the latest run's phone brief (summary + report attachment) to NTFY_URL; "
@@ -964,6 +1026,8 @@ def _dispatch(a):
         return narrative_command(a.engine, a.model, a.run, a.budget_usd)
     if a.cmd == "catalog":
         return print_catalog(a.run)
+    if a.cmd == "export":
+        return export_observations(a.metric, a.since, a.until, a.out)
     if a.cmd == "status":
         return status()
     if a.cmd == "signal-alerts":
