@@ -15,5 +15,5 @@ openpyxl
 xlrd
 akshare
 feedparser
-mcp>=2,<3        # mcp_server.py only
+mcp>=2.3.0,<3        # mcp_server.py only
 uvicorn           # mcp_server.py only
