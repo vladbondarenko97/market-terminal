@@ -188,4 +188,4 @@ Open issues and deliberate choices are listed in [Known issues](known-issues.md)
 | `POST /api/assistant/ask` | Ask the console engine a question; streams the answer as server-sent events |
 | `GET /api/assistant/status`, `GET /api/assistant/data?source=…`, `POST /api/assistant/reset` | Model server and sources; exactly what the model sees for one source (`source=brief` for the brief); forget a conversation. `brokerage` (real holdings) is a console source only; the market MCP link does not serve it |
 
-Details: [terminal.md](terminal.md#rule-cards-and-alerts).
+Details: [terminal.md](terminal.md#rule-cards-and-alerts-forecast-lab-tab-top).

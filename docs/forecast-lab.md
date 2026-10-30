@@ -412,5 +412,5 @@ instead:
 Three cards on this tab are rules, not models, and are not part of the snapshot: **0 · Signal Watch** reads the
 latest snapshot's forecast (plus live quotes for price-driven rows), **12 · Day Scanner** and **13 · Edge Lab** read
 Yahoo price history and live quotes directly. They are described in
-[terminal.md](terminal.md#rule-cards-and-alerts). Unlike the model cards they compute at request time; see
+[terminal.md](terminal.md#rule-cards-and-alerts-forecast-lab-tab-top). Unlike the model cards they compute at request time; see
 [known-issues.md](known-issues.md).
