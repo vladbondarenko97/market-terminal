@@ -25,6 +25,7 @@ import requests
 import uvicorn
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 
 import config
 
@@ -34,6 +35,7 @@ import assistant  # noqa: E402  (the console's source list and shaping)
 TERMINAL = config.optional_env("TERMINAL_URL", default=f"http://127.0.0.1:{config.OPTIONS_WHALE_PORT}").rstrip("/")
 PORT = config.int_env("MCP_PORT", 8787, minimum=1, maximum=65535)
 LOG_PATH = Path(config.optional_env("MCP_LOG", default="") or config.DATA_DIR / "mcp_calls.jsonl")
+READ = ToolAnnotations(readOnlyHint=True, openWorldHint=False)   # no hint = 'may modify' per the spec: Gemini asks consent per call and hangs
 _log_lock, _denied = threading.Lock(), {"at": 0.0, "n": 0}
 
 
@@ -202,22 +204,22 @@ def market_server():
                     "For how a number is defined or computed, use search_docs and read_doc "
                     "(the documentation and model code) instead of guessing. Say the run time of stored data when quoting it.")
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     async def list_sources() -> str:
         """Every source get_source can read, with its parameters and what it holds."""
         return assistant.catalog_text(SOURCES)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     async def get_source(source: str, query: str = "", path: str = "", last: int = 10) -> str:
         """Read one source. query like "ticker=SPY&limit=50"; path opens one part of a large result (e.g. data.implied); last = rows kept of a long list."""
         return await asyncio.to_thread(assistant.fetch_source, _APP, source, query, path, last, SOURCES)   # blocking HTTP: keep it off the event loop
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     async def search_docs(query: str) -> str:
         """Search the terminal's documentation and model code (words are ANDed, case-insensitive). Returns file:line hits; open them with read_doc."""
         return await asyncio.to_thread(search_text, query)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     async def read_doc(name: str = "", section: str = "") -> str:
         """Read a document or model source: docs/*.md (guide: plain-English explanations; terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md and the model code
         core/{metrics,forecast,refining,chaos,edges,watch,market_calendar}.py (core/metrics.py has the VMRI and GEX formulas). Empty name lists them. section = a heading (markdown) or a def/class/CONSTANT name (python), e.g. name=core/metrics.py section=VMRI_VERSION."""
@@ -225,7 +227,7 @@ def market_server():
             return "error: pass name (and optionally section) from this list:\n" + "\n".join(doc_files()) if section else "\n".join(doc_files())
         return await asyncio.to_thread(read_doc_text, name, section)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     async def calculate(expression: str) -> str:
         """Plain arithmetic (+ - * / // % ** and abs, round, min, max, sqrt, log, exp), e.g. for a ratio or a percent move."""
         return assistant.calc(re.sub(r"(?<=\d),(?=\d{3}\b)", "", expression))   # 1,000 -> 1000 whether or not the expression has a call
@@ -237,7 +239,7 @@ def brokerage_server():
     mcp = MCPServer("market-terminal-brokerage", instructions="The operator's live brokerage holdings (SnapTrade): stocks, and option "
                     "positions grouped into spreads with net mark and P/L. Private: do not repeat them anywhere shared.")
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     async def get_brokerage_positions() -> str:
         """Stocks and option groups per account (the terminal caches SnapTrade for 60 s). status 'not_configured' or 'error' carries the reason."""
         def call():
