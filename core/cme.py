@@ -499,7 +499,10 @@ def interactive_login(state_file, username="", password="", *, profile_dir=None,
             probe = _newest_listing_file(page)
             if not probe:
                 return False
-            code, body = _download(page, probe)
+            try:
+                code, body = _download(page, probe)
+            except Exception as e:
+                code, body = f"fetch failed ({e})", None
             print(f"probe {probe.rsplit('/', 1)[-1]}: HTTP {code}", flush=True)
             return body is not None and detect_format(body) in ("xlsx", "xls")
         finally:
@@ -534,12 +537,9 @@ _FETCH_JS = """async ([u, ms]) => {
 def _download(page, url, timeout_ms=30000):
     """Fetch from inside the logged-in page (its cookies, its connection; CME refuses requests from outside the
     browser). Not a navigation: a navigation download crashes Chromium while it is hidden. `page` must be on a
-    cmegroup.com page. Returns (http_status, bytes_or_None); bytes only for HTTP 200."""
+    cmegroup.com page. Returns (http_status, bytes_or_None); bytes only for HTTP 200. Raises if the fetch fails."""
     import base64
-    try:
-        code, b64 = page.evaluate(_FETCH_JS, [url, timeout_ms])
-    except Exception:
-        return None, None
+    code, b64 = page.evaluate(_FETCH_JS, [url, timeout_ms])
     return code, base64.b64decode(b64) if code == 200 else None
 
 
@@ -578,7 +578,10 @@ def browser_fetch_volume_listing(state_file, have_dates, *, max_files=10, earlie
             pending = list(wanted)
             while pending:
                 d = pending[0]
-                code, body = _download(page, files[d])
+                try:
+                    code, body = _download(page, files[d])
+                except Exception:
+                    code, body = None, None
                 if body is None and code in (400, 401, 403):
                     if info["login_prompted"] or login_wait_seconds <= 0:
                         results.append((d, AcquisitionResult(
@@ -592,6 +595,7 @@ def browser_fetch_volume_listing(state_file, have_dates, *, max_files=10, earlie
                                                              attempts=1, detail="login not completed in time")))
                         break
                     save_session(ctx, state_file)
+                    set_browser_visible(False)
                     page.goto(VOLUME_DIR_URL)
                     page.wait_for_timeout(1500)
                     continue            # retry the same file once after login
