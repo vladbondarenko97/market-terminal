@@ -952,7 +952,7 @@ def signal_watch(fc, ticket=None):
             "bullish" if ticket["position_type"] == "CALL" else "bearish",
             "Stay in cash" if cash else f"Buy SPY {ticket['expiration']} {ticket['strike']:g} {ticket['position_type'].lower()}"
             + (f" near {ticket['entry_mid']:.2f}" if ticket.get("entry_mid") else ""),
-            "live track record is on the Engine Positions card", "thin")
+            "no evidence gate; live track record is on the Engine Positions card", "none")   # never a Buy on its own
 
     fv = fc.get("silver_fair_value") or {}
     z, slv = fv.get("residual_z"), fc.get("SLV") or {}

@@ -189,7 +189,7 @@ def grade(sig, base, min_up=0.05):
     if len(sig) < 8 or len(base) < 8 or not sig.std():
         return out
     half = base.index[len(base) // 2]
-    steady = all(sig[k(sig)].mean() > base[k(base)].mean() for k in (lambda x: x.index < half, lambda x: x.index >= half) if k(sig).any())
+    steady = all(k(sig).any() and sig[k(sig)].mean() > base[k(base)].mean() for k in (lambda x: x.index < half, lambda x: x.index >= half))  # cases in both halves
     se = math.sqrt(sig.var() / len(sig) + base.var() / len(base))
     out.update(p=float((sig > 0).mean()), base=float((base > 0).mean()), avg=float(sig.mean() * 100), bavg=float(base.mean() * 100),
                t=float((sig.mean() - base.mean()) / se) if se else 0.0)

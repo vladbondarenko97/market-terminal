@@ -19,7 +19,7 @@ recorded and graded, never sent anywhere.
 | Dashboards, internal tools | The HTTP JSON API ([API](api.md)), mostly stored data, with a few live routes that are marked as such |
 | LLM agents | The MCP server: read-only sources, docs and model code ([Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli)) |
 | Alerts | ntfy push (`NTFY_URL`) and email, from the pipeline and `signal-alerts` ([Operations → Delivery](operations.md#delivery)) |
-| Audit | `v2_runs` (run status, git hash, stage timings), `v2_fetch_log` (every provider request) and the immutable `v2_snapshots` |
+| Audit | `v2_runs` (run status, git hash, stage timings), `v2_fetch_log` (every pipeline provider request; the alert job, live `/api` routes, scanner and edges call yfinance directly and are not logged) and the immutable `v2_snapshots` |
 
 ## Deployment
 

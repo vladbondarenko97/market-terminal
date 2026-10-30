@@ -4,8 +4,8 @@ How to use the terminal during a session: what to look at, in what order, and wh
 tell you. Definitions of terms are in the [plain-English guide](guide.md). Each panel is described in
 [Terminal](terminal.md).
 
-> Nothing here is financial advice. Every number is an estimate with a stated caveat, and a rule only says "buy"
-> when its own history passes the evidence test.
+> Nothing here is financial advice. Every number is an estimate with a stated caveat, and a rule only says "Buy"
+> when its own history passes an evidence test (see Signal Watch below for the two tests).
 
 ## The daily rhythm
 
@@ -23,11 +23,14 @@ tell you. Definitions of terms are in the [plain-English guide](guide.md). Each 
    shows its record (how often stress followed within 20 and 60 days, against the base rate) and an evidence grade.
    A condition graded `none` is shown for context and should be given no weight.
 2. **Dealer gamma (Macro Direction, Time Arbitrage).** Above zero gamma, dealer hedging tends to dampen moves; below
-   it, hedging tends to add to them. The call and put walls are where the open interest is concentrated.
+   it, hedging tends to add to them. The call and put walls are where the open interest is concentrated. Walls and zero gamma use the 3 nearest listed
+   expirations; for SPY those are 0 to 2 DTE daily expiries, so monthly open interest is not included.
 3. **Market-implied range (card 1)** against the **volatility forecast (card 2)**. This tells you whether options are
    pricing more or less movement than history predicts.
-4. **Signal Watch (card 0).** Each trigger, fired or waiting, with the action it implies. Only rows whose evidence is
-   graded `tested` carry a "Buy".
+4. **Signal Watch (card 0).** Each trigger, fired or waiting, with the action it implies. A fired row graded `tested` says "Buy · standard
+   size" and one graded `thin` says "Buy · half size (small sample)". The fair-value, momentum and positioning rows
+   get that grade from a 5-point win-rate gap and at least 30 cases, with no t-test, so treat it as a screen. The engine
+   row never says Buy: it reads "No trade on this alone; use as confirmation".
 5. **The engine ticket.** A legacy confluence scorer. Read it last and check it against everything above.
 
 ## When the readings disagree
@@ -39,13 +42,13 @@ them. A practical reading:
 - **Stress regime and a bullish engine:** wait for confirmation. The engine does not pass through the evidence gate,
   and its record in stress regimes is still being collected.
 - **Peace regime and a bearish engine:** the same caution in the other direction.
-- **A rule card graded `tested` against a stress regime:** the rule's history includes stressed periods. Check its
-  hit rate in the two halves of the history before trading it.
+- **A rule card graded `tested` against a stress regime:** the rule's history includes stressed periods. Read the
+  card's own caveat. No rule in the system changes its size for the stress regime; that call is yours.
 
 ## Sizing and tracking
 
-- Engine tickets are recorded on every live run, including CASH, and marked at +1 day, +1 week and +2 weeks with
-  real option mids ([Engine Positions](terminal.md#engine-positions)). The ticket's own track record is the best
+- Engine tickets are recorded on every live run, including CASH, and marked at +1 day, +1 week and +2 weeks at the option's
+  mid, or its last trade when there is no quote ([Engine Positions](terminal.md#engine-positions)). The ticket's own track record is the best
   guide to how much weight it deserves.
 - The Day Scanner trades SPY as a call spread of at most $300 and opens a paper position that closes after five
   trading days.

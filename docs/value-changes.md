@@ -28,6 +28,7 @@ When you change how a stored value is computed:
 | `VERSION` (`core/forecast.py`) | `forecast_v2` | Forecast Lab cards 1–9 |
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
+| `STUDY_VERSION` (`core/chaos.py`) | `regime_study_v2` | The regime study of card 14 (`chaos.long.study`: base rates, early-warning onsets) |
 | `FEDOPS_VERSION` (`core/fedops.py`) | `fed_ops_v4` | Fed / Treasury operations block and its summaries (card 15) |
 | `SHANGHAI_VERSION` (`core/metrics.py`) | `shanghai_dated_v1` | Date-paired Shanghai silver spread (`shanghai.dated`) |
 | `EAGLE_VERSION` (`core/metrics.py`) | `eagle_premium_v1` | Silver Eagle premium statistics, units-sold flow and dealer-book summary (`ebay.premium`, `ebay.flow`, `ebay.book`) |
@@ -41,6 +42,19 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 ## Changes
 
 Newest first, then the changes that came with the v2 pipeline.
+
+- **Chaos / Peace regime study** (`regime_study_v2`, 2026-10-30, found by an audit): a day that was already above the
+  start bound (30) but not yet in an episode, because an episode starts on its third day above the line, no longer counts
+  as an onset or as a base day. Those days were near-certain hits. On the history up to 2026-10-30, VIX ≥ VIX3M goes
+  from `tested` (n 38, 44.7% vs 13.5%) to `none` (n 23, 21.7% vs 12.1%), breadth from 45.0% (n 60) to 37.0% (n 46),
+  momentum from 17.2% to 13.1%, and the 20-day base rate from 13.8% to 12.3%. "Score 15 to 30" keeps 38.9% (n 54). The
+  score itself (`chaos_v1`) does not change. The study block now carries `version`.
+- **Signal Watch, engine row** (`forecast_v2`, 2026-10-30): the row's evidence grade is `none` instead of a hard-coded
+  `thin`. A fired engine ticket now reads "No trade on this alone; use as confirmation" instead of "Buy … · half size
+  (small sample)", and its phone alert is no longer a high-priority Buy. The engine passes no evidence gate.
+- **Evidence gate** (`core/watch.py` `grade()`, 2026-10-30): the "better than baseline in both halves" test now needs
+  cases in both halves. Before, a rule whose cases all fell in one half passed that test by default. This affects the
+  Day Scanner, Edge Lab and the Chaos study grades.
 
 - **Fed / Treasury operations** (`fed_ops_v4`, October 2026): new keys only: `repo.markets.*.peak_12m` and `peak_all_time`,
   `repo.rrp_trend` (a sentence), `auctions.by_tenor.*.last_direct_pct` and `last_indirect_pct`. The terminal rebuilds an

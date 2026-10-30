@@ -38,7 +38,7 @@ to 21.1, it moved through the session like this:
 |---|--:|---|---|
 | Thu 14:45 | −3.2 | neutral | — |
 | Fri 08:31 | 7.5 | neutral | SPY short-volume share at z 1.26 |
-| Fri 11:30 | 24.3 | neutral | **Pre-tested warning on:** "score in the upper half of neutral". Since 1992 it was followed by stress within 20 days 38.9% of the time, against a 13.8% base rate (n = 54, t = 3.7). |
+| Fri 11:30 | 24.3 | neutral | **Warning with a record on:** "score in the upper quarter of neutral (15 to 30)". Since 1992 it was followed by stress within 20 days 38.9% of the time, against a 12.3% base rate (n = 54, t = 4.0). The condition was fixed in code on 2026-10-10 and has not been tuned since. Most of that history is an index of 5 to 9 components (12 only from 2026-09-16), so the same 30 line is not the same distance in every era. |
 | Fri 14:45 | **30.5** | **stress** | Regime change recorded. Phone alert at 14:50, ten minutes before the close. Drivers: VVIX, short volume, VIX/VIX3M. |
 
 The same runs printed an engine ticket of **BULLISH +3**. The terminal showed both readings and did not merge them
@@ -53,7 +53,7 @@ day can be replayed exactly. → [Full case study, with run IDs](docs/case-study
 | You are | You get | Start |
 |---|---|---|
 | **Quant / researcher** | Point-in-time observations with knowledge time (`fetched_at`), revisions kept as new rows, immutable snapshots, CSV export, models with versions and citations, an explicit evidence gate | [For quants](docs/for-quants.md) |
-| **Trader** | One screen for the stress regime, dealer gamma and walls, implied vs forecast volatility, and rule alerts that only say "buy" with tested evidence | [For traders](docs/for-traders.md) |
+| **Trader** | One screen for the stress regime, dealer gamma and walls, implied vs forecast volatility, and rule alerts that say "Buy" only for rows with measured evidence (standard size when `tested`, half size when `thin`) | [For traders](docs/for-traders.md) |
 | **Fund / desk / team** | A self-hosted collector you can audit end to end, read-only integration points (SQLite, HTTP, MCP), additive schema, offline CI | [For teams](docs/for-teams.md) |
 | **Curious** | A plain-English explanation of every card and term | [Guide](docs/guide.md) |
 
@@ -62,7 +62,7 @@ day can be replayed exactly. → [Full case study, with run IDs](docs/case-study
 | Family | Signals | Source |
 |---|---|---|
 | **Market stress** | Chaos / Peace index (12 components, daily history back to 1930, stress episodes, an onset study, an election event study), VMRI | CBOE, ICE BofA (FRED), FINRA, policy uncertainty, Yahoo |
-| **Options positioning** | Dealer gamma (GEX) profile, zero-gamma level, call and put walls, max pain, Breeden-Litzenberger implied distribution | Captured option chains |
+| **Options positioning** | Dealer gamma (GEX) profile, zero-gamma level, call and put walls (3 nearest listed expirations; for SPY that is 0 to 2 DTE, so monthly open interest is not included), max pain, Breeden-Litzenberger implied distribution | Captured option chains |
 | **Volatility and trend** | HAR-RV forecast vs implied, time-series momentum with flip levels, mechanical flows (vol control, leveraged ETFs, CTAs) | Daily OHLC |
 | **Positioning and flow** | CFTC COT index, SLV trust ounces, dark-pool block prints with the feed's own sides | CFTC, iShares, Databento (optional) |
 | **Rates and funding** | NY Fed repo and reverse repo, SOFR, TGCR, BGCR, EFFR, Treasury buybacks and auctions, recession probit, NFCI, Sahm rule | NY Fed, Treasury, FRED |
@@ -94,14 +94,15 @@ known = df[df.fetched_at <= pd.Timestamp("2026-10-30 17:00", tz="UTC")]   # only
 ## Why you can trust a number on it
 
 - 🧾 **Missing is never zero.** A failed source is reported as missing, with the reason, on the card that needed it.
-  There are no fallback constants, placeholders or carried-forward prices.
+  There are no fallback constants for observed market data, and no placeholders or carried-forward prices.
 - 🕰️ **Point-in-time.** Observations carry `observed_at` and `fetched_at`. A revision is a new row. Snapshots are
   protected by database triggers against `UPDATE` and `DELETE`.
-- 🔁 **Reproducible to the byte.** Raw responses are stored and deduplicated by SHA-256. Any past run re-renders with
-  no network (`main_pipeline.py replay`).
-- 🧪 **Evidence before action.** A rule only says "buy" when its own history passes a fixed test: enough cases, a
-  better result than baseline in both halves of the record, and t ≥ 2. Otherwise the card says there is no measured
-  edge.
+- 🔁 **Replayable.** Any past run re-renders from its stored snapshot with no network (`main_pipeline.py replay`), and the
+  report text is byte-identical. Raw responses are stored separately, deduplicated by SHA-256, for audit.
+- 🧪 **Evidence before action.** A rule only says "Buy" when its own history passes a fixed test, and there are two. The Day Scanner and
+  Edge Lab use `core/watch.py grade()`: enough cases, a better result than baseline in both halves, and t ≥ 2. The
+  fair-value, momentum and positioning rows of Signal Watch use a lighter one: a win rate 5 points over baseline and
+  at least 30 cases, with no t-test. Otherwise the card says there is no measured edge.
 - 📚 **Published models.** Breeden-Litzenberger, HAR-RV (Corsi 2009), time-series momentum
   (Moskowitz-Ooi-Pedersen 2012) and the NY Fed recession probit. Forecasts are logged and graded later by hit rate,
   coverage and Brier score.
@@ -123,8 +124,9 @@ flowchart LR
   N --> X["📤 export · MCP<br/>CSV · LLM agents"]
 ```
 
-1. **Collect.** Every network call goes through one gate, `SourceSession.fetch()`. It deduplicates, bounds, logs and
-   stores each request, and in offline runs it makes no calls at all.
+1. **Collect.** Every pipeline network call goes through `SourceSession.fetch()`. It deduplicates, bounds, logs and
+   stores each request, and in offline runs it makes no calls at all. The CME download is the exception: it uses
+   `cme.fetch_bounded` (raw requests, offline-guarded, payload stored).
 2. **Compute.** Models run in the pipeline, so a stored number on screen is the number in the snapshot. A few panels,
    such as option analytics and Edge Lab, compute live; the [API](docs/api.md#data-sources-and-writes) lists which.
 3. **Snapshot.** One immutable document per run. The SQLite store only ever adds: no table, column or row is dropped.
@@ -182,7 +184,7 @@ Everything is optional. Copy `.env.example` to `.env` (`setup.sh` does it) and f
 
 | You add | Cost | You get |
 |---|---|---|
-| nothing | free | Forecast Lab (models, Signal Watch, Day Scanner, Edge Lab), Chaos / Peace (10 of 12 components), Time Arbitrage, dealer gamma, the Shanghai–COMEX spread, engine tickets |
+| nothing | free | Forecast Lab (models, Signal Watch, Day Scanner, Edge Lab), Chaos / Peace (8 of 12 components; 10 after `scripts/backfill_chaos_history.py`), Time Arbitrage, dealer gamma, the Shanghai–COMEX spread, engine tickets |
 | `FRED_API_KEY` | free | The VMRI risk index and War Room, Fed liquidity, the macro inputs of Forecast Lab cards 5 to 7, the HY spread and policy-uncertainty components of Chaos / Peace |
 | A CME account (`main_pipeline.py cme-login`) | free | COMEX volume files, inventory and the paper:physical ratio |
 | `EBAY_APP_ID`, `EBAY_CERT_ID` | free | Silver Eagle premiums over silver futures, the dealer book and units sold between runs |

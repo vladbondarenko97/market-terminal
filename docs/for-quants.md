@@ -9,7 +9,7 @@ get the data into your own notebooks. For a worked example, read the
 Three times each NYSE trading day, a pipeline pulls from about a dozen sources (Yahoo, FRED, EIA, CFTC, CME, CBOE,
 FINRA, NY Fed, Treasury, SEC, iShares, eBay and optionally Databento). It stores every raw response, compressed and
 content-addressed by SHA-256. It writes typed observations, runs the models and commits one immutable JSON snapshot
-per run to SQLite. Nothing is overwritten and nothing is filled in. A value that could not be computed is stored as
+per run to SQLite. Observations and snapshots are never overwritten, and nothing is filled in. A value that could not be computed is stored as
 `missing` with a reason.
 
 ## Point-in-time guarantees
@@ -19,9 +19,9 @@ per run to SQLite. Nothing is overwritten and nothing is filled in. A value that
 | Raw inputs are kept | `v2_payloads`: every provider response, zlib-compressed and deduplicated by SHA-256, with credentials removed before hashing |
 | Snapshots never change | `v2_snapshots` has SQLite triggers that abort any `UPDATE` or `DELETE`. Committing a different document under the same `run_id` raises an error. |
 | Knowledge time is recorded | Each row of `v2_observations` has `observed_at` (the time the value refers to) and `fetched_at` (when this system learned it). A revised value is a **new row**; the old one stays. |
-| Re-runs are byte-reproducible | `main_pipeline.py replay --run <id>` re-renders a past run from its snapshot with no network |
+| Re-runs re-render identically | `main_pipeline.py replay --run <id>` re-renders a past run from its snapshot JSON with no network; the models are not re-run, and the report text is byte-identical. Raw responses are stored separately for audit. |
 | Definitions are versioned | Each model has a version constant (`chaos_v1`, `execution_v2`, …). A change in meaning bumps it and adds a line to [value-changes](value-changes.md). |
-| Missing is not zero | A model without inputs returns `{"status": "missing", "reason": …}`. There are no fallback constants and no carried-forward prices ([status contract](forecast-lab.md#status-contract)). |
+| Missing is not zero | A model without inputs returns `{"status": "missing", "reason": …}`. There are no fallback constants for observed market data and no carried-forward prices ([status contract](forecast-lab.md#status-contract)). |
 | The storage only grows | Schema changes are additive only (`CREATE … IF NOT EXISTS`, `ADD COLUMN`). Nothing is dropped. |
 
 **Using `fetched_at`.** To reconstruct what was knowable at time *T*, keep only rows with `fetched_at <= T` and take
@@ -100,21 +100,32 @@ The formulas, inputs and version of every computed value are in [Methodology](me
 | Positioning | CFTC COT index, 3-year window | — |
 | Silver fair value | Weekly regression on gold, TIPS real yield, DXY, copper, industrial production | — |
 | Macro regime | NY Fed recession probit, NFCI, Sahm rule, HY spread | Estrella & Mishkin (1998); Sahm (2019) |
-| Chaos / Peace | Mean of 12 stress z-scores (3-year windows), daily history back to 1930 | — |
+| Chaos / Peace | Mean of 12 stress z-scores (3-year windows), daily history back to 1930, most of it an index of 5 to 9 components (see below) | — |
 | Dealer gamma | GEX profile, zero-gamma level, call and put walls from captured chains | — |
 
 ## How evidence is graded
 
-Every rule that can tell the operator to act passes one gate, `core/watch.py grade()`:
+There are two gates.
+
+**1. `core/watch.py grade()`**, used by the Day Scanner and Edge Lab:
 
 - at least 8 cases (fewer than 30 is graded `thin`);
 - a better result than the baseline in **both halves** of the history (sign stability);
 - a t-statistic of at least 2 against the baseline;
-- an up-rate at least 5 points above the baseline's.
+- an up-rate at least `min_up` points above the baseline's. `min_up` is 0 for some edges in `core/edges.py` (turn of
+  month, overnight).
 
-A rule that fails reads "no measured edge" in the terminal, rather than a buy. The Chaos early-warning conditions
-use the same idea on regime onsets: each condition was fixed before testing and is graded against the base rate of
-"stress within N days".
+**2. `core/forecast.py _edge()`**, used by the fair-value, momentum and positioning rows of Signal Watch: a win rate at
+least 5 points above the baseline and n ≥ 30 for `tested` (`thin` below 30). There is no t-test and no halves test.
+
+Signal Watch rows graded `tested` say "Buy · standard size" and rows graded `thin` say "Buy · half size (small
+sample)". The engine row never says Buy; it reads "No trade on this alone; use as confirmation". A rule that fails
+reads "no measured edge" in the terminal. The Chaos early-warning conditions are graded on regime onsets against the
+base rate of "stress within N days" with `grade()`. The conditions, their bounds and the study were fixed in code on
+2026-10-10 and have not been tuned since. The Day Scanner's RSI threshold (10 or 5, for symbols without a researched
+spec) is picked by the best t on the same history it is graded on (`core/watch.py`), so its grade is in-sample.
+
+**Long Chaos history.** Most of that history is an index of 5 to 9 components: the HY spread, equity put/call and SPY short volume only enter in 2026 (9 components until 2026-07-28, 11 from then, 12 from 2026-09-16). Score dispersion differs by era, so the fixed 30 line is not the same distance in every era. The VIX >= VIX3M condition can only be tested from 2006-07-17, and VIX3M before its 2007 launch is back-filled.
 
 **Known biases, stated.** The gate is a screen, not a proof of significance. Many rules across many tickers produce
 some false passes. Neighbouring windows overlap, so the t-values are optimistic. The Chaos regime cut-offs (−30, 30,
@@ -125,8 +136,9 @@ from the code.
 ## Forecast scorecard
 
 Live runs log forecasts to `v2_forecasts` (spot, `p_up`, 68% range, horizon, target date). Card 9 grades them once the
-target date has passed, using hit rate, 68% coverage and the Brier score. The walk-forward backtests of cards 2, 3 and
-5 sit beside them. Details: [Forecast Lab → Scorecard](forecast-lab.md#scorecard).
+target date has passed, using hit rate, 68% coverage and the Brier score. The backtests of cards 2, 3 and 5 sit beside them, and they are not all out-of-sample. Card 2 is a single 60/20/20
+holdout. Card 3 tests a fixed signal against forward returns with no fitted parameters; its windows overlap. Card 5's
+hit rate uses in-sample residuals from one fit on the full 156-week window, so it is in-sample and optimistic. Details: [Forecast Lab → Scorecard](forecast-lab.md#scorecard).
 
 ## Extending it
 
