@@ -25,7 +25,9 @@ per run to SQLite. Nothing is overwritten and nothing is filled in. A value that
 | The storage only grows | Schema changes are additive only (`CREATE … IF NOT EXISTS`, `ADD COLUMN`). Nothing is dropped. |
 
 **Using `fetched_at`.** To reconstruct what was knowable at time *T*, keep only rows with `fetched_at <= T` and take
-the newest per (`metric_id`, `entity`, `dims_json`, `observed_at`). Intraday readings of the same day stay separate.
+the newest per (`metric_id`, `entity`, `observed_at`). Leave `dims_json` out of the key: some series store revision
+details there (`chaos.score` keeps `rev`, `used` and the like), so every revision would count as a separate key. Filter on `derivation`
+(the model version, for example `chaos_v1`) so that two definitions are never mixed. Intraday readings of the same day stay separate.
 For example, `chaos.score` for 2026-10-30 has three rows (7.54, 24.31, 30.51), one per run. The 2026-10-29 value
 has five: −0.85, −4.86 and −3.22 from Thursday's own runs, then 4.12 and 5.55 from Friday's runs, which recomputed
 Thursday once the once-a-day FINRA and CBOE files were in (`dims_json.rev` counts the revisions). A backtest that
@@ -33,7 +35,10 @@ uses the last value of each day sees 5.55. One that respects `fetched_at` sees �
 
 **Known gaps.** Series that were backfilled (`scripts/backfill_*`, runs with `mode='backfill'`) have a `fetched_at` of
 the backfill date, not of the original publication. Treat them as revised history, not as an as-of record. FINRA short
-volume and CBOE put/call are published once a day, so an intraday run carries the previous day's value.
+volume and CBOE put/call are published once a day, so an intraday run carries the previous day's value. Rows are
+deduplicated on their content (`INSERT OR IGNORE` on a hash that includes the value), so a value that returns to an
+earlier one (A, then B, then A again, with the same dimensions) is not stored a third time. An as-of query after the
+third run still returns B.
 
 ## Getting the data out
 
@@ -44,8 +49,9 @@ volume and CBOE put/call are published once a day, so an intraday run carries th
 .venv/bin/python main_pipeline.py export --metric fedops. --out - | head
 ```
 
-Columns: `observed_at, metric_id, entity, dims_json, value_num, value_text, value_json, unit, status, reason, source,
-run_id, fetched_at`. Rows with `status=missing` are kept with an empty `value_num`. The command is read-only and does not
+Columns: `observed_at, observed_tz, metric_id, entity, dims_json, value_num, value_text, value_json, unit, status,
+reason, source, derivation, run_id, fetched_at`. `--since` and `--until` compare the date as written in `observed_at`,
+with no time-zone conversion. Rows with `status=missing` are kept with an empty `value_num`. The command is read-only and does not
 take the run lock, so it is safe while a run is in progress.
 
 ```python

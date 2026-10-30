@@ -168,7 +168,7 @@ flags, so `python main_pipeline.py --no-deliver` is an argument error (exit 2); 
 | `replay` | `--run RUN_ID` (newest live snapshot; an offline one only when no live snapshot exists), `--out DIR` (`<data>/<day folder>/replay_<run id>`) | Re-renders files, charts and the email from a stored snapshot. No network, never delivers. Logs a `replay` run. | 0; 1 no snapshot or no database | no |
 | `resend` | `--run RUN_ID` (newest live snapshot; an offline one only when no live snapshot exists) | Sends the run's stored `email.eml` again. | 0 SMTP accepted; 2 not accepted (including `skipped`, email not configured); 1 no database, no run or no saved email | no |
 | `catalog` | `--run RUN_ID` (latest) | Prints the variable catalog and lineage as Markdown. | 0; 1 no database | no |
-| `export` | `--metric PREFIX`, `--since YYYY-MM-DD`, `--until YYYY-MM-DD`, `--out FILE` (`-` = stdout) | Writes `v2_observations` as CSV (`observed_at, metric_id, entity, dims_json, value_num, value_text, value_json, unit, status, reason, source, run_id, fetched_at`), ordered by metric, entity, observed time, fetch time. Missing rows keep their status and reason with an empty `value_num`. `fetched_at` is when the value became known: filter on it for point-in-time backtests. Opens the database read-only; prints the row count to stderr. | 0; 1 no database | no |
+| `export` | `--metric PREFIX`, `--since YYYY-MM-DD`, `--until YYYY-MM-DD`, `--out FILE` (`-` = stdout) | Writes `v2_observations` as CSV (`observed_at, observed_tz, metric_id, entity, dims_json, value_num, value_text, value_json, unit, status, reason, source, derivation, run_id, fetched_at`), ordered by metric, entity, observed time, fetch time. Missing rows keep their status and reason with an empty `value_num`. `--since`/`--until` must be ISO dates and compare the date as written in `observed_at` (no time-zone conversion). `fetched_at` is when the value became known: filter on it for point-in-time backtests. Opens the database read-only; prints the row count to stderr. | 0; 1 no database, no `v2_observations` table or an unwritable `--out` | no |
 | `status` | none | Prints the last 10 runs, then the contents of `.v2_run_status.json`. A run row or a status file that says `running` while nothing holds the run lock is shown as `interrupted`. Opens the database read-only, so it needs a database that a run or import has already created. | 0; 1 no database | no |
 | `import-history` | `--no-backup` | Copies `portfolio.db` to `backups/` first (see [Backups and rollback](#backups-and-rollback)), then imports old files and tables into the lake. Idempotent. | 0; 1 the backup failed (nothing imported); 75 busy | yes |
 | `backfill-positions` | none | Records an engine ticket (a `v2_trade_signals` row) for every committed live run that has none (see [Engine positions](#engine-positions)). Idempotent. | 0; 1 no database; 75 busy | yes |
@@ -273,17 +273,18 @@ shows the run's final state, including `warnings` (exit 3) and `interrupted`.
 
 ### Times
 
-The pipeline runs twice on each NYSE trading day, at two Eastern times (`SCHEDULE_ET` in
-`core/market_calendar.py`): 09:31, just after the open, and 15:45, before the close. There is no afternoon run on an
+The pipeline runs three times on each NYSE trading day, at three Eastern times (`SCHEDULE_ET` in
+`core/market_calendar.py`): 09:31, just after the open, 12:30, midday, and 15:45, before the close. There is no 15:45 run on an
 early-close day (see [NYSE holidays](#nyse-holidays)).
 
 | Run | Eastern | Central | Mountain | Pacific |
 |---|---|---|---|---|
 | At the open | 09:31 | 08:31 | 07:31 | 06:31 |
+| Midday | 12:30 | 11:30 | 10:30 | 09:30 |
 | Before the close | 15:45 | 14:45 | 13:45 | 12:45 |
 
 launchd uses the Mac's clock, not New York's. `setup.sh --schedule` calls `launchd_intervals()` in
-`core/market_calendar.py`, which converts both Eastern times for every NYSE trading day of the coming 371 days using
+`core/market_calendar.py`, which converts the Eastern times for every NYSE trading day of the coming 371 days using
 that day's own offsets, and returns the distinct local `(weekday, hour, minute)` fire times. Setup writes one
 `StartCalendarInterval` entry for each, with launchd's weekday numbers (0 = Sunday). The daylight-saving changes of
 New York and of the Mac's own zone are therefore already inside the list.

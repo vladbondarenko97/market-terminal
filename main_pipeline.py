@@ -30,11 +30,12 @@ import csv
 import json
 import os
 import secrets
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import config
@@ -788,41 +789,51 @@ def print_catalog(run_id=None):
     return 0
 
 
-EXPORT_COLUMNS = ("observed_at", "metric_id", "entity", "dims_json", "value_num", "value_text", "value_json", "unit",
-                  "status", "reason", "source", "run_id", "fetched_at")
+EXPORT_COLUMNS = ("observed_at", "observed_tz", "metric_id", "entity", "dims_json", "value_num", "value_text", "value_json",
+                  "unit", "status", "reason", "source", "derivation", "run_id", "fetched_at")
 
 
 def export_observations(metric=None, since=None, until=None, out="-"):
-    """Write v2_observations as CSV (stdout or a file). Read-only; a missing value is an empty cell, never 0."""
+    """Write v2_observations as CSV (stdout or a file). Read-only; a missing value is an empty cell, never 0.
+    since/until are dates compared with the date as written in observed_at (no time-zone conversion)."""
     if not DB_PATH.exists():
         print(f"No database at {DB_PATH}: nothing to export.", file=sys.stderr)
         return 1
     sql, args = f"SELECT {', '.join(EXPORT_COLUMNS)} FROM v2_observations WHERE 1=1", []
-    if metric:
-        sql += " AND substr(metric_id, 1, length(?)) = ?"  # not LIKE: '_' in a prefix would be a wildcard
+    if metric:  # a range, not LIKE: '_' would be a wildcard, and a range can use ix_v2_obs_metric
+        sql += " AND metric_id >= ? AND metric_id < ? || char(1114111)"
         args += [metric, metric]
     if since:
-        sql += " AND date(observed_at) >= ?"
-        args.append(since)
+        sql += " AND substr(observed_at, 1, 10) >= ?"
+        args.append(since.isoformat())
     if until:
-        sql += " AND date(observed_at) <= ?"
-        args.append(until)
+        sql += " AND substr(observed_at, 1, 10) <= ?"
+        args.append(until.isoformat())
     sql += " ORDER BY metric_id, entity, observed_at, fetched_at"
+    n = 0
     conn = lake.connect_readonly(DB_PATH)
     try:
-        rows = conn.execute(sql, args).fetchall()
+        cur = conn.execute(sql, args)
+        fh = sys.stdout if out == "-" else open(out, "w", newline="", encoding="utf-8")
+        try:
+            w = csv.writer(fh)
+            w.writerow(EXPORT_COLUMNS)
+            for r in cur:  # streamed, not fetchall()
+                w.writerow(["" if v is None else v for v in tuple(r)])
+                n += 1
+            fh.flush()
+        finally:
+            if fh is not sys.stdout:
+                fh.close()
+    except BrokenPipeError:  # `export | head`
+        sys.stdout = open(os.devnull, "w")
+        return 0
+    except (sqlite3.Error, OSError) as e:
+        print(f"export failed: {e}", file=sys.stderr)
+        return 1
     finally:
         conn.close()
-    fh = sys.stdout if out == "-" else open(out, "w", newline="", encoding="utf-8")
-    try:
-        w = csv.writer(fh)
-        w.writerow(EXPORT_COLUMNS)
-        for r in rows:
-            w.writerow(["" if v is None else v for v in tuple(r)])
-    finally:
-        if fh is not sys.stdout:
-            fh.close()
-    print(f"{len(rows)} row(s) exported", file=sys.stderr)
+    print(f"{n} row(s) exported", file=sys.stderr)
     return 0
 
 
@@ -955,8 +966,8 @@ def main(argv=None):
     c.add_argument("--run", help="run id (default: the latest committed snapshot)")
     ex = sub.add_parser("export", help="write stored observations as CSV (read-only); fetched_at is when the value became known")
     ex.add_argument("--metric", help="metric_id prefix, e.g. chaos.")
-    ex.add_argument("--since", help="first observed date, YYYY-MM-DD")
-    ex.add_argument("--until", help="last observed date, YYYY-MM-DD")
+    ex.add_argument("--since", type=date.fromisoformat, help="first observed date, YYYY-MM-DD")
+    ex.add_argument("--until", type=date.fromisoformat, help="last observed date, YYYY-MM-DD")
     ex.add_argument("--out", default="-", help="output file (default - = stdout)")
     sub.add_parser("status", help="print the last 10 runs and the current run's status ('interrupted' = the run died)")
     sub.add_parser("cme-login", help="log in to CME in a browser window (MFA) and save the session (takes the run lock)")

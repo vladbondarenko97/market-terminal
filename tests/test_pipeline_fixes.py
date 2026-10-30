@@ -680,15 +680,24 @@ class ExportCommand(unittest.TestCase):
             conn.execute(ins, ("a", "chaos.score", "", "2024-01-02", 41.5, "pts", "ok", None, "chaos", "r1", "2024-01-02T21:00:00Z"))
             conn.execute(ins, ("b", "chaos.vix", "", "2024-01-02", None, None, "missing", "no vix feed", "chaos", "r1", "2024-01-02T21:00:00Z"))
             conn.execute(ins, ("c", "eia.x", "", "2024-01-02", 1.0, None, "ok", None, "eia", "r1", "2024-01-02T21:00:00Z"))
+            conn.execute(ins, ("d", "chaos.score", "", "2024-01-05T20:30:00-05:00", 12.0, "pts", "ok", None, "chaos", "r2", "2024-01-06T01:31:00Z"))
+            conn.execute(ins, ("e", "chaos_x", "", "2024-01-02", 9.0, None, "ok", None, "chaos", "r1", "2024-01-02T21:00:00Z"))
         conn.close()
         out = tmp / "out.csv"
-        with mock.patch.object(mp, "DB_PATH", db), contextlib.redirect_stderr(io.StringIO()):
-            rc = mp.export_observations(metric="chaos.", out=str(out))
-        self.assertEqual(rc, 0)
-        rows = list(csv.DictReader(open(out, newline="")))
+        def export(*args):
+            with mock.patch.object(mp, "DB_PATH", db), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(mp.main(["export", "--out", str(out), *args]), 0)
+            with open(out, newline="") as fh:
+                return list(csv.DictReader(fh))
+
+        rows = export("--metric", "chaos.", "--until", "2024-01-02")
         self.assertEqual(list(rows[0]), list(mp.EXPORT_COLUMNS))
-        self.assertEqual([r["metric_id"] for r in rows], ["chaos.score", "chaos.vix"])
+        self.assertEqual([r["metric_id"] for r in rows], ["chaos.score", "chaos.vix"])  # '.' is literal: chaos_x is out
         self.assertEqual((rows[1]["value_num"], rows[1]["reason"]), ("", "no vix feed"))
+        # the date as written (Chicago evening of the 5th), not shifted to UTC
+        self.assertEqual([r["value_num"] for r in export("--metric", "chaos.score", "--since", "2024-01-05", "--until", "2024-01-05")], ["12.0"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            mp.main(["export", "--since", "2024/01/05"])
         with mock.patch.object(mp, "DB_PATH", tmp / "none.db"), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(mp.export_observations(out=str(out)), 1)
 
