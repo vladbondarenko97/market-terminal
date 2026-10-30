@@ -4,6 +4,7 @@ import re
 import time
 import warnings
 from datetime import date
+from urllib.parse import urljoin
 
 import pandas as pd
 
@@ -354,19 +355,15 @@ def browser_fetch(url, state_file=None, *, timeout_ms=30000, headless=False, pro
                     kw["storage_state"] = state_file
                 context = browser.new_context(**kw)
             page = context.new_page()
+            set_browser_visible(False)
             try:
-                with page.expect_download(timeout=timeout_ms) as info:
-                    try:
-                        page.goto(url)
-                    except Exception as e:
-                        if "Download is starting" not in str(e):
-                            raise
-                path = info.value.path()
-                with open(path, "rb") as f:
-                    data = f.read()
+                page.goto(urljoin(url, "/robots.txt"), timeout=timeout_ms)    # same origin, so the fetch is allowed
+                code, data = _download(page, url, timeout_ms)
             finally:
                 browser.close()
-        return AcquisitionResult("ok", data=data, url=url, attempts=1)
+        if data is None:
+            return AcquisitionResult("error", http_status=code, url=url, attempts=1, detail="browser: no workbook")
+        return AcquisitionResult("ok", data=data, http_status=code, url=url, attempts=1)
     except Exception as e:
         return AcquisitionResult("error", url=url, detail=f"browser: {e}", attempts=1)
 
@@ -377,6 +374,31 @@ VOLUME_DIR_URL = "https://www.cmegroup.com/ftp/daily_volume/"
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
        "Chrome/121.0.0.0 Safari/537.36")
 _ARGS = ["--disable-http2", "--disable-blink-features=AutomationControlled"]
+
+
+_APP_JS = """ObjC.import('AppKit');
+function run(argv) {
+  const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+  for (let i = 0; i < apps.count; i++) {
+    const a = apps.objectAtIndex(i), u = a.executableURL;
+    if (u && u.path.js.includes('ms-playwright')) argv[0] === 'show' ? (a.unhide, a.activateWithOptions(2)) : a.hide;
+  }
+}"""
+
+
+def set_browser_visible(visible):
+    """macOS: hide Playwright's Chromium so a scheduled run does not take the screen and focus (hiding hands focus
+    back to the previous app), or show and focus it for a login. CME stalls headless Chromium, so it stays headed.
+    Open new pages only while shown: Chromium crashes creating a window while hidden. No-op off macOS."""
+    import subprocess
+    import sys
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(["osascript", "-l", "JavaScript", "-e", _APP_JS] + (["show"] if visible else []),
+                       capture_output=True, timeout=10)
+    except Exception:
+        pass
 
 
 def open_persistent_context(p, profile_dir, state_file=None):
@@ -418,6 +440,7 @@ def wait_for_login(ctx, *, username="", password="", wait_seconds=900, poll_seco
     """Open the CME login page in the persistent browser, pre-fill credentials and pause (bounded) until the
     operator finishes login + MFA. Returns True if a logged-in page was reached."""
     import time as _t
+    set_browser_visible(True)
     page = ctx.new_page()
     page.goto(CME_LOGIN_URL)
     try:
@@ -476,7 +499,10 @@ def interactive_login(state_file, username="", password="", *, profile_dir=None,
             probe = _newest_listing_file(page)
             if not probe:
                 return False
-            code, body = _download(page, probe)
+            try:
+                code, body = _download(page, probe)
+            except Exception as e:
+                code, body = f"fetch failed ({e})", None
             print(f"probe {probe.rsplit('/', 1)[-1]}: HTTP {code}", flush=True)
             return body is not None and detect_format(body) in ("xlsx", "xls")
         finally:
@@ -499,27 +525,22 @@ def _newest_listing_file(page):
     return files[max(files)] if files else None
 
 
-def _download(page, url, timeout_ms=30000):
-    """Navigate like a user (CME refuses side-channel requests). Returns (http_status, bytes_or_None)."""
-    status = {}
+_FETCH_JS = """async ([u, ms]) => {
+  const r = await fetch(u, {credentials: "include", signal: AbortSignal.timeout(ms)});
+  const b = new Uint8Array(await r.arrayBuffer());
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  return [r.status, btoa(s)];
+}"""
 
-    def on_resp(r):
-        if r.url == url:
-            status.setdefault("code", r.status)
-    page.on("response", on_resp)
-    try:
-        with page.expect_download(timeout=timeout_ms) as dl:
-            try:
-                page.goto(url, referer=VOLUME_DIR_URL)
-            except Exception as e:
-                if "Download is starting" not in str(e):
-                    raise
-        with open(dl.value.path(), "rb") as f:
-            return status.get("code", 200), f.read()
-    except Exception:
-        return status.get("code"), None
-    finally:
-        page.remove_listener("response", on_resp)
+
+def _download(page, url, timeout_ms=30000):
+    """Fetch from inside the logged-in page (its cookies, its connection; CME refuses requests from outside the
+    browser). Not a navigation: a navigation download crashes Chromium while it is hidden. `page` must be on a
+    cmegroup.com page. Returns (http_status, bytes_or_None); bytes only for HTTP 200. Raises if the fetch fails."""
+    import base64
+    code, b64 = page.evaluate(_FETCH_JS, [url, timeout_ms])
+    return code, base64.b64decode(b64) if code == 200 else None
 
 
 def pick_volume_files(listed, have_dates, max_files, earliest=None):
@@ -546,6 +567,7 @@ def browser_fetch_volume_listing(state_file, have_dates, *, max_files=10, earlie
         ctx = open_persistent_context(p, profile_dir, state_file)
         try:
             page = ctx.new_page()
+            set_browser_visible(False)
             page.goto(VOLUME_DIR_URL, timeout=30000)
             page.wait_for_timeout(2000)
             files = _listing_files(page)
@@ -556,7 +578,10 @@ def browser_fetch_volume_listing(state_file, have_dates, *, max_files=10, earlie
             pending = list(wanted)
             while pending:
                 d = pending[0]
-                code, body = _download(page, files[d])
+                try:
+                    code, body = _download(page, files[d])
+                except Exception:
+                    code, body = None, None
                 if body is None and code in (400, 401, 403):
                     if info["login_prompted"] or login_wait_seconds <= 0:
                         results.append((d, AcquisitionResult(
@@ -570,6 +595,7 @@ def browser_fetch_volume_listing(state_file, have_dates, *, max_files=10, earlie
                                                              attempts=1, detail="login not completed in time")))
                         break
                     save_session(ctx, state_file)
+                    set_browser_visible(False)
                     page.goto(VOLUME_DIR_URL)
                     page.wait_for_timeout(1500)
                     continue            # retry the same file once after login

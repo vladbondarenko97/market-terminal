@@ -380,7 +380,10 @@ without login.
 **How the session is kept.**
 
 - A persistent Chromium profile in `<data folder>/.cme_browser_profile` holds cookies, storage and the Duo
-  "remember me" data between runs. Chromium is always started visible (never headless).
+  "remember me" data between runs. Chromium is never headless (CME stalls headless Chromium), but on macOS it is
+  hidden right after it starts, so a run does not take the screen or keyboard focus. It is shown and brought to the
+  front only when a login is needed (and always for `cme-login`). Workbooks are fetched from inside the page, not
+  as browser downloads: a download crashes Chromium while it is hidden.
 - `<data folder>/state.json` is a portable cookie backup, refreshed after every CME browser session. A new profile is
   seeded once from it.
 - `CME_LOGIN_USERNAME` and `CME_LOGIN_PASSWORD` in `.env` are optional. They only pre-fill the login form; you still
