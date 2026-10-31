@@ -930,8 +930,9 @@ async function followRun(beforeId) {
                 else if (state === 'interrupted') log(`Run ${runId} was interrupted: the process ended before it finished${why}`, 'error');
                 else log(`Run ${runId} ${state}${took}${why}`, 'error');
                 reloadFrame('vmriFrame');
+                reloadFrame('mmriFrame');
                 reloadFrame('comexFrame');
-                log('VMRI and COMEX inventory frames reloaded.', 'info');
+                log('VMRI, MMRI and COMEX inventory frames reloaded.', 'info');
                 return;
             }
         }
@@ -1978,7 +1979,8 @@ const PANEL_LABELS = {
     panel13: 'FED LIQUIDITY PLUMBING',
     panel14: 'SHANGHAI-COMEX ARB',
     panel15: 'ENGINE POSITIONS',
-    panel16: 'BROKERAGE POSITIONS'
+    panel16: 'BROKERAGE POSITIONS',
+    panel17: 'MANNARINO MARKET RISK INDICATOR (MMRI)'
 };
 
 // Collects data per panel and opens the modal
@@ -1996,6 +1998,16 @@ function copyPanelData(panelId) {
             } else {
                 payload = JSON.stringify({ note: 'No cached data. Click Data Dump in the console bar first.', panel: PANEL_LABELS[panelId] }, null, 2);
             }
+        }
+
+        else if (panelId === 'panel17') {
+            // MMRI frame: credit, formula and the rows it drew (same-origin), as ledger time labels and MMRI fields only
+            let w = null;
+            try { w = document.getElementById('mmriFrame').contentWindow; } catch (e) { /* frame not readable */ }
+            const rows = w && w.rows && w.rows.length ? w.rows.map(r => ({ time: new Date(r.t - new Date(r.t).getTimezoneOffset() * 60000).toISOString().slice(0, 16).replace('T', ' '), mmri: r.y, sma_10: r.avg, dxy: r.dxy, yield_10y: r.yield })) : null;
+            payload = JSON.stringify({ panel: PANEL_LABELS[panelId], credit: w && w.CFG ? w.CFG.credit : null,
+                                       formula: w && w.CFG ? w.CFG.formula : null, rows: rows,
+                                       note: rows ? undefined : 'The chart has not loaded yet.' }, null, 2);
         }
 
         else if (panelId === 'panel3') {

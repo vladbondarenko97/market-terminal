@@ -790,6 +790,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
               "status": "fresh" if g and s and b else "partial", "source": "derived"}
     vm = metrics.vmri(prices["dxy"].get("value"), prices["tnx"].get("value"), macro["oas"].get("latest"),
                       prices["vix"].get("value"))
+    mm = metrics.mmri(prices["dxy"].get("value"), prices["tnx"].get("value"))
     weather = metrics.weather(prices["vix"].get("value"), prices["vix3m"].get("value"))
     pct = {}
     for k, sym in (("spy", "SPY"), ("rsp", "RSP"), ("nvda", "NVDA"), ("aapl", "AAPL"), ("msft", "MSFT")):
@@ -827,7 +828,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
                | {"generated_local": now.astimezone(CHICAGO).strftime("%Y-%m-%d %I:%M %p %Z"),
                   "data_dir": str(data_dir)},
         "calendar": calendar, "inventory": inventory, "cme_volume": cme_vol, "prices": prices,
-        "shanghai": shanghai, "ratios": ratios, "macro": macro, "vmri": vm, "paper_physical": pp,
+        "shanghai": shanghai, "ratios": ratios, "macro": macro, "vmri": vm, "mmri": mm, "paper_physical": pp,
         "oi_divergence": {"silver": div_silver, "es": div_es}, "es_put_call": pc,
         "options": {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")} for k, v in options.items()},
         "flow": {"SPY": spy_flow, "SLV": flows["SLV"][0], "SPY_5d": {**flows["SPY_5d"][0], "nodes": nodes}},
@@ -1445,6 +1446,8 @@ def context_observations(ctx, frames=None):
                          reason=ctx["execution"].get("reason")))
     recs.append(lake.obs("vmri.components", run["generated_at"], value=ctx["vmri"], source="derived",
                          derivation=metrics.VMRI_VERSION, status=ctx["vmri"].get("status"), reason=ctx["vmri"].get("reason")))
+    recs.append(lake.obs("mmri.score", run["generated_at"], value=ctx["mmri"], source="derived",
+                         derivation=metrics.MMRI_VERSION, status=ctx["mmri"].get("status"), reason=ctx["mmri"].get("reason")))
     for l in ctx["ebay"].get("listings", []):
         recs.append(lake.obs("ebay.listing", run["generated_at"], entity=l["item_id"], value=l, source="ebay_browse_api",
                              payload_id=l.get("payload_id")))
