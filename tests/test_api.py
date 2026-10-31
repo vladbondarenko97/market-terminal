@@ -1190,5 +1190,54 @@ class InstitutionalHistorySideInfo(ApiCase):
         json.dumps(d, allow_nan=False)
 
 
+class MmriCard(ApiCase):
+    HEADER = "Datetime,VMRI_Score,DXY,10Y_Yield,VIX,Gold_Price,Gold_Silver_Ratio,High_Yield_OAS\n"
+
+    def test_tiers_at_the_boundaries(self):
+        # (DXY * 10Y) / 1.61 = 100 when DXY * 10Y = 161
+        for dxy_x_tnx, tier in ((160.0, "LOW RISK"), (161.0, "MODERATE RISK"), (321.0, "MODERATE RISK"),
+                                (322.0, "HIGH RISK"), (482.0, "HIGH RISK"), (483.0, "EXTREME RISK")):
+            m = metrics.mmri(dxy_x_tnx, 1.0)
+            self.assertEqual(m["tier"], tier, dxy_x_tnx)
+            self.assertAlmostEqual(m["score"], dxy_x_tnx / 1.61)
+        m = metrics.mmri(100.0, 4.0)
+        self.assertEqual((m["status"], m["version"], m["credit"]), ("fresh", "mmri_v1", "Gregory Mannarino"))
+
+    def test_agrees_with_the_vmri_base_stress(self):
+        self.assertAlmostEqual(metrics.mmri(104.2, 4.31)["score"], metrics.vmri(104.2, 4.31, 3.1, 18.0)["components"]["base_stress"])
+
+    def test_a_missing_input_is_missing_not_zero(self):
+        for dxy, tnx in ((None, 4.0), (100.0, None), (None, None)):
+            m = metrics.mmri(dxy, tnx)
+            self.assertEqual(m["status"], "missing")
+            self.assertIsNone(m["score"])
+            self.assertIn("missing inputs", m["reason"])
+
+    def test_history_has_the_mmri_series_from_the_stored_columns(self):
+        # the second row has no VMRI score (an input was missing) and the third has no DXY: no MMRI either
+        (self.tmp / "macro_master_ledger.csv").write_text(
+            self.HEADER + "2026-10-01 10:00,180.0,100,4.0,20,2000,80,4.0\n"
+                          "2026-10-02 10:00,,100,4.0,,2000,80,\n"
+                          "2026-10-03 10:00,170.0,,4.0,20,2000,80,4.0\n")
+        body = self.client.get("/api/vmri_history").get_json()
+        self.assertAlmostEqual(body["mmri"][0], 400.0 / 1.61)
+        self.assertAlmostEqual(body["mmri"][1], 400.0 / 1.61)
+        self.assertIsNone(body["mmri"][2])
+        self.assertEqual(len(body["mmri_sma_10"]), 3)
+        self.assertEqual(len(body["mmri_momentum_5"]), 3)
+
+    def test_chart_pages_render_with_their_own_bands(self):
+        mmri_page = self.client.get("/mmri_chart")
+        self.assertEqual(mmri_page.status_code, 200)
+        html = mmri_page.get_data(as_text=True)
+        self.assertIn("Mannarino Market Risk Indicator", html)
+        self.assertIn("EXTREME RISK", html)
+        self.assertIn("Gregory Mannarino", html)
+        self.assertNotIn("__CFG__", html)
+        vmri_page = self.client.get("/vmri_chart")
+        self.assertEqual(vmri_page.status_code, 200)
+        self.assertIn("SYSTEMIC THREAT", vmri_page.get_data(as_text=True))
+
+
 if __name__ == "__main__":
     unittest.main()

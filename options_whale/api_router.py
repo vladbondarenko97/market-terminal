@@ -559,6 +559,12 @@ def get_vmri_history():
         # Measures velocity. Positive = accelerating risk, Negative = decaying risk
         df['VMRI_Momentum_5'] = df['VMRI_Score'].diff(periods=5)
 
+        # MMRI (Mannarino) = DXY x 10Y / 1.61, the stored base_stress of every VMRI row. Older ledger rows have
+        # no MMRI column, so it is recomputed from the same stored DXY and 10Y_Yield (no live fetch).
+        df['MMRI'] = (pd.to_numeric(df['DXY'], errors='coerce') * pd.to_numeric(df['10Y_Yield'], errors='coerce')) / 1.61
+        df['MMRI_SMA_10'] = df['MMRI'].rolling(window=10).mean()
+        df['MMRI_Momentum_5'] = df['MMRI'].diff(periods=5)
+
         # 3. The "Primary Driver" Logic
         # Look at the absolute % change of the 4 core pillars over the last 5 periods.
         drivers_df = pd.DataFrame({
@@ -607,6 +613,9 @@ def get_vmri_history():
             # New Math Data
             "sma_10": clean_list(df['VMRI_SMA_10'].tolist()),
             "momentum_5": clean_list(df['VMRI_Momentum_5'].tolist()),
+            "mmri": clean_list(df['MMRI'].tolist()),
+            "mmri_sma_10": clean_list(df['MMRI_SMA_10'].tolist()),
+            "mmri_momentum_5": clean_list(df['MMRI_Momentum_5'].tolist()),
             "primary_driver": driver_list,
             
             "context": {
@@ -625,16 +634,31 @@ def get_vmri_history():
                         "error": "VMRI history failed (see the server log)"}), 500
 
 # --- ENDPOINT: VMRI CHART VIEWER ---
+# Per-index settings for the shared chart page. "tiers" run from the lowest band up; the first has no lower limit.
+CHART_INDEXES = {
+    "vmri": {"name": "VMRI", "title": "VMRI Macro Risk Index", "scores": "scores", "sma": "sma_10", "mom": "momentum_5",
+             "credit": "", "tiers": [
+                 [None, "LOW RISK", "LOW", "#22c55e", "34,197,94"], [150, "MODERATE RISK", "MODERATE", "#eab308", "234,179,8"],
+                 [250, "ELEVATED RISK", "ELEVATED", "#f97316", "249,115,22"], [350, "SYSTEMIC THREAT", "SYSTEMIC", "#ef4444", "239,68,68"]]},
+    "mmri": {"name": "MMRI", "title": "Mannarino Market Risk Indicator", "scores": "mmri", "sma": "mmri_sma_10", "mom": "mmri_momentum_5",
+             "credit": "MMRI by Gregory Mannarino \u00b7 (DXY \u00d7 10Y) \u00f7 1.61 \u00b7 VMRI extends it with credit spreads and VIX",
+             "tiers": [
+                 [None, "LOW RISK", "LOW", "#22c55e", "34,197,94"], [100, "MODERATE RISK", "MODERATE", "#eab308", "234,179,8"],
+                 [200, "HIGH RISK", "HIGH", "#f97316", "249,115,22"], [300, "EXTREME RISK", "EXTREME", "#ef4444", "239,68,68"]]},
+}
+
 @app.route('/vmri_chart')
-def vmri_chart_page():
-    """The VMRI chart page shown in the terminal's panel 1 frame. It draws /api/vmri_history."""
+@app.route('/mmri_chart', defaults={'index': 'mmri'})
+def vmri_chart_page(index='vmri'):
+    """The index chart page shown in a terminal frame: VMRI in panel 1, MMRI in panel 17 (/mmri_chart). Both draw /api/vmri_history."""
+    cfg = CHART_INDEXES[index]
     html_template = """
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>VMRI Macro Risk Index</title>
+        <title>__TITLE__</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous"></script>
         <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.1.0/dist/chartjs-plugin-annotation.min.js" integrity="sha384-dB7WWqy9+vERwKo2atAKw+KLNhfY0RX5ZjV1l4HHMBZz5wfSvX/GsytIpOyBY8dG" crossorigin="anonymous"></script>
         <style>
@@ -659,7 +683,7 @@ def vmri_chart_page():
     <body>
         <div class="head">
             <div>
-                <div class="cap" id="cap">VMRI</div>
+                <div class="cap" id="cap">__NAME__</div>
                 <div class="big"><span class="score" id="score">&mdash;</span><span class="chip" id="chip" hidden></span></div>
             </div>
             <div class="mid" id="mid"></div>
@@ -670,14 +694,15 @@ def vmri_chart_page():
         </div>
         <div class="chart-wrap"><canvas id="vmriChart"></canvas></div>
         <div class="foot" id="foot"></div>
+        <div class="foot" id="credit" style="white-space: normal"></div>
 
         <script>
-            var TIERS = [
-                { min: 350, name: 'SYSTEMIC THREAT', band: 'SYSTEMIC', color: '#ef4444', rgb: '239,68,68' },
-                { min: 250, name: 'ELEVATED RISK', band: 'ELEVATED', color: '#f97316', rgb: '249,115,22' },
-                { min: 150, name: 'MODERATE RISK', band: 'MODERATE', color: '#eab308', rgb: '234,179,8' },
-                { min: -Infinity, name: 'LOW RISK', band: 'LOW', color: '#22c55e', rgb: '34,197,94' }
-            ];
+            var CFG = __CFG__;
+            var NAME = CFG.name;
+            var TIERS = CFG.tiers.map(function (t) {
+                return { min: t[0] === null ? -Infinity : t[0], name: t[1], band: t[2], color: t[3], rgb: t[4] };
+            }).reverse();
+            document.getElementById('credit').textContent = CFG.credit;
             var RANGES = { '1M': 30, '3M': 91, 'ALL': null };
             var OVERLAYS = { 'DXY': 'dxy', 'VIX': 'vix', '10Y': 'yield', 'OAS': 'oas' };
             var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -735,7 +760,7 @@ def vmri_chart_page():
 
             function renderHeader(d, drivers) {
                 var n = rows.length - 1, r = rows[n];
-                $('cap').textContent = 'VMRI · ' + dayText(r.t) + ' ' + timeText(r.t);
+                $('cap').textContent = NAME + ' · ' + dayText(r.t) + ' ' + timeText(r.t);
                 $('mid').textContent = '';
                 var chip = $('chip');
                 chip.hidden = false;
@@ -752,10 +777,10 @@ def vmri_chart_page():
                 setText('score', r.y.toFixed(1));
                 chip.textContent = tier.name;
                 chip.style.cssText = 'color:' + tier.color + ';border-color:rgba(' + tier.rgb + ',0.4);background:rgba(' + tier.rgb + ',0.1)';
-                var m = d.momentum_5[n];
+                var m = d[CFG.mom][n];
                 if (isNum(m)) line((m > 0 ? '▲ +' : m < 0 ? '▼ ' : '') + m.toFixed(1) + ' over 5 runs', m > 0 ? '#f87171' : m < 0 ? '#4ade80' : '');
                 var drv = drivers[n];
-                if (drv && drv !== 'AWAITING DATA') line('Driver: ' + drv);
+                if (CFG.name === 'VMRI' && drv && drv !== 'AWAITING DATA') line('Driver: ' + drv);
             }
 
             function renderFooter(view) {
@@ -774,7 +799,7 @@ def vmri_chart_page():
             }
 
             function annotations(yb) {
-                var a = {}, lo = [0, 150, 250, 350], hi = [150, 250, 350, Infinity];
+                var a = {}, lo = TIERS.slice().reverse().map(function (t) { return isFinite(t.min) ? t.min : 0; }), hi = lo.slice(1).concat(Infinity);
                 TIERS.slice().reverse().forEach(function (t, i) {
                     var y0 = Math.max(lo[i], yb.min), y1 = Math.min(hi[i], yb.max);
                     if (y1 > y0) a['box' + i] = {
@@ -811,7 +836,7 @@ def vmri_chart_page():
                 var lastIdx = lastIndex(view, 'y');
                 var datasets = [
                     {
-                        label: 'VMRI', data: view.map(function (r) { return { x: r.t, y: r.y }; }), parsing: false,
+                        label: NAME, data: view.map(function (r) { return { x: r.t, y: r.y }; }), parsing: false,
                         borderColor: '#a1a1aa', borderWidth: 1.75, tension: 0.15, spanGaps: true, yAxisID: 'y',
                         pointRadius: function (c) { return c.dataIndex === lastIdx ? 4 : 0; }, pointHoverRadius: 3,
                         pointBackgroundColor: function (c) { return c.raw && isNum(c.raw.y) ? tierOf(c.raw.y).color : '#a1a1aa'; },
@@ -855,7 +880,7 @@ def vmri_chart_page():
                                         // The rows come from the run at that x, whichever line was hit.
                                         var r = view.find(function (v) { return v.t === item.parsed.x; });
                                         if (!r) return '';
-                                        var out = [isNum(r.y) ? 'VMRI ' + r.y.toFixed(1) + ' · ' + tierOf(r.y).name : 'VMRI no score'];
+                                        var out = [isNum(r.y) ? NAME + ' ' + r.y.toFixed(1) + ' · ' + tierOf(r.y).name : NAME + ' no score'];
                                         if (isNum(r.avg)) out.push('10-run avg ' + r.avg.toFixed(1));
                                         if (overlay && isNum(r[OVERLAYS[overlay]])) out.push(overlay + ' ' + r[OVERLAYS[overlay]].toFixed(2));
                                         return out;
@@ -905,24 +930,24 @@ def vmri_chart_page():
                     var response = await fetch('/api/vmri_history');
                     var d = await response.json();
                     if (!response.ok || d.status === 'error' || !d.labels) {
-                        showMessage('Could not load the VMRI history: ' + ((d && d.message) || 'the server returned an error.'), '#f87171');
+                        showMessage('Could not load the ' + NAME + ' history: ' + ((d && d.message) || 'the server returned an error.'), '#f87171');
                         return;
                     }
                     var ctxs = d.context || {};
                     rows = d.labels.map(function (l, i) {
-                        var r = { t: new Date(l.replace(' ', 'T')).getTime(), y: d.scores[i], avg: d.sma_10[i] };
+                        var r = { t: new Date(l.replace(' ', 'T')).getTime(), y: d[CFG.scores][i], avg: d[CFG.sma][i] };
                         Object.keys(OVERLAYS).forEach(function (k) { var key = OVERLAYS[k]; r[key] = (ctxs[key] || [])[i]; });
                         return r;
                     });
                     if (!rows.length || lastIndex(rows, 'y') < 0) {
-                        showMessage('No VMRI history recorded yet.');
+                        showMessage('No ' + NAME + ' history recorded yet.');
                         return;
                     }
                     renderHeader(d, Array.isArray(d.primary_driver) ? d.primary_driver : []);
                     refresh();
                 } catch (e) {
-                    console.error('VMRI chart failed:', e);
-                    showMessage('Could not load the VMRI history.', '#f87171');
+                    console.error(NAME + ' chart failed:', e);
+                    showMessage('Could not load the ' + NAME + ' history.', '#f87171');
                 }
             }
 
@@ -931,7 +956,8 @@ def vmri_chart_page():
     </body>
     </html>
     """
-    return render_template_string(html_template)
+    return render_template_string(html_template.replace("__TITLE__", cfg["title"]).replace("__NAME__", cfg["name"])
+                                  .replace("__CFG__", json.dumps(cfg)))
 
 @app.route('/api/war_room', methods=['GET', 'POST'])
 @guarded("War room")
@@ -1602,11 +1628,15 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/vmri_history" format="json" source="stored">
-      <description>The last 500 rows of the macro ledger: VMRI score, 10-period SMA, 5-period momentum, primary driver and context series (DXY, 10Y yield, VIX, gold, gold/silver ratio, HY OAS). Failures are {"status": "error", "message", "error"} with 404 or 500.</description>
+      <description>The last 500 rows of the macro ledger: VMRI score, 10-period SMA, 5-period momentum, primary driver, the MMRI series (mmri, mmri_sma_10, mmri_momentum_5: DXY x 10Y yield / 1.61, recomputed from the stored columns) and context series (DXY, 10Y yield, VIX, gold, gold/silver ratio, HY OAS). Failures are {"status": "error", "message", "error"} with 404 or 500.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/vmri_chart" format="html" source="stored">
       <description>VMRI chart page (loads /api/vmri_history).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/mmri_chart" format="html" source="stored">
+      <description>MMRI chart page: the Mannarino Market Risk Indicator (credit: Gregory Mannarino) with his four bands, drawn from the mmri series of /api/vmri_history.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET,POST" path="/api/war_room" format="json" source="stored">

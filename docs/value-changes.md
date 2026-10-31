@@ -18,6 +18,7 @@ When you change how a stored value is computed:
 | Constant | Current value | Covers |
 |---|---|---|
 | `VMRI_VERSION` (`core/metrics.py`) | `vmri_v1` | VMRI formula and tiers |
+| `MMRI_VERSION` (`core/metrics.py`) | `mmri_v1` | MMRI (Gregory Mannarino): (DXY x 10Y yield) / 1.61, tiers 100/200/300 |
 | `GEX_VERSION` (`core/metrics.py`) | `gex_v2` | Dealer gamma exposure and walls |
 | `ZERO_GAMMA_VERSION` (`core/metrics.py`) | `zero_gamma_v1` | Zero-gamma level |
 | `FLOW_VERSION` (`core/metrics.py`) | `block_flow_v2` | Databento block flow and sides |
@@ -43,6 +44,12 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **MMRI added** (`mmri_v1`, 2026-10-31): the Mannarino Market Risk Indicator, `(DXY x 10Y yield) / 1.61`, credited to
+  Gregory Mannarino, with his tiers (below 100 LOW RISK, below 200 MODERATE RISK, below 300 HIGH RISK, else EXTREME
+  RISK). It is the `base_stress` component of `vmri_v1` stored under its own name from the same inputs, so the two
+  agree on every run where both exist. Snapshots committed before this change have no `mmri` key; their MMRI history
+  is the same number, recomputed by `/api/vmri_history` from the stored DXY and 10Y_Yield columns. `vmri_v1` is
+  unchanged.
 - **Chaos / Peace regime study** (`regime_study_v2`, 2026-10-30, found by an audit): a day that was already above the
   start bound (30) but not yet in an episode, because an episode starts on its third day above the line, no longer counts
   as an onset or as a base day. Those days were near-certain hits. On the history up to 2026-10-30, VIX ≥ VIX3M goes

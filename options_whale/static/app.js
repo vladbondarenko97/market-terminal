@@ -930,8 +930,9 @@ async function followRun(beforeId) {
                 else if (state === 'interrupted') log(`Run ${runId} was interrupted: the process ended before it finished${why}`, 'error');
                 else log(`Run ${runId} ${state}${took}${why}`, 'error');
                 reloadFrame('vmriFrame');
+                reloadFrame('mmriFrame');
                 reloadFrame('comexFrame');
-                log('VMRI and COMEX inventory frames reloaded.', 'info');
+                log('VMRI, MMRI and COMEX inventory frames reloaded.', 'info');
                 return;
             }
         }
@@ -1978,7 +1979,8 @@ const PANEL_LABELS = {
     panel13: 'FED LIQUIDITY PLUMBING',
     panel14: 'SHANGHAI-COMEX ARB',
     panel15: 'ENGINE POSITIONS',
-    panel16: 'BROKERAGE POSITIONS'
+    panel16: 'BROKERAGE POSITIONS',
+    panel17: 'MANNARINO MARKET RISK INDICATOR (MMRI)'
 };
 
 // Collects data per panel and opens the modal
@@ -1996,6 +1998,15 @@ function copyPanelData(panelId) {
             } else {
                 payload = JSON.stringify({ note: 'No cached data. Click Data Dump in the console bar first.', panel: PANEL_LABELS[panelId] }, null, 2);
             }
+        }
+
+        else if (panelId === 'panel17') {
+            // MMRI frame: the rows the frame has drawn (same-origin), newest last
+            let rows = null;
+            try { rows = document.getElementById('mmriFrame').contentWindow.rows; } catch (e) { /* frame not readable */ }
+            payload = JSON.stringify({ panel: PANEL_LABELS[panelId], credit: 'Gregory Mannarino', formula: '(DXY*TNX)/1.61',
+                                       rows: rows && rows.length ? rows : null,
+                                       note: rows && rows.length ? undefined : 'The chart has not loaded yet.' }, null, 2);
         }
 
         else if (panelId === 'panel3') {

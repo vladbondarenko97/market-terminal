@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-VMRI_VERSION = "vmri_v1"            # unchanged formula and tiers from tactical_ruling.py
+MMRI_VERSION = "mmri_v1"            # Gregory Mannarino's Market Risk Indicator
+VMRI_VERSION = "vmri_v1"           # unchanged formula and tiers from tactical_ruling.py
 GEX_VERSION = "gex_v2"              # one parameter set for every ticker (was ±15% scanner / ±10% reader)
 ZERO_GAMMA_VERSION = "zero_gamma_v1"
 FLOW_VERSION = "block_flow_v2"      # Databento side semantics corrected (A = sell aggressor, B = buy aggressor)
@@ -63,6 +64,21 @@ def vmri(dxy, tnx, oas, vix):
             "components": {"base_stress": base_stress, "credit_multiplier": credit_multiplier,
                            "volatility_premium": vol_premium},
             "formula": "(DXY*TNX/1.61) * (OAS/4.00) * (VIX/20.00)", "version": VMRI_VERSION}
+
+
+# ---------------------------------------------------------------- MMRI (Gregory Mannarino)
+def mmri(dxy, tnx):
+    """Mannarino Market Risk Indicator = (DXY x 10Y yield) / 1.61. VMRI's base_stress is this same number."""
+    inputs = {"dxy": dxy, "tnx": tnx}
+    out = {"score": None, "tier": None, "inputs": inputs, "status": "fresh", "reason": None,
+           "formula": "(DXY*TNX)/1.61", "version": MMRI_VERSION, "credit": "Gregory Mannarino"}
+    missing = [k for k, v in inputs.items() if v is None]
+    if missing:
+        return out | {"status": "missing", "reason": f"missing inputs: {', '.join(missing)}"}
+    score = (dxy * tnx) / 1.61
+    tier = ("LOW RISK" if score < 100 else "MODERATE RISK" if score < 200
+            else "HIGH RISK" if score < 300 else "EXTREME RISK")
+    return out | {"score": score, "tier": tier}
 
 
 def paper_physical(silver_oi, registered_oz):

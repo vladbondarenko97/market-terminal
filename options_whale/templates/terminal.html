@@ -93,6 +93,32 @@
                         </div>
                     </div>
 
+                    <div id="panel17" draggable="true"
+                        class="draggable-panel flex flex-col border border-zinc-900 rounded bg-black overflow-hidden transition-all duration-300">
+                        <div class="bg-zinc-900/30 px-3 py-1 text-[9px] flex justify-between items-center cursor-move">
+                            <span>MANNARINO MARKET RISK INDICATOR (MMRI)</span>
+                            <div class="flex gap-3 items-center">
+                                <div
+                                    class="flex items-center gap-1 bg-zinc-950 border border-zinc-800 px-1 rounded text-[10px]">
+                                    <button onclick="zoomPanel('panel17', -0.1)"
+                                        class="hover:text-blue-400 px-1 font-bold">-</button>
+                                    <span class="text-zinc-700">|</span>
+                                    <button onclick="zoomPanel('panel17', 0.1)"
+                                        class="hover:text-blue-400 px-1 font-bold">+</button>
+                                </div>
+                                <button onclick="refreshFrame('mmriFrame')" class="hover:text-white">REFRESH</button>
+                                <button onclick="copyPanelData('panel17')"
+                                    class="hover:text-green-400 text-zinc-500 font-bold transition-colors">COPY</button>
+                                <button onclick="toggleFullscreen('panel17')"
+                                    class="btn-maximize hover:text-blue-400 font-bold">[MAX]</button>
+                            </div>
+                        </div>
+                        <div class="flex-1 overflow-hidden relative">
+                            <iframe id="mmriFrame" src="/mmri_chart" scrolling="no"
+                                class="zoomable absolute top-0 left-0 w-full h-full border-none pointer-events-auto"></iframe>
+                        </div>
+                    </div>
+
                     <div id="panel2" draggable="true"
                         class="draggable-panel flex flex-col border border-zinc-900 rounded bg-black overflow-hidden transition-all duration-300">
                         <div class="bg-zinc-900/30 px-3 py-1 text-[9px] flex justify-between items-center cursor-move">
