@@ -637,11 +637,11 @@ def get_vmri_history():
 # Per-index settings for the shared chart page. "tiers" run from the lowest band up; the first has no lower limit.
 CHART_INDEXES = {
     "vmri": {"name": "VMRI", "title": "VMRI Macro Risk Index", "scores": "scores", "sma": "sma_10", "mom": "momentum_5",
-             "credit": "", "tiers": [
+             "credit": "", "overlays": ["DXY", "VIX", "10Y", "OAS"], "tiers": [
                  [None, "LOW RISK", "LOW", "#22c55e", "34,197,94"], [150, "MODERATE RISK", "MODERATE", "#eab308", "234,179,8"],
                  [250, "ELEVATED RISK", "ELEVATED", "#f97316", "249,115,22"], [350, "SYSTEMIC THREAT", "SYSTEMIC", "#ef4444", "239,68,68"]]},
     "mmri": {"name": "MMRI", "title": "Mannarino Market Risk Indicator", "scores": "mmri", "sma": "mmri_sma_10", "mom": "mmri_momentum_5",
-             "credit": "MMRI by Gregory Mannarino \u00b7 (DXY \u00d7 10Y) \u00f7 1.61 \u00b7 VMRI extends it with credit spreads and VIX",
+             "overlays": ["DXY", "10Y"], "credit": "MMRI by Gregory Mannarino \u00b7 (DXY \u00d7 10Y) \u00f7 1.61 \u00b7 VMRI extends it with credit spreads and VIX",
              "tiers": [
                  [None, "LOW RISK", "LOW", "#22c55e", "34,197,94"], [100, "MODERATE RISK", "MODERATE", "#eab308", "234,179,8"],
                  [200, "HIGH RISK", "HIGH", "#f97316", "249,115,22"], [300, "EXTREME RISK", "EXTREME", "#ef4444", "239,68,68"]]},
@@ -921,7 +921,7 @@ def vmri_chart_page(index='vmri'):
 
             function refresh() {
                 makeButtons('ranges', Object.keys(RANGES), function (n) { return n === range; }, function (n) { range = n; refresh(); });
-                makeButtons('overlays', Object.keys(OVERLAYS), function (n) { return n === overlay; }, function (n) { overlay = overlay === n ? null : n; refresh(); });
+                makeButtons('overlays', CFG.overlays, function (n) { return n === overlay; }, function (n) { overlay = overlay === n ? null : n; refresh(); });
                 renderChart();
             }
 
