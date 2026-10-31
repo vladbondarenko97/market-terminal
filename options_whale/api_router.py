@@ -559,17 +559,18 @@ def get_vmri_history():
         # Measures velocity. Positive = accelerating risk, Negative = decaying risk
         df['VMRI_Momentum_5'] = df['VMRI_Score'].diff(periods=5)
 
-        # MMRI (Mannarino) = DXY x 10Y / 1.61, the stored base_stress of every VMRI row. Older ledger rows have
-        # no MMRI column, so it is recomputed from the same stored DXY and 10Y_Yield (no live fetch).
-        df['MMRI'] = (pd.to_numeric(df['DXY'], errors='coerce') * pd.to_numeric(df['10Y_Yield'], errors='coerce')) / 1.61
+        # MMRI (Mannarino), the base_stress of every VMRI row, from the ledger's stored DXY and 10Y_Yield. The formula
+        # lives in core/metrics.py; the CSV ledger keeps its old header, so it has no MMRI column to read.
+        dxy, tny = pd.to_numeric(df['DXY'], errors='coerce'), pd.to_numeric(df['10Y_Yield'], errors='coerce')
+        df['MMRI'] = metrics.mmri_value(dxy, tny)
         df['MMRI_SMA_10'] = df['MMRI'].rolling(window=10).mean()
         df['MMRI_Momentum_5'] = df['MMRI'].diff(periods=5)
 
         # 3. The "Primary Driver" Logic
         # Look at the absolute % change of the 4 core pillars over the last 5 periods.
         drivers_df = pd.DataFrame({
-            'DXY': pd.to_numeric(df['DXY'], errors='coerce').pct_change(periods=5).abs(),
-            '10Y Yield': pd.to_numeric(df['10Y_Yield'], errors='coerce').pct_change(periods=5).abs(),
+            'DXY': dxy.pct_change(periods=5).abs(),
+            '10Y Yield': tny.pct_change(periods=5).abs(),
             'VIX': pd.to_numeric(df['VIX'], errors='coerce').pct_change(periods=5).abs(),
             'High Yield OAS': pd.to_numeric(df['High_Yield_OAS'], errors='coerce').pct_change(periods=5).abs()
         })
@@ -637,14 +638,15 @@ def get_vmri_history():
 # Per-index settings for the shared chart page. "tiers" run from the lowest band up; the first has no lower limit.
 CHART_INDEXES = {
     "vmri": {"name": "VMRI", "title": "VMRI Macro Risk Index", "scores": "scores", "sma": "sma_10", "mom": "momentum_5",
-             "credit": "", "overlays": ["DXY", "VIX", "10Y", "OAS"], "tiers": [
+             "credit": "", "formula": "(DXY*TNX/1.61) * (OAS/4.00) * (VIX/20.00)", "showDriver": True,
+             "overlays": ["DXY", "VIX", "10Y", "OAS"], "tiers": [
                  [None, "LOW RISK", "LOW", "#22c55e", "34,197,94"], [150, "MODERATE RISK", "MODERATE", "#eab308", "234,179,8"],
                  [250, "ELEVATED RISK", "ELEVATED", "#f97316", "249,115,22"], [350, "SYSTEMIC THREAT", "SYSTEMIC", "#ef4444", "239,68,68"]]},
     "mmri": {"name": "MMRI", "title": "Mannarino Market Risk Indicator", "scores": "mmri", "sma": "mmri_sma_10", "mom": "mmri_momentum_5",
              "overlays": ["DXY", "10Y"], "credit": "MMRI by Gregory Mannarino \u00b7 (DXY \u00d7 10Y) \u00f7 1.61 \u00b7 VMRI extends it with credit spreads and VIX",
-             "tiers": [
-                 [None, "LOW RISK", "LOW", "#22c55e", "34,197,94"], [100, "MODERATE RISK", "MODERATE", "#eab308", "234,179,8"],
-                 [200, "HIGH RISK", "HIGH", "#f97316", "249,115,22"], [300, "EXTREME RISK", "EXTREME", "#ef4444", "239,68,68"]]},
+             "formula": "(DXY*TNX)/1.61", "showDriver": False,
+             "tiers": [[lo, name, name.split()[0], color, rgb] for (lo, name), (color, rgb) in zip(metrics.MMRI_TIERS, (
+                 ("#22c55e", "34,197,94"), ("#eab308", "234,179,8"), ("#f97316", "249,115,22"), ("#ef4444", "239,68,68")))]},
 }
 
 @app.route('/vmri_chart')
@@ -780,7 +782,7 @@ def vmri_chart_page(index='vmri'):
                 var m = d[CFG.mom][n];
                 if (isNum(m)) line((m > 0 ? '▲ +' : m < 0 ? '▼ ' : '') + m.toFixed(1) + ' over 5 runs', m > 0 ? '#f87171' : m < 0 ? '#4ade80' : '');
                 var drv = drivers[n];
-                if (CFG.name === 'VMRI' && drv && drv !== 'AWAITING DATA') line('Driver: ' + drv);
+                if (CFG.showDriver && drv && drv !== 'AWAITING DATA') line('Driver: ' + drv);
             }
 
             function renderFooter(view) {
@@ -956,8 +958,8 @@ def vmri_chart_page(index='vmri'):
     </body>
     </html>
     """
-    return render_template_string(html_template.replace("__TITLE__", cfg["title"]).replace("__NAME__", cfg["name"])
-                                  .replace("__CFG__", json.dumps(cfg)))
+    # No Jinja: the config is JSON spliced into a static page, so braces in it can never be read as template syntax.
+    return html_template.replace("__TITLE__", cfg["title"]).replace("__NAME__", cfg["name"]).replace("__CFG__", json.dumps(cfg))
 
 @app.route('/api/war_room', methods=['GET', 'POST'])
 @guarded("War room")

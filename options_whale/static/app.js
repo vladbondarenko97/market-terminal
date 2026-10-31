@@ -2001,12 +2001,13 @@ function copyPanelData(panelId) {
         }
 
         else if (panelId === 'panel17') {
-            // MMRI frame: the rows the frame has drawn (same-origin), newest last
-            let rows = null;
-            try { rows = document.getElementById('mmriFrame').contentWindow.rows; } catch (e) { /* frame not readable */ }
-            payload = JSON.stringify({ panel: PANEL_LABELS[panelId], credit: 'Gregory Mannarino', formula: '(DXY*TNX)/1.61',
-                                       rows: rows && rows.length ? rows : null,
-                                       note: rows && rows.length ? undefined : 'The chart has not loaded yet.' }, null, 2);
+            // MMRI frame: credit, formula and the rows it drew (same-origin), as ledger time labels and MMRI fields only
+            let w = null;
+            try { w = document.getElementById('mmriFrame').contentWindow; } catch (e) { /* frame not readable */ }
+            const rows = w && w.rows && w.rows.length ? w.rows.map(r => ({ time: new Date(r.t - new Date(r.t).getTimezoneOffset() * 60000).toISOString().slice(0, 16).replace('T', ' '), mmri: r.y, sma_10: r.avg, dxy: r.dxy, yield_10y: r.yield })) : null;
+            payload = JSON.stringify({ panel: PANEL_LABELS[panelId], credit: w && w.CFG ? w.CFG.credit : null,
+                                       formula: w && w.CFG ? w.CFG.formula : null, rows: rows,
+                                       note: rows ? undefined : 'The chart has not loaded yet.' }, null, 2);
         }
 
         else if (panelId === 'panel3') {

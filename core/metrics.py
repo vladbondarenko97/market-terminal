@@ -48,7 +48,7 @@ def vmri(dxy, tnx, oas, vix):
     if missing:
         return {"score": None, "tier": "INCOMPLETE DATA", "components": None, "inputs": inputs,
                 "status": "missing", "reason": f"missing inputs: {', '.join(missing)}", "version": VMRI_VERSION}
-    base_stress = (dxy * tnx) / 1.61
+    base_stress = mmri_value(dxy, tnx)
     credit_multiplier = oas / 4.00
     vol_premium = vix / 20.00
     score = base_stress * credit_multiplier * vol_premium
@@ -67,17 +67,25 @@ def vmri(dxy, tnx, oas, vix):
 
 
 # ---------------------------------------------------------------- MMRI (Gregory Mannarino)
+MMRI_DIVISOR = 1.61
+MMRI_TIERS = ((None, "LOW RISK"), (100, "MODERATE RISK"), (200, "HIGH RISK"), (300, "EXTREME RISK"))  # lower bounds
+
+
+def mmri_value(dxy, tnx):
+    """(DXY x 10Y yield) / 1.61. Works on numbers and on pandas Series (the chart's history)."""
+    return dxy * tnx / MMRI_DIVISOR
+
+
 def mmri(dxy, tnx):
-    """Mannarino Market Risk Indicator = (DXY x 10Y yield) / 1.61. VMRI's base_stress is this same number."""
+    """Mannarino Market Risk Indicator. VMRI's base_stress is this same number."""
     inputs = {"dxy": dxy, "tnx": tnx}
-    out = {"score": None, "tier": None, "inputs": inputs, "status": "fresh", "reason": None,
+    out = {"score": None, "tier": "INCOMPLETE DATA", "inputs": inputs, "status": "fresh", "reason": None,
            "formula": "(DXY*TNX)/1.61", "version": MMRI_VERSION, "credit": "Gregory Mannarino"}
     missing = [k for k, v in inputs.items() if v is None]
     if missing:
         return out | {"status": "missing", "reason": f"missing inputs: {', '.join(missing)}"}
-    score = (dxy * tnx) / 1.61
-    tier = ("LOW RISK" if score < 100 else "MODERATE RISK" if score < 200
-            else "HIGH RISK" if score < 300 else "EXTREME RISK")
+    score = mmri_value(dxy, tnx)
+    tier = [name for lo, name in MMRI_TIERS if lo is None or score >= lo][-1]
     return out | {"score": score, "tier": tier}
 
 
