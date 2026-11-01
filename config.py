@@ -193,6 +193,11 @@ if OPTIONS_WHALE_HOST not in ("127.0.0.1", "0.0.0.0"):
     raise ConfigError(f"OPTIONS_WHALE_HOST must be 127.0.0.1 or 0.0.0.0 (or blank for 127.0.0.1), not {OPTIONS_WHALE_HOST!r}")
 ALPHAFLOW_DEBUG = flag_env("ALPHAFLOW_DEBUG")
 
+# Scenario fans (core/fans.py): Kronos needs torch (requirements-kronos.txt) and weights from scripts/fetch_kronos.py
+KRONOS_ENABLED = optional_env("KRONOS_ENABLED", default="1").strip() != "0"
+KRONOS_DIR = DATA_DIR / "models" / "kronos"
+KRONOS_DEVICE = optional_env("KRONOS_DEVICE", default="").strip()      # blank: mps if available, else cpu
+
 # Source limits
 MAX_PROVIDER_CONCURRENCY = 3
 CME_MAX_ATTEMPTS_PER_URL = 2
