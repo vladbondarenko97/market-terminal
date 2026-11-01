@@ -1,0 +1,6 @@
+# Optional: scenario fans (core/fans.py) use Kronos when these are installed. CI and tests do not need them.
+# After installing, run scripts/fetch_kronos.py once to download the weights.
+torch
+einops
+huggingface_hub
+safetensors
