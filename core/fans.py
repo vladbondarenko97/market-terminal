@@ -215,7 +215,7 @@ def _hist(dates, values, k):
 
 def _series(id_, label, group, unit, freq, symbol, last_date, last, hist, dates, models, levels=None, note=None):
     return {"label": label, "group": group, "unit": unit, "freq": freq, "cards": [], "symbol": symbol,
-            "asof": pd.Timestamp(last_date).date().isoformat(), "last": sig4(last), "hist": hist,
+            "asof": pd.Timestamp(last_date).date().isoformat(), "last": round(float(last), 6), "hist": hist,
             "dates": [d.isoformat() for d in dates], "models": models, "levels": levels or [], "note": note}
 
 
