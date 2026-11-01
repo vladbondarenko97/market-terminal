@@ -253,7 +253,8 @@ const Fans = (() => {
         const el = document.getElementById('fc16'); if (!el) return;
         el.innerHTML = '<div class="fc-muted">Loading scenario fans…</div>';
         ensure().then(() => {
-            const all = seriesMap(), ids = Object.keys(all);
+            const all = seriesMap(), GO = ['markets', 'fuels', 'inventories', 'derived'];
+            const ids = Object.keys(all).sort((a, b) => GO.indexOf(all[a].group) - GO.indexOf(all[b].group));
             if (!ids.length) { el.innerHTML = `<div class="fc-muted">Unavailable: ${esc(whyMissing())}</div>`; return; }
             const kr = S.fans.kronos || {};
             el.innerHTML = `<p class="fans-lead">Each fan is 100 possible futures for one series: Kronos, a model trained on market candles, samples the paths, and the baseline reshuffles the series’ own past changes (or last years’ season for weekly data). A path shows what it would take for the market to get there, not why it would; the table shows which of the two has actually been calibrated on history (a good 80% band holds the real outcome 80% of the time).</p>
