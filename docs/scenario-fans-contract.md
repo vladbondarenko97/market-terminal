@@ -25,7 +25,7 @@ ctx["fans"] = {
 }
 ```
 
-`cards` is `[]` in Phase 1 (the terminal decides where each series is drawn). Numbers are rounded to 4 significant digits. A model whose inputs are missing returns `{"status": "missing", "reason": ...}` with no paths.
+`cards` is `[]` in Phase 1 (the terminal decides where each series is drawn). Numbers are rounded to 4 significant digits. A model whose inputs are missing returns `{"status": "missing", "reason": ...}` with no paths. A series with no history carries the same keys as any other (`hist` `{"dates": [], "values": []}`, `dates` `[]`, `last` and `asof` null); the terminal draws it as a "missing: <reason>" tile.
 
 Series ids (Phase 1):
 - markets (daily, Kronos + bootstrap): SPY, SLV, VIX (^VIX), DXY (DX-Y.NYB), TNX (^TNX), SI (SI=F), GC (GC=F), HG (HG=F)
@@ -36,4 +36,4 @@ Series ids (Phase 1):
 
 Routes (stored data only):
 - `GET /api/fans` → the latest snapshot's `fans` block plus `run_id` and `generated_at`.
-- `GET /api/fans/scorecard` → `{status: "success"|"missing", reason, series: {<id>: {kronos|baseline: {backtest?, live?}}}}`. `backtest` (stored by scripts/backtest_fans.py): `{by_horizon: {"5": {n, band_hit, crps_pct, dir_hit}, "20": {...}}, period: [first, last origin], paths}` (`band_hit` = share inside p10-p90, `crps_pct` = CRPS as % of price, `dir_hit` = median direction right). `live` (graded v2_forecasts rows for models `kronos_fan_v1` and `baseline_fan_v1`): `{pending, by_horizon: {"1w": {n, coverage68, hit_rate}, "1m": {...}}}`. A series, model or part with nothing stored is absent.
+- `GET /api/fans/scorecard` → `{status: "success"|"missing", reason, series: {<id>: {kronos|baseline: {backtest?, live?}}}}`. `backtest` (stored by scripts/backtest_fans.py): `{by_horizon: {"5": {n, band_hit, crps_pct, dir_hit}, "20": {...}}, period: [first, last origin], paths}` (`band_hit` = share inside p10-p90, `crps_pct` = CRPS as % of price, `dir_hit` = median direction right). `live` (stored by the pipeline after each live run as the `fans.live_score` observation, graded from the run's own series history; only `kronos_fan_v1` / `baseline_fan_v1` rows, so card 9's scorecard is unaffected): `{pending, by_horizon: {"1w": {n, coverage68, hit_rate}, "1m": {...}}, graded_through}`; `pending` counts only fan rows and is always present (0 when none). The grading window is the ~90 trading days of `hist`, so it is a rolling score. A series, model or part with nothing stored is absent.

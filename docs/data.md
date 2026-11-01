@@ -82,7 +82,7 @@ and `series`, keyed by series id (12 daily markets and fuels, `crack.diesel`, `c
 Each series has `asof`, `last`, `hist`, the future `dates`, and `models.kronos` / `models.baseline`, each with `status`, `reason`, 100 `paths` and the quantiles `q`
 (p10, p25, p50, p75, p90). A model without inputs is `{"status": "missing", "reason": ...}`. The block is about 280 KB of JSON (about 70 KB compressed) with both models
 fresh for the daily series. The full shape is in [scenario-fans-contract.md](scenario-fans-contract.md). Live runs also write `kronos_fan_v1` and `baseline_fan_v1`
-rows into `v2_forecasts` for the daily series that have a Yahoo symbol (horizons `1w` and `1m`). `scripts/backtest_fans.py` stores `fans.backtest_origin` (one per series, model and origin
+rows into `v2_forecasts` for the daily series that have a Yahoo symbol (horizons `1w` and `1m`). Live runs then grade those rows against the run's own closes and store one `fans.live_score` observation per series and model (`by_horizon`, `pending`, `graded_through`). `scripts/backtest_fans.py` stores `fans.backtest_origin` (one per series, model and origin
 date) and `fans.backtest` (one summary per series and model) observations. The Kronos weights live in `<data folder>/models/kronos/` (`model/`, `tokenizer/`), not in the database.
 
 `shanghai.dated` (model `shanghai_dated_v1`) is the date-paired Shanghai spread: `latest`, 90-day `stats` and a `series` of up to 400

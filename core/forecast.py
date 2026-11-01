@@ -838,11 +838,15 @@ def record_forecasts(conn, ctx):
     return len(rows)
 
 
-def scorecard(conn, closes_fn, symbol):
+def scorecard(conn, closes_fn, symbol, only=None):
     """Grade logged forecasts whose target date has passed. closes_fn(sym) -> daily close Series (naive index).
     Read-only: it runs no DDL, so `conn` may be a `lake.connect_readonly()` connection. `v2_forecasts` is created by
-    the pipeline's `lake.migrate()`; before the first run this raises sqlite3.OperationalError (no such table)."""
-    rows = [dict(r) for r in conn.execute("SELECT * FROM v2_forecasts WHERE symbol = ? ORDER BY created_at", (symbol,))]
+    the pipeline's `lake.migrate()`; before the first run this raises sqlite3.OperationalError (no such table).
+    `only` keeps just those model names; without it the scenario-fan models are left out (they are scored in card 16)."""
+    from core.fans import FAN_MODELS
+    skip = () if only else tuple(FAN_MODELS.values())
+    rows = [dict(r) for r in conn.execute("SELECT * FROM v2_forecasts WHERE symbol = ? ORDER BY created_at", (symbol,))
+            if (not only or r["model"] in only) and r["model"] not in skip]
     rows = list({(r["created_at"][:10], r["model"], r["horizon"]): r for r in rows}.values())    # one forecast a day: its last run
     c = closes_fn(symbol)
     last_day = c.index[-1].date() if c is not None and len(c) else None
@@ -851,6 +855,8 @@ def scorecard(conn, closes_fn, symbol):
         tgt = date.fromisoformat(r["target_date"])
         if last_day is None or tgt > last_day:
             pending += 1
+            continue
+        if tgt < c.index[0].date():      # before the closes we have: not gradable, not pending
             continue
         after = c[c.index >= pd.Timestamp(tgt)]
         if not len(after):

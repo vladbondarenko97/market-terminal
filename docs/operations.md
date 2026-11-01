@@ -800,7 +800,7 @@ PORTFOLIO_DATA_DIR=... .venv/bin/python scripts/fetch_kronos.py     # downloads 
 The run itself never downloads: it loads from that folder, on `mps` when available, else `cpu` (`KRONOS_DEVICE` overrides). Without torch or the weights,
 or with `KRONOS_ENABLED=0`, the `kronos` part of `fans` is `missing` with the reason and everything else runs unchanged. The stage's time is in
 `stage_seconds.fans` and `fans.kronos.seconds` (about 18 s per 100 paths of one daily series on an M-series Mac, so a few minutes with Kronos in the run; seconds without). Live runs
-also log the fans' 1-week and 1-month forecasts (`kronos_fan_v1`, `baseline_fan_v1`) for grading. [Backtest script](#backfills): `scripts/backtest_fans.py`.
+also log the fans' 1-week and 1-month forecasts (`kronos_fan_v1`, `baseline_fan_v1`) and grade the matured ones (stage `fans_graded`, `fans.live_score` observations). Card 9's scorecard leaves these models out. [Backtest script](#backfills): `scripts/backtest_fans.py`.
 
 ## Backfills
 

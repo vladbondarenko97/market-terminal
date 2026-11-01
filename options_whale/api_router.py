@@ -1789,8 +1789,8 @@ def api_help():
       <description>Scenario fans of the latest committed snapshot: per series 100 Kronos paths and 100 baseline paths with p10/p25/p50/p75/p90 per step, plus the run_id and generated_at. 404 with status missing when no snapshot or no fans block exists.</description>
       <parameters />
     </endpoint>
-    <endpoint method="GET" path="/api/fans/scorecard" format="json" source="stored and live">
-      <description>Per series and model: backtest (stored by scripts/backtest_fans.py: per horizon n, band hit p10-p90, CRPS as % of price, direction hit, period) and live (logged kronos_fan_v1 / baseline_fan_v1 forecasts graded against daily closes: n, coverage68, hit_rate per horizon). status missing when neither exists.</description>
+    <endpoint method="GET" path="/api/fans/scorecard" format="json" source="stored">
+      <description>Per series and model: backtest (stored by scripts/backtest_fans.py: per horizon n, band hit p10-p90, CRPS as % of price, direction hit, period) and live (stored fans.live_score, graded by the pipeline from logged kronos_fan_v1 / baseline_fan_v1 forecasts: n, coverage68, hit_rate per horizon, pending, graded_through). status missing when neither exists.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/chaos/history" format="json" source="stored">
@@ -3058,7 +3058,7 @@ def api_fans():
 @app.route('/api/fans/scorecard', methods=['GET'])
 @guarded("Scenario fans scorecard")
 def api_fans_scorecard():
-    """Per series and model: the stored walk-forward backtest and the live grading of logged fan forecasts."""
+    """Per series and model: the stored walk-forward backtest and the pipeline's stored live grading (fans.live_score)."""
     conn = _open_readonly()
     if conn is None:
         return _not_initialised()
@@ -3068,20 +3068,10 @@ def api_fans_scorecard():
                               "ORDER BY observed_at, obs_id"):      # newest last: it overwrites
             model = json.loads(r["dims_json"]).get("model")
             out.setdefault(r["entity"], {}).setdefault(model, {})["backtest"] = json.loads(r["value_json"])
-        names = {"kronos_fan_v1": "kronos", "baseline_fan_v1": "baseline"}
-        symbols = {r[0] for r in conn.execute("SELECT DISTINCT symbol FROM v2_forecasts WHERE model IN (?, ?)", tuple(names))}
-        run = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
-        by_symbol = {}
-        if run:
-            fans = (_v2lake.load_snapshot(conn, run["run_id"]) or {}).get("fans") or {}
-            by_symbol = {s["symbol"]: sid for sid, s in (fans.get("series") or {}).items() if s.get("symbol")}
-        for sym in sorted(symbols):
-            sc = _v2fc.scorecard(conn, _cached_daily_closes, sym)
-            for g in sc["graded"]:
-                if g["model"] in names:
-                    live = out.setdefault(by_symbol.get(sym, sym), {}).setdefault(names[g["model"]], {}).setdefault(
-                        "live", {"pending": sc["pending"], "by_horizon": {}})
-                    live["by_horizon"][g["horizon"]] = {"n": g["n"], "coverage68": g["coverage68"], "hit_rate": g["hit_rate"]}
+        for r in conn.execute("SELECT entity, dims_json, value_json FROM v2_observations WHERE metric_id = 'fans.live_score' "
+                              "ORDER BY observed_at, obs_id"):      # written by the pipeline after each live run; newest last
+            model = json.loads(r["dims_json"]).get("model")
+            out.setdefault(r["entity"], {}).setdefault(model, {})["live"] = json.loads(r["value_json"])
     except sqlite3.OperationalError as exc:
         if _uninitialised(exc):
             return _not_initialised()

@@ -24,6 +24,9 @@ const Fans = (() => {
         const suf = { '%': '%', days: ' days', kb: ' kb', '$/bbl': '/bbl', '$/gal': '/gal' }[u] || '';
         return (v < 0 ? '−' : '') + pre + num(u, Math.abs(v)) + suf;
     };
+    // a series with no history carries no hist/dates/last (core/fans.py gives it empty ones); it cannot be drawn, only explained
+    const plotted = s => !!(s && s.hist && Array.isArray(s.hist.values) && s.hist.values.length && Array.isArray(s.dates) && s.dates.length && s.last != null);
+    const whyNot = s => Object.values((s && s.models) || {}).map(m => m && m.reason).find(Boolean) || 'no data';
     const ok = m => !!(m && m.status !== 'missing' && m.status !== 'error' && m.paths && m.paths.length && m.q);
 
     // ---------------------------------------------------------------- data
@@ -184,6 +187,9 @@ const Fans = (() => {
     }
 
     function refresh(st) {
+        const s = st.series(), shown = plotted(s);
+        st.svg.style.display = shown ? '' : 'none';
+        if (!shown) { st.insp.innerHTML = `<p class="fans-hint">${esc(s.label)} — missing: ${esc(whyNot(s))}</p>`; return; }
         draw(st);
         if (st.insp) st.insp.innerHTML = inspect(st);
     }
@@ -225,6 +231,11 @@ const Fans = (() => {
     // a small non-interactive fan; onClick opens the full panel
     function mini(container, id, onClick) {
         const s = seriesMap()[id]; if (!s) return;
+        if (!plotted(s)) {
+            const t = document.createElement('div'); t.className = 'fans-mini';
+            t.innerHTML = `<div class="fans-mh"><b>${esc(s.label)}</b></div><p class="fans-hint">missing: ${esc(whyNot(s))}</p>`;
+            container.appendChild(t); return;
+        }
         const st = { mini: true, model: 'both', series: () => s };
         const wrap = document.createElement('button');
         wrap.className = 'fans-mini'; wrap.type = 'button'; wrap.title = `${s.label}: open the full fan`;
@@ -273,7 +284,7 @@ const Fans = (() => {
                 panel(detail, group, { key: 'c16' });
                 detail.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             };
-            ids.forEach(id => mini(el.querySelector('.fans-grid'), id, open));
+            ids.forEach(id => { try { mini(el.querySelector('.fans-grid'), id, open); } catch (e) { console.error('fans', id, e); } });
         });
     }
 
@@ -290,6 +301,7 @@ const Fans = (() => {
         return [at(0.1), at(0.9)];
     }
     function fc1Line(id, s) {
+        if (!plotted(s)) return '';
         const u = s.unit, rng = m => ok(m) ? `${num(u, last(m.q.p10))}–${num(u, last(m.q.p90))}` : 'n/a';
         const hz = typeof FC !== 'undefined' && FC.data && FC.data.data && FC.data.data.implied && FC.data.data.implied.horizons ? FC.data.data.implied.horizons['1m'] : null;
         const ib = hz && hz.status === 'fresh' ? impliedBand(hz) : null;

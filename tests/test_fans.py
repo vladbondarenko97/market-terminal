@@ -1,6 +1,7 @@
 """Scenario fans (core/fans.py): shapes, quantiles, baselines, derived series, forecast rows and the two routes.
 
 Offline, no torch: Kronos is replaced by a fake predictor. Dates are fixed."""
+import copy
 import sys
 import unittest
 from datetime import date
@@ -160,6 +161,36 @@ class Build(unittest.TestCase):
         self.assertEqual(out["series"]["SPY"]["models"]["kronos"]["status"], "error")
         self.assertEqual(out["series"]["SPY"]["models"]["baseline"]["status"], "fresh")
 
+    def test_a_series_without_history_has_the_full_key_set(self):
+        inp = inputs()
+        del inp["daily"]["SLV"], inp["daily"]["HO"], inp["weekly"]["WDISTUS1"]
+        s = fans.build_fans(inp, predictor=fake_predictor, kinfo=KINFO)["series"]
+        want = set(s["SPY"])
+        for sid in ("SLV", "crack.diesel", "eia.WDISTUS1", "days.distillate"):
+            self.assertEqual(set(s[sid]), want, sid)
+            self.assertEqual((s[sid]["hist"], s[sid]["dates"], s[sid]["last"], s[sid]["asof"]),
+                             ({"dates": [], "values": []}, [], None, None))
+
+    def test_kronos_load_failure_is_an_error_and_baselines_still_build(self):
+        import types
+        tdir = support.TMP / "kronos_w"
+        for d in ("model", "tokenizer"):
+            (tdir / d).mkdir(parents=True, exist_ok=True)
+            (tdir / d / "config.json").write_text("{}")
+        torch = types.SimpleNamespace(backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False)))
+        boom = types.SimpleNamespace(Kronos=types.SimpleNamespace(from_pretrained=mock.Mock(side_effect=OSError("corrupt weights"))),
+                                     KronosTokenizer=types.SimpleNamespace(from_pretrained=lambda p: None), KronosPredictor=None)
+        mods = {"torch": torch, "einops": types.ModuleType("einops"), "huggingface_hub": types.ModuleType("huggingface_hub"),
+                "third_party.kronos": boom}
+        with mock.patch.object(fans.config, "KRONOS_DIR", tdir), mock.patch.object(fans.config, "KRONOS_ENABLED", True), \
+                mock.patch.dict(sys.modules, mods):
+            p, info = fans.load_kronos()
+            out = fans.build_fans(inputs())
+        self.assertIsNone(p)
+        self.assertEqual((info["status"], info["reason"]), ("error", "OSError: corrupt weights"))
+        self.assertEqual(out["kronos"]["status"], "error")
+        self.assertEqual(out["series"]["SPY"]["models"]["baseline"]["status"], "fresh")
+
     def test_no_inputs_is_missing(self):
         out = fans.build_fans({"today": TODAY, "daily": {}, "weekly": {}}, predictor=None, kinfo=None)
         self.assertEqual(out["status"], "missing")
@@ -245,23 +276,49 @@ class Routes(ApiCase):
         summary = {"by_horizon": {"20": {"n": 5, "band_hit": 0.8, "crps_pct": 1.2, "dir_hit": 0.6}}, "period": ["2015-01-02", "2026-01-02"]}
         lake.record_observations(conn, [lake.obs("fans.backtest", "2026-01-02", entity="SPY", dims={"model": "kronos"},
                                                  value=summary, source="t")])
-        # a logged forecast whose target date has passed, graded against fake closes
+        # logged forecasts whose target date has passed, graded by the pipeline from the run's own closes
         run = {"run_id": "r1", "generated_at": "2026-03-13T20:00:00+00:00"}
-        rows = fans.fan_rows({"run": run, "fans": out})
-        with lake._WRITE_LOCK, conn:
-            conn.executemany("""INSERT OR IGNORE INTO v2_forecasts (run_id, created_at, symbol, model, horizon, target_date,
-                spot, p_up, lower68, upper68, direction, vol) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+        fans.record_fans(conn, {"run": run, "fans": out})
+        later = {"run": {"run_id": "r2", "generated_at": "2026-05-01T20:00:00+00:00"}, "fans": copy.deepcopy(out)}
+        idx = pd.bdate_range("2026-03-02", "2026-04-30")
+        later["fans"]["series"]["SPY"]["hist"] = {"dates": [d.date().isoformat() for d in idx], "values": [100.0] * len(idx)}
+        self.assertEqual(fans.grade_live(conn, later), 24)              # 12 symbols x 2 models; only SPY has closes past its targets
         conn.close()
-        idx = pd.bdate_range("2026-03-01", "2026-12-31")
-        with mock.patch.object(api_router_module(), "_cached_daily_closes", lambda s: pd.Series(100.0, index=idx)):
-            body = self.get_json("/api/fans/scorecard")
+        body = self.get_json("/api/fans/scorecard")                     # reads stored observations: tests/support.py blocks the network
         self.assertEqual(body["status"], "success")
         spy = body["series"]["SPY"]
         self.assertEqual(spy["kronos"]["backtest"], summary)
-        live = spy["baseline"]["live"]["by_horizon"]
-        self.assertEqual(set(live), {"1w", "1m"})
-        self.assertEqual(live["1w"]["n"], 1)
+        live = spy["baseline"]["live"]
+        self.assertEqual(set(live["by_horizon"]), {"1w", "1m"})
+        self.assertEqual(live["by_horizon"]["1w"]["n"], 1)
+        self.assertEqual(live["pending"], 0)
+        self.assertEqual(live["graded_through"], "2026-04-30")
         self.assertNotIn("backtest", spy["baseline"])
+
+    def test_scorecard_route_pending_is_always_present(self):
+        out = fans.build_fans(inputs(), predictor=fake_predictor, kinfo=KINFO)
+        conn = self.commit({"fans": out})
+        ctx = {"run": {"run_id": "r1", "generated_at": "2026-03-13T20:00:00+00:00"}, "fans": out}
+        fans.record_fans(conn, ctx)
+        fans.grade_live(conn, ctx)                                      # nothing has matured yet
+        conn.close()
+        live = self.get_json("/api/fans/scorecard")["series"]["SPY"]["kronos"]["live"]
+        self.assertEqual((live["by_horizon"], live["pending"]), ({}, 2))
+
+
+class Grading(unittest.TestCase):
+    def test_fan_models_stay_out_of_card_9_and_graded_alone(self):
+        from core import forecast
+        out = fans.build_fans(inputs(), predictor=fake_predictor, kinfo=KINFO)
+        conn = lake.connect(support.TMP / "fans_grade.db")
+        lake.migrate(conn)
+        fans.record_fans(conn, {"run": {"run_id": "r1", "generated_at": "2026-03-13T20:00:00+00:00"}, "fans": out})
+        closes = pd.Series(100.0, index=pd.bdate_range("2026-03-01", "2026-12-31"))
+        card9 = forecast.scorecard(conn, lambda s: closes, "SPY")
+        self.assertEqual((card9["graded"], card9["pending"], card9["logged"]), ([], 0, 0))
+        fan = forecast.scorecard(conn, lambda s: closes, "SPY", only=tuple(fans.FAN_MODELS.values()))
+        self.assertEqual({g["model"] for g in fan["graded"]}, set(fans.FAN_MODELS.values()))
+        conn.close()
 
 
 def api_router_module():

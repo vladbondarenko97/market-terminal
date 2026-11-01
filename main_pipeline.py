@@ -383,6 +383,7 @@ def _post_commit(conn, ctx, run_id, mode, out_dir, stages, *, deliver, upload):
         try:
             from core import fans as _fans
             stages["fans_logged"] = _fans.record_fans(conn, ctx)
+            stages["fans_graded"] = _fans.grade_live(conn, ctx)
         except Exception as e:
             _stage_error(stages, warnings, "fans_log", e)
     else:

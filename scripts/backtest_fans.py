@@ -62,13 +62,20 @@ def main():
             day = df.index[o - 1].date().isoformat()          # the last bar the model may see
             dates = fans.trading_dates(df.index[o - 1].date(), max(HORIZONS))
             seed = fans._seed(sid, day)
-            sources = {"baseline": fans.bootstrap_paths(close[:o], max(HORIZONS), seed, a.paths)}
-            if predictor is not None:
-                sources["kronos"] = fans._kronos_paths(predictor, df.iloc[:o], dates, seed, a.paths)
+            todo = [m for m in ("baseline", "kronos") if (m == "baseline" or predictor is not None)
+                    and (sid, lake.dumps({"model": m, "origin": day})) not in done]
+            if not todo:
+                continue                                      # resumed: this origin is finished, skip the Kronos run too
+            sources = {}
+            for m in todo:
+                try:
+                    sources[m] = (fans.bootstrap_paths(close[:o], max(HORIZONS), seed, a.paths) if m == "baseline"
+                                  else fans._kronos_paths(predictor, df.iloc[:o], dates, seed, a.paths))
+                except Exception as e:                        # one bad origin must not end the run; the other model is still scored
+                    print(f"{sid} {day} {m} skipped: {lake.redact(f'{type(e).__name__}: {e}')}", file=sys.stderr, flush=True)
             recs = []
             for m, paths in sources.items():
-                dims = lake.dumps({"model": m, "origin": day})
-                if (sid, dims) in done or paths is None:
+                if paths is None:
                     continue
                 res = {"origin": day}
                 for h in HORIZONS:

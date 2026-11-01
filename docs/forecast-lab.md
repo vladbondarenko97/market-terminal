@@ -237,6 +237,7 @@ Card 9 grades the forecasts the pipeline logged.
   date has passed it takes the first daily close on or after that date, using live yfinance closes (cached for 60 s), not
   stored data. Hit rate is the share of correct directions, coverage is the share of closes inside the 68% range
   (ideal 0.68), and Brier is the squared error of the stated probability (lower is better; 0.25 is a coin flip).
+  The scenario-fan models (`kronos_fan_v1`, `baseline_fan_v1`) are excluded here; the pipeline grades them into card 16's `fans.live_score`.
 - **Card.** Four counters (Logged forecasts, Awaiting grade, Graded groups, Prices through), a LIVE GRADES table, and
   BACKTESTS taken from cards 2, 3 and (for SLV) 5. They are not all walk-forward. Card 2 is a single 60/20/20 holdout
   (`oos_days` is the last 20%). Card 3 tests the fixed trend signal at each date against the forward return, with

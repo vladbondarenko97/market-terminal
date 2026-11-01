@@ -180,11 +180,15 @@ def load_kronos():
     mdir, tdir = config.KRONOS_DIR / "model", config.KRONOS_DIR / "tokenizer"
     if not ((mdir / "config.json").exists() and (tdir / "config.json").exists()):
         return None, {**info, "status": "missing", "reason": "weights not found: run scripts/fetch_kronos.py"}
-    from third_party.kronos import Kronos, KronosPredictor, KronosTokenizer
-    device = config.KRONOS_DEVICE or ("mps" if torch.backends.mps.is_available() else "cpu")
-    tok = KronosTokenizer.from_pretrained(str(tdir))
-    model = Kronos.from_pretrained(str(mdir))
-    pred = KronosPredictor(model, tok, device=device, max_context=512)
+    try:
+        from third_party.kronos import Kronos, KronosPredictor, KronosTokenizer
+        device = config.KRONOS_DEVICE or ("mps" if torch.backends.mps.is_available() else "cpu")
+        tok = KronosTokenizer.from_pretrained(str(tdir))
+        model = Kronos.from_pretrained(str(mdir))
+        pred = KronosPredictor(model, tok, device=device, max_context=512)
+    except Exception as e:      # bad weights, no memory, a device that will not initialise: the baselines still build
+        from core import lake
+        return None, {**info, "status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
 
     def predict(df, x_ts, y_ts, n, steps, seed):
         """n independent paths: the same window n times with sample_count=1 (predict(sample_count=n) averages)."""
@@ -193,6 +197,8 @@ def load_kronos():
                                  sample_count=1, verbose=False)
         return np.stack([o["close"].values for o in out])
     return predict, {**info, "status": "fresh", "reason": None, "device": device}
+
+
 
 
 def _kronos_paths(predictor, window, future_dates, seed, n=N_PATHS):
@@ -213,6 +219,11 @@ def _hist(dates, values, k):
     return {"dates": [pd.Timestamp(d).date().isoformat() for d in dates[-k:]], "values": _round(np.asarray(values)[-k:])}
 
 
+def _nodata():
+    """The keys every series carries, so a series without history has the same shape as one with it (the UI explains it)."""
+    return {"asof": None, "last": None, "hist": {"dates": [], "values": []}, "dates": [], "levels": [], "note": None}
+
+
 def _series(id_, label, group, unit, freq, symbol, last_date, last, hist, dates, models, levels=None, note=None):
     return {"label": label, "group": group, "unit": unit, "freq": freq, "cards": [], "symbol": symbol,
             "asof": pd.Timestamp(last_date).date().isoformat(), "last": round(float(last), 6), "hist": hist,
@@ -226,7 +237,8 @@ def _try_kronos(predictor, kinfo, window, dates, seed):
         a = _kronos_paths(predictor, window, dates, seed)
         return _missing("history too short for Kronos") if a is None else _model(a)
     except Exception as e:
-        return {"status": "error", "reason": f"{type(e).__name__}: {e}"}
+        from core import lake
+        return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
 
 
 def spy_levels(options):
@@ -265,7 +277,7 @@ def build_fans(inputs, predictor=None, kinfo=None):
     for sid, (label, group, unit, sym) in DAILY.items():
         df = daily.get(sid)
         if df is None or len(df) < 60:
-            series[sid] = {"label": label, "group": group, "unit": unit, "freq": "D", "cards": [], "symbol": sym,
+            series[sid] = {"label": label, "group": group, "unit": unit, "freq": "D", "cards": [], "symbol": sym, **_nodata(),
                            "models": {"kronos": _missing(f"no daily history for {sym}"),
                                       "baseline": _missing(f"no daily history for {sym}", kind="bootstrap")}}
             continue
@@ -285,7 +297,7 @@ def build_fans(inputs, predictor=None, kinfo=None):
                            ("crack.321", "3-2-1 crack", lambda ho, rb, cl: (2 * rb * BBL + ho * BBL - 3 * cl) / 3)):
         head = {"label": label, "group": "derived", "unit": "$/bbl", "freq": "D", "cards": [], "symbol": None}
         if legs.shape[1] < 3 or len(legs) < 120:
-            series[sid] = {**head, "models": {"kronos": _missing(REASON_JOINT),
+            series[sid] = {**head, **_nodata(), "models": {"kronos": _missing(REASON_JOINT),
                                               "baseline": _missing("no daily history for HO=F / RB=F / CL=F", kind="joint_bootstrap")}}
             continue
         lv = joint_bootstrap_levels(legs, DAILY_STEPS, _seed(sid, run_key))
@@ -303,7 +315,7 @@ def build_fans(inputs, predictor=None, kinfo=None):
         s = weekly.get(eid)
         if s is None or len(s) < 156:
             r = f"no EIA history for {eid}"
-            series[sid] = {"label": label, "group": "inventories", "unit": unit, "freq": "W", "cards": [], "symbol": None,
+            series[sid] = {"label": label, "group": "inventories", "unit": unit, "freq": "W", "cards": [], "symbol": None, **_nodata(),
                            "models": {"kronos": _missing(r), "baseline": _missing(r, kind="seasonal")}}
             continue
         dates = [s.index[-1].date() + timedelta(days=7 * (k + 1)) for k in range(WEEKLY_STEPS)]
@@ -321,7 +333,7 @@ def build_fans(inputs, predictor=None, kinfo=None):
         st, su = weekly.get(stock_id), weekly.get(supp_id)
         head = {"label": label, "group": "derived", "unit": "days", "freq": "W", "cards": [], "symbol": None}
         if st is None or su is None:
-            series[sid] = {**head, "models": {"kronos": _missing(REASON_JOINT), "baseline": _missing(
+            series[sid] = {**head, **_nodata(), "models": {"kronos": _missing(REASON_JOINT), "baseline": _missing(
                 f"no EIA history for {stock_id if st is None else supp_id}", kind="joint_bootstrap")}}
             continue
         f = pd.DataFrame({"stocks": st, "supplied": su.rolling(4).mean()}).dropna()
@@ -329,7 +341,7 @@ def build_fans(inputs, predictor=None, kinfo=None):
         sim = seasonal_paths(f, [f.index[-1].date() + timedelta(days=7 * (k + 1)) for k in range(WEEKLY_STEPS)],
                              _seed(sid, run_key)) if len(f) >= 156 else None
         if sim is None:
-            series[sid] = {**head, "models": {"kronos": _missing(REASON_JOINT), "baseline": _missing(
+            series[sid] = {**head, **_nodata(), "models": {"kronos": _missing(REASON_JOINT), "baseline": _missing(
                 "history too short", kind="joint_bootstrap")}}
             continue
         dates = [f.index[-1].date() + timedelta(days=7 * (k + 1)) for k in range(WEEKLY_STEPS)]
@@ -402,6 +414,34 @@ def record_fans(conn, ctx):
         conn.executemany("""INSERT OR IGNORE INTO v2_forecasts (run_id, created_at, symbol, model, horizon, target_date,
                             spot, p_up, lower68, upper68, direction, vol) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     return len(rows)
+
+
+LIVE_METRIC = "fans.live_score"
+
+
+def grade_live(conn, ctx):
+    """Grade the logged fan forecasts whose target date has passed and store one `fans.live_score` observation per
+    (series, model): {by_horizon: {"1w": {n, coverage68, hit_rate}, "1m": ...}, pending, graded_through}. The closes
+    are the run's own series history (ctx["fans"]) so nothing is fetched. Additive. Returns observations written."""
+    from core import lake
+    from core.forecast import scorecard
+    run, recs = ctx["run"], []
+    for sid, s in ((ctx.get("fans") or {}).get("series") or {}).items():
+        hist = s.get("hist") or {}
+        if s.get("freq") != "D" or not s.get("symbol") or not hist.get("dates"):
+            continue
+        # ponytail: closes are the 90-day history at 4 significant digits, so forecasts whose target date is older than
+        # that window drop out of the score (a rolling ~90 trading days); keep full closes in the snapshot to widen it.
+        closes = pd.Series(hist["values"], index=pd.DatetimeIndex(hist["dates"]), dtype=float)
+        for mk, name in FAN_MODELS.items():
+            sc = scorecard(conn, lambda _sym, c=closes: c, s["symbol"], only=(name,))
+            if not sc["logged"]:
+                continue
+            by_h = {g["horizon"]: {"n": g["n"], "coverage68": g["coverage68"], "hit_rate": g["hit_rate"]} for g in sc["graded"]}
+            recs.append(lake.obs(LIVE_METRIC, run["generated_at"], entity=sid, dims={"model": mk},
+                                 value={"by_horizon": by_h, "pending": sc["pending"], "graded_through": sc["last_price_date"]},
+                                 source="core/fans.py", derivation=FANS_VERSION))
+    return lake.record_observations(conn, recs, run_id=run["run_id"])
 
 
 # ------------------------------------------------------------------ backtest scoring (scripts/backtest_fans.py)
