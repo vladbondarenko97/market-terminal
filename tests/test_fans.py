@@ -78,8 +78,10 @@ class Build(unittest.TestCase):
         self.assertEqual(wk["note"], fans.WEEKLY_NOTE)
 
     def test_four_significant_digits(self):
-        for v in self.out["series"]["SPY"]["models"]["baseline"]["paths"][0] + [self.out["series"]["SPY"]["last"]]:
+        for v in self.out["series"]["SPY"]["models"]["baseline"]["paths"][0]:
             self.assertEqual(v, float(f"{v:.4g}"))
+        last = self.out["series"]["SPY"]["last"]          # the spot keeps full precision: forecasts are graded against it
+        self.assertNotEqual(last, float(f"{last:.4g}"))
         self.assertEqual(fans.sig4(1234.5678), 1235.0)
         self.assertEqual(fans.sig4(0.00123456), 0.001235)
 
