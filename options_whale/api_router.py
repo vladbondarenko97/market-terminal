@@ -1785,6 +1785,14 @@ def api_help():
         <param name="ticker" type="string" default="SPY" description="SPY or SLV; anything else returns 400" />
       </parameters>
     </endpoint>
+    <endpoint method="GET" path="/api/fans" format="json" source="stored">
+      <description>Scenario fans of the latest committed snapshot: per series 100 Kronos paths and 100 baseline paths with p10/p25/p50/p75/p90 per step, plus the run_id and generated_at. 404 with status missing when no snapshot or no fans block exists.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/fans/scorecard" format="json" source="stored and live">
+      <description>Per series and model: backtest (stored by scripts/backtest_fans.py: per horizon n, band hit p10-p90, CRPS as % of price, direction hit, period) and live (logged kronos_fan_v1 / baseline_fan_v1 forecasts graded against daily closes: n, coverage68, hit_rate per horizon). status missing when neither exists.</description>
+      <parameters />
+    </endpoint>
     <endpoint method="GET" path="/api/chaos/history" format="json" source="stored">
       <description>The backdated daily Chaos / Peace score: the newest stored observation per day for the current model version, oldest first, as parallel arrays (t = days since 1970-01-01, score, used = components counted). 503 until a pipeline run has created the database; 404 until a run has stored the history.</description>
       <parameters>
@@ -3016,6 +3024,72 @@ def api_chaos():
     if not run or not fc or not fc.get("chaos"):
         return json_error("no Chaos / Peace data yet: run the pipeline", 404)
     return jsonify({"status": "success", "run": run, "as_of": fc["chaos"].get("as_of"), "data": fc["chaos"]})
+
+
+@app.route('/api/fans', methods=['GET'])
+@guarded("Scenario fans")
+def api_fans():
+    """The latest snapshot's scenario fans block, with the run it came from."""
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+        if not row:
+            return jsonify({"status": "missing", "reason": "no snapshot yet: run the pipeline"}), 404
+        key = f"fans_snapshot:{row['run_id']}"
+        hit = data_cache.get(key)
+        if hit is None:
+            ctx = _v2lake.load_snapshot(conn, row["run_id"])
+            hit = {"fans": ctx.get("fans"), "run_id": ctx["run"]["run_id"], "generated_at": ctx["run"]["generated_at"]}
+            data_cache.set(key, hit)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    if not hit["fans"]:
+        return jsonify({"status": "missing", "reason": "the latest snapshot has no fans block (run made before scenario fans)",
+                        "run_id": hit["run_id"], "generated_at": hit["generated_at"]}), 404
+    return jsonify({**hit["fans"], "run_id": hit["run_id"], "generated_at": hit["generated_at"]})
+
+
+@app.route('/api/fans/scorecard', methods=['GET'])
+@guarded("Scenario fans scorecard")
+def api_fans_scorecard():
+    """Per series and model: the stored walk-forward backtest and the live grading of logged fan forecasts."""
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        out = {}
+        for r in conn.execute("SELECT entity, dims_json, value_json FROM v2_observations WHERE metric_id = 'fans.backtest' "
+                              "ORDER BY observed_at, obs_id"):      # newest last: it overwrites
+            model = json.loads(r["dims_json"]).get("model")
+            out.setdefault(r["entity"], {}).setdefault(model, {})["backtest"] = json.loads(r["value_json"])
+        names = {"kronos_fan_v1": "kronos", "baseline_fan_v1": "baseline"}
+        symbols = {r[0] for r in conn.execute("SELECT DISTINCT symbol FROM v2_forecasts WHERE model IN (?, ?)", tuple(names))}
+        run = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+        by_symbol = {}
+        if run:
+            fans = (_v2lake.load_snapshot(conn, run["run_id"]) or {}).get("fans") or {}
+            by_symbol = {s["symbol"]: sid for sid, s in (fans.get("series") or {}).items() if s.get("symbol")}
+        for sym in sorted(symbols):
+            sc = _v2fc.scorecard(conn, _cached_daily_closes, sym)
+            for g in sc["graded"]:
+                if g["model"] in names:
+                    live = out.setdefault(by_symbol.get(sym, sym), {}).setdefault(names[g["model"]], {}).setdefault(
+                        "live", {"pending": sc["pending"], "by_horizon": {}})
+                    live["by_horizon"][g["horizon"]] = {"n": g["n"], "coverage68": g["coverage68"], "hit_rate": g["hit_rate"]}
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    return jsonify({"status": "success" if out else "missing", "series": out,
+                    "reason": None if out else "no backtest stored and no fan forecast graded yet"})
 
 
 @app.route('/api/chaos/history', methods=['GET'])

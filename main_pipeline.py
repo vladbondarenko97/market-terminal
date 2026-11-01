@@ -380,6 +380,11 @@ def _post_commit(conn, ctx, run_id, mode, out_dir, stages, *, deliver, upload):
             stages["forecasts_logged"] = _fc.record_forecasts(conn, ctx)
         except Exception as e:
             _stage_error(stages, warnings, "forecast_log", e)
+        try:
+            from core import fans as _fans
+            stages["fans_logged"] = _fans.record_fans(conn, ctx)
+        except Exception as e:
+            _stage_error(stages, warnings, "fans_log", e)
     else:
         stages["ledgers"] = "skipped (offline run does not append legacy ledgers)"
     note, note_files = None, {}

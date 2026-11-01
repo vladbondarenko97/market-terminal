@@ -60,6 +60,7 @@ async function loadForecast(ticker) {
     if (ticker) FC.ticker = ticker;
     ['SPY', 'SLV'].forEach(t => document.getElementById(`fcBtn${t}`)?.classList.toggle('active', t === FC.ticker));
     if (!FC.scanner) loadScanner();     // cards 12 and 13 have their own routes and REFRESH buttons: they load once per page
+    if (!FC.fans16 && window.Fans) { FC.fans16 = true; Fans.card16(); }     // card 16 has its own routes: it loads once per page
     if (!FC.edges) loadEdges();         // load (even when /api/forecast fails), not on every SPY/SLV switch
     try {
         // fetchJson (app.js) returns the body of a 404 or 503 too, so its message reaches the cards
@@ -85,7 +86,7 @@ function copyForecastCard(id) {
     const d = FC.data || {};
     const map = {
         fc0: d.signals, fc12: FC.scanner, fc13: FC.edges, fc1: d.data?.implied, fc2: d.data?.vol_forecast, fc3: d.data?.trend, fc4: d.positioning, fc5: d.silver_fair_value,
-        fc6: d.macro_regime, fc7: d.data?.calendar, fc8: d.data?.flows, fc9: d.scorecard, fc10: d.refining, fc11: d.refining?.inventories, fc14: d.chaos, fc15: d.fed_ops,
+        fc6: d.macro_regime, fc7: d.data?.calendar, fc8: d.data?.flows, fc9: d.scorecard, fc10: d.refining, fc11: d.refining?.inventories, fc14: d.chaos, fc15: d.fed_ops, fc16: window.Fans ? Fans.copyData() : null,
     };
     const title = document.querySelector(`#${id}`)?.closest('.rainbow-inner')?.querySelector('.fc-title')?.textContent || id;
     const payload = JSON.stringify({ ticker: FC.ticker, run: d.run?.run_id, card: title, data: map[id] ?? null }, null, 2);
@@ -1112,6 +1113,18 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', e => { if (e.target && e.target.id === 'fcFaqModal') closeForecastFaq(); });
 
 const FC_FAQ = {
+    fc16: { title: '16 · Scenario Lab — FAQ',
+        what: 'Scenario fans: for each series, 100 possible 20-day (or 8-week) paths sampled by Kronos, a model trained on market candles, drawn next to the baseline 80% band (a bootstrap of the series\' own past changes; a seasonal one for weekly data).',
+        read: ['<b>Fan</b>: the thin orange lines are Kronos paths; dashed = p10 and p90, solid = median. The blue band is the baseline p10–p90.',
+               '<b>Hover or tap a path</b> to pin it and read what it requires: end move, low and high with dates, first day each level is reached or broken, biggest single day.',
+               '<b>Backtest band hit</b>: how often the real outcome fell inside the model\'s p10–p90 band in the history test. 80% is the target; far below it means the model is too confident.',
+               '<b>CRPS</b>: error of the whole forecast distribution as a share of price; lower is better; the ratio is against the baseline.',
+               '<b>Direction hit</b>: share of times the median path had the right sign. <b>Live n</b>: forecasts already graded since the fans began being logged.'],
+        trade: ['Nothing here is a trade signal. A model that does not beat the baseline on the leaderboard adds no information, whatever its fan looks like.'],
+        funds: ['Quant desks compare any new model with a naive resampling baseline on calibration and CRPS before trusting it.'],
+        caveats: ['A path shows what it requires, not why. Kronos samples from learned odds.',
+                  'Weekly inventory series are experimental: single weekly values, not candles. Derived series (cracks, days of supply) have the baseline only.',
+                  'A model without inputs shows its reason instead of paths; nothing is invented.'] },
     fc15: { title: '15 · Fed / Treasury operations — FAQ',
         what: 'The plumbing behind dollar liquidity, from official sources only: the New York Fed\'s repo and reverse repo operations and its reference rates, the Treasury\'s buybacks of its own debt and its auctions. Stored by the pipeline every run; the history goes back to 2014 (repo), 2018 (SOFR, TGCR, BGCR), 2024 (buybacks) and 2021 (auctions).',
         read: ['<b>ON RRP</b>: cash money funds park at the Fed overnight. A big balance is spare liquidity; near zero means that buffer is used up.',

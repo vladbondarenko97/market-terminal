@@ -10,7 +10,7 @@ ctx["fans"] = {
   "series": {
     "<id>": {
       "label": "SPY", "group": "markets"|"fuels"|"inventories"|"derived", "unit": "$"|"$/bbl"|"$/gal"|"%"|"kb"|"days"|"index",
-      "freq": "D"|"W", "cards": ["fc1", "fc10", ...], "symbol": "SPY",   # Yahoo symbol when gradable, else null
+      "freq": "D"|"W", "cards": [], "symbol": "SPY",   # Yahoo symbol when gradable, else null
       "asof": "YYYY-MM-DD", "last": float,
       "hist": {"dates": [...], "values": [...]},          # last 90 daily or 52 weekly points, for drawing
       "dates": [...],                                     # future dates: 20 NYSE trading days, or 8 weekly (EIA Fridays)
@@ -25,7 +25,7 @@ ctx["fans"] = {
 }
 ```
 
-Numbers are rounded to 4 significant digits. A model whose inputs are missing returns `{"status": "missing", "reason": ...}` with no paths.
+`cards` is `[]` in Phase 1 (the terminal decides where each series is drawn). Numbers are rounded to 4 significant digits. A model whose inputs are missing returns `{"status": "missing", "reason": ...}` with no paths.
 
 Series ids (Phase 1):
 - markets (daily, Kronos + bootstrap): SPY, SLV, VIX (^VIX), DXY (DX-Y.NYB), TNX (^TNX), SI (SI=F), GC (GC=F), HG (HG=F)
