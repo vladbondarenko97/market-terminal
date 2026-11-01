@@ -44,9 +44,13 @@ const Fans = (() => {
     const rate = v => v == null ? null : (v <= 1 ? v * 100 : v);
     function score(id, m) {
         const sc = S.score || {}, r = ((sc.series && sc.series[id]) || sc[id] || {})[m] || {};
-        const bt = r.backtest || {}, lv = r.live || {};
-        return { n: bt.n, band: rate(pick(bt, 'band_hit', 'band_hit_80', 'band80', 'hit80', 'coverage')), crps: pick(bt, 'crps', 'crps_price', 'crps_pct'),
-                 dir: rate(pick(bt, 'direction_hit', 'dir_hit', 'direction')), live: lv.n, liveBand: rate(pick(lv, 'band_hit_68', 'band_hit', 'coverage')) };
+        let bt = r.backtest || {}, lv = r.live || {};
+        // the route nests the backtest by horizon (trading-day steps as keys: use the longest, 20 days) and the live grades by horizon label
+        if (bt.by_horizon) { const ks = Object.keys(bt.by_horizon).sort((x, y) => +x - +y); bt = ks.length ? bt.by_horizon[last(ks)] : {}; }
+        const lh = Object.values(lv.by_horizon || {}), liveN = lh.length ? lh.reduce((a, c) => a + (c.n || 0), 0) : lv.n;
+        const lb = lh.find(c => c.coverage68 != null);
+        return { n: bt.n, band: rate(pick(bt, 'band_hit', 'band_hit_80')), crps: pick(bt, 'crps_pct', 'crps', 'crps_price'),
+                 dir: rate(pick(bt, 'dir_hit', 'direction_hit')), live: liveN, liveBand: rate(lb ? lb.coverage68 : pick(lv, 'band_hit_68')) };
     }
     function badge(id) {
         const k = score(id, 'kronos'), b = score(id, 'baseline');
@@ -232,6 +236,7 @@ const Fans = (() => {
     }
 
     // ---------------------------------------------------------------- card 16: SCENARIO LAB
+    const crpsF = v => v.toFixed(2) + '%';
     function leaderboard(ids) {
         const all = seriesMap(), rows = [];
         ids.forEach(id => {
@@ -241,13 +246,13 @@ const Fans = (() => {
             else if (k.band != null && b.band != null) win = Math.abs(k.band - 80) < Math.abs(b.band - 80) ? 'kronos' : 'baseline';
             [['kronos', k], ['baseline', b]].forEach(([m, x]) => {
                 const none = x.band == null && x.crps == null && x.dir == null && !x.live;
-                const vs = x.crps == null ? '—' : m === 'baseline' || !b.crps ? num('$', x.crps) : `${num('$', x.crps)} <span class="fc-muted">(${(x.crps / b.crps).toFixed(2)}× baseline)</span>`;
+                const vs = x.crps == null ? '—' : m === 'baseline' || !b.crps ? crpsF(x.crps) : `${crpsF(x.crps)} <span class="fc-muted">(${(x.crps / b.crps).toFixed(2)}× baseline)</span>`;
                 const p = v => v == null ? '—' : v.toFixed(0) + '%';
                 rows.push(`<tr class="${win === m ? 'fans-win' : ''}"><td>${m === 'kronos' ? esc(all[id].label) : ''}</td><td>${m}</td>
                     ${none ? '<td colspan="4" class="fc-muted">no score yet</td>' : `<td>${p(x.band)} <span class="fc-muted">/ 80%</span></td><td>${vs}</td><td>${p(x.dir)}</td><td>${x.live ?? 0}</td>`}</tr>`);
             });
         });
-        return `<table class="fc-table fans-lb"><tr><th>Series</th><th>Model</th><th>Backtest band hit</th><th>CRPS</th><th>Direction hit</th><th>Live n</th></tr>${rows.join('')}</table>`;
+        return `<table class="fc-table fans-lb"><tr><th>Series</th><th>Model</th><th>Backtest band hit</th><th>CRPS (% of price)</th><th>Direction hit</th><th>Live n</th></tr>${rows.join('')}</table>`;
     }
     function card16() {
         const el = document.getElementById('fc16'); if (!el) return;
