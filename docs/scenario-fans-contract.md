@@ -36,4 +36,4 @@ Series ids (Phase 1):
 
 Routes (stored data only):
 - `GET /api/fans` → the latest snapshot's `fans` block plus `run_id` and `generated_at`.
-- `GET /api/fans/scorecard` → per series and model: `backtest` (stored by scripts/backtest_fans.py: n, band hit p10–p90, CRPS/price, direction hit, period) and `live` (graded v2_forecasts rows for models `kronos_fan_v1` and `baseline_fan_v1`: n, band hit 68, hit rate).
+- `GET /api/fans/scorecard` → `{status: "success"|"missing", reason, series: {<id>: {kronos|baseline: {backtest?, live?}}}}`. `backtest` (stored by scripts/backtest_fans.py): `{by_horizon: {"5": {n, band_hit, crps_pct, dir_hit}, "20": {...}}, period: [first, last origin], paths}` (`band_hit` = share inside p10-p90, `crps_pct` = CRPS as % of price, `dir_hit` = median direction right). `live` (graded v2_forecasts rows for models `kronos_fan_v1` and `baseline_fan_v1`): `{pending, by_horizon: {"1w": {n, coverage68, hit_rate}, "1m": {...}}}`. A series, model or part with nothing stored is absent.

@@ -28,6 +28,7 @@ When you change how a stored value is computed:
 | `FEATURES_VERSION` (`core/metrics.py`) | `features_v1` | `<model_features>` block in the tactical XML |
 | `VERSION` (`core/forecast.py`) | `forecast_v3` | Forecast Lab cards 1–9 |
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
+| `FANS_VERSION` (`core/fans.py`) | `fans_v1` | Scenario fans (`fans` snapshot block) and the `kronos_fan_v1` / `baseline_fan_v1` forecast log rows |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
 | `STUDY_VERSION` (`core/chaos.py`) | `regime_study_v2` | The regime study of card 14 (`chaos.long.study`: base rates, early-warning onsets) |
 | `FEDOPS_VERSION` (`core/fedops.py`) | `fed_ops_v4` | Fed / Treasury operations block and its summaries (card 15) |
@@ -44,6 +45,13 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 
 Newest first, then the changes that came with the v2 pipeline.
 
+- **Scenario fans added** (`fans_v1`, 2026-10-31): new snapshot key `fans`: per series 100 simulated paths and p10/p25/p50/p75/p90
+  per step from Kronos-small (T 1.0, top_p 0.9, 400-bar lookback, independent samples) and from a baseline (bootstrap of the
+  trailing 504 daily log returns; seasonal week-over-week resampling for EIA series; joint bootstrap for the crack spreads and
+  days of supply). Values are rounded to 4 significant digits and seeded per run date, so `replay` of a snapshot is exact. Live runs also log
+  `kronos_fan_v1` / `baseline_fan_v1` rows (1w = step 5, 1m = step 20) into `v2_forecasts`. Snapshots before this change have no
+  `fans` key. Side effect: `^VIX` and `^TNX` daily history is now fetched for 5 years instead of 1, so `price_stats` for `VIX` and
+  `TNX` reports a larger `bars`; the 252-day percentile windows (`VIX_1y`, `TNX_1y`) are unchanged.
 - **MMRI added** (`mmri_v1`, 2026-10-31): the Mannarino Market Risk Indicator, `(DXY x 10Y yield) / 1.61`, credited to
   Gregory Mannarino, with his tiers (below 100 LOW RISK, below 200 MODERATE RISK, below 300 HIGH RISK, else EXTREME
   RISK). It is the `base_stress` component of `vmri_v1` stored under its own name from the same inputs, so the two

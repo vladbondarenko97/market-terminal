@@ -97,6 +97,9 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/metrics.py` | VMRI, GEX and walls, zero gamma, max pain, block flow, execution engine, model features |
 | `core/forecast.py` | Forecast Lab models (cards 1–9), forecast logging and grading |
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
+| `core/fans.py` | Scenario fans: Kronos and baseline paths per series, fan forecast log rows, backtest scoring |
+| `third_party/kronos/` | Vendored Kronos model code (MIT) with its LICENSE; loaded only when torch and the weights are present |
+| `scripts/fetch_kronos.py`, `scripts/backtest_fans.py`, `requirements-kronos.txt` | Operator-run: download the weights; walk-forward backtest of the fans; the optional torch requirements |
 | `core/narrative.py` | The Briefing (analyst note): the brief built from a snapshot, the shared prompts, the validator (numbers, ids, causal and advice wording), the local and Claude Code drivers, the shapers the console reuses |
 | `options_whale/analyst_bin/mtq` | Read-only command the Claude Code analyst may run: one stored console source in-process, from an allowlist (`MTQ_SOURCES`) |
 | `core/fedops.py` | Fed / Treasury operations (card 15): NY Fed repo and reverse repo operations and reference rates, Treasury buybacks and auctions as `fedops.*` observations; the per-run top-up, history reads and summaries |
