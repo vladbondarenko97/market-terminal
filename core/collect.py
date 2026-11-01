@@ -820,6 +820,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
     frames_hist = extended.pop("_frames", {})
     forecast = timed("forecast_lab", lambda: build_forecast(conn, session, now, today, frames_hist, options, prices, macro))
     refining_ctx = timed("refining", lambda: _guarded_refining(conn, session, run["run_id"], today))
+    fans_ctx = timed("fans", lambda: _guarded_fans(session, today, frames_hist, options))     # after refining: shares its fetches
     chaos_ctx = timed("chaos", lambda: _guarded_chaos(conn, session, run["run_id"], today, frames_hist))
     fed_ops_ctx = timed("fed_ops", lambda: _guarded_fed_ops(conn, session, run["run_id"], today))     # after chaos: the Treasury requests are shared
 
@@ -834,7 +835,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
         "flow": {"SPY": spy_flow, "SLV": flows["SLV"][0], "SPY_5d": {**flows["SPY_5d"][0], "nodes": nodes}},
         "technicals": technicals, "weather": weather, "breadth": breadth, "execution": engine, "ebay": ebay,
         "sources": {"cme": cme_acq}, "stage_seconds": stage_times, **extended, "position_marks": position_marks,
-        "forecast": forecast, "refining": refining_ctx,
+        "forecast": forecast, "refining": refining_ctx, "fans": fans_ctx,
         "news": news,
         "chaos": chaos_ctx,
         "fed_ops": fed_ops_ctx,
@@ -844,7 +845,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
 
 
 HISTORY_SYMBOLS = {"SPY": ("SPY", "5y"), "SLV": ("SLV", "5y"), "SI_F": ("SI=F", "5y"), "GC_F": ("GC=F", "5y"),
-                   "VIX": ("^VIX", "1y"), "DXY": ("DX-Y.NYB", "5y"), "TNX": ("^TNX", "1y"), "HG_F": ("HG=F", "5y")}
+                   "VIX": ("^VIX", "5y"), "DXY": ("DX-Y.NYB", "5y"), "TNX": ("^TNX", "5y"), "HG_F": ("HG=F", "5y")}
 
 
 def extended_features(conn, session, as_of, prices, options, cme_vol, inventory, macro, technicals, flows,
@@ -1038,6 +1039,30 @@ def _guarded_refining(conn, session, run_id, today):
     except Exception as e:
         import traceback
         return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}"),
+                "trace": lake.redact(traceback.format_exc()[-1500:])}
+
+
+def _guarded_fans(session, today, frames_hist, options):
+    """Scenario fans are optional: a failure there must not abort the run. Fetches go through SourceSession, so the
+    ones refining already made (HO/RB/CL, EIA weekly) are deduplicated or served from the capture cache."""
+    try:
+        from core import fans
+        daily = {sid: frames_hist.get(key) for sid, key in fans.YAHOO_FRAME_KEYS.items()}
+        for sid, sym in fans.FUEL_SYMBOLS.items():
+            try:
+                daily[sid], _ = src.yf_history(session, sym, "5y", "1d")
+            except SourceUnavailable:
+                pass                      # that series reports "missing" with its reason
+        weekly = {}
+        for eid in fans.EIA_IDS:
+            try:
+                weekly[eid], _ = src.eia_weekly(session, eid)
+            except SourceUnavailable:
+                pass
+        return fans.build_fans({"today": today, "daily": daily, "weekly": weekly, "options": options})
+    except Exception as e:
+        import traceback
+        return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}"), "version": "fans_v1",
                 "trace": lake.redact(traceback.format_exc()[-1500:])}
 
 

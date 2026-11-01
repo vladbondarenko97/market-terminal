@@ -48,8 +48,35 @@ It is `missing` with a reason when the list is unavailable.
 | 11 | EIA inventories | Weekly US petroleum stocks against the 5-year same-week average, and days of supply | Are stocks building or drawing against the norm, and how does today compare with past years? | shared | `ctx["refining"]["inventories"]`, full history from `/api/eia_history` |
 | 14 | Chaos / Peace | Twelve stress readings (VIX, VIX/VIX3M, VVIX, SKEW, MOVE, high-yield spread, SPY realised vol and drawdown, policy uncertainty, equity put/call, VIX9D/VIX6M, SPY short-sale share), each a z-score against its own 3 years | How stressed does the market look against its own recent history and against every stress episode since 1931, how often did a calm market turn, and what do the liquidity levers and past election windows look like? | shared | `ctx["chaos"]` (`score`, `regime`, `components`, `levers`, `event_study`, `lever_study`, `long`), also `GET /api/chaos` and `GET /api/chaos/history` |
 | 15 | Fed / Treasury operations | NY Fed repo (Standing Repo Facility, term) and reverse repo results, SOFR, TGCR, BGCR, EFFR (NY Fed); Treasury buyback operations (Fiscal Data); Treasury auction results and calendar (TreasuryDirect) | How much spare cash sits in the reverse repo, is anyone using the Fed's repo backstop, where are funding rates, how much is Treasury buying back against what it offered and how much dealers offered, and how are auctions going against a year ago? | shared | `ctx["fed_ops"]` (`repo`, `buybacks`, `auctions`), also `GET /api/fed_ops*` and `GET /api/fed_ops/history/*` |
+| 16 | Scenario Lab | Scenario fans: 100 paths per series sampled by Kronos, and a baseline band (bootstrap; seasonal for weekly series), with a leaderboard of backtest band hit, CRPS, direction hit and live n | Which model has actually been calibrated, and what would a given path require? | all series in `fans` | `fans` (not in `/api/forecast`; loaded from `/api/fans` and `/api/fans/scorecard`) |
 
 `SYM` is `SPY` or `SLV`. Cards 1 to 3, 7 and 8 sit under `forecast[SYM]`; the browser receives that object as `data`.
+
+### Scenario fans (card 16 and the KRONOS toggle)
+
+Data contract: [scenario-fans-contract.md](scenario-fans-contract.md). The module is `options_whale/static/fans.js` (global `Fans`).
+It reads `GET /api/fans` and `GET /api/fans/scorecard` once per page load, and again after a RE-SCAN run finishes.
+
+- **Card 16 SCENARIO LAB** always shows (it is the showcase and loads when the tab opens): a two-sentence explanation, a grid of
+  small fans for every series (click one to open the full panel with the inspector), and a leaderboard with one row per series and
+  model (backtest band hit against the 80% target, CRPS and its ratio to the baseline, direction hit, live n). The model with the
+  lower CRPS wins the series (band hit closest to 80% when CRPS is absent) and is highlighted. A series or model without a score
+  reads `no score yet`.
+- **The KRONOS checkbox** in the tab bar (off by default, remembered in `localStorage` key `mt_kronos_fans`) adds a fan panel under
+  the chart of cards 1 (SPY or SLV, the card's ticker), 10 (HO, RB, CL, NG, `crack.diesel`, `crack.321`) and 11 (the six EIA
+  stocks and `days.*`). Off: nothing is drawn or fetched for them. Card 1 also prints
+  `Kronos p10-p90 at 20 days: ... · baseline: ... · options imply: ...`; the implied range is the 10th and 90th percentile of the
+  card's 1M density (`curve`).
+- **The panel**: series buttons, a model switch (Kronos, Baseline, Both; Both draws the Kronos paths and the baseline p10-p90 band),
+  a badge with the score (`Kronos · backtest band hit 16% · baseline 80% · live n=12`, or `no score yet`), the series note
+  (weekly stocks are `experimental: single weekly values, not candles`), and the inspector. Hover or tap a path to read it;
+  click or tap to pin it. The inspector shows the end value and change, end percentile, worst and best point, path volatility,
+  the baseline 80% range, and "What has to happen" (end move, low and high with dates, first day or week each level is reached
+  or broken, biggest single move). It says that Kronos samples paths and shows what a path requires, not why.
+- **Missing is not zero.** A model with `status` `missing` or `error` shows its `reason` in place of its paths; no paths are
+  invented. Derived series (cracks, days of supply) have the baseline only, so their Kronos side shows the reason.
+- Units follow the contract: `kb` with thousands separators, `$` with 2 decimals, `%` and `days` with 1.
+- Card 16 has its own routes: it does not use the `/api/forecast` response and still loads when that fails.
 
 ### Details worth knowing
 
@@ -190,6 +217,8 @@ Rules for authors:
   and HTTP 503 when the database has not been initialised (no pipeline run yet). Cards 10, 11 and 14 are then unavailable
   too, because the whole response is an error.
 
+Scenario fans (card 16 and the overlays) follow the same contract per model: `fans.series.<id>.models.kronos` and `.baseline` are `fresh` with `paths` and `q`, or `missing` or `error` with a `reason` and no paths; the terminal prints the reason where the paths would be.
+
 Cards 4, 9 and 10 treat a block whose status is `error` or `missing` as unavailable and print its `reason`
 (`fcFailed()` in `forecast.js`); that is why `positioning` carries a top-level `reason` when it has nothing.
 
@@ -208,6 +237,7 @@ Card 9 grades the forecasts the pipeline logged.
   date has passed it takes the first daily close on or after that date, using live yfinance closes (cached for 60 s), not
   stored data. Hit rate is the share of correct directions, coverage is the share of closes inside the 68% range
   (ideal 0.68), and Brier is the squared error of the stated probability (lower is better; 0.25 is a coin flip).
+  The scenario-fan models (`kronos_fan_v1`, `baseline_fan_v1`) are excluded here; the pipeline grades them into card 16's `fans.live_score`.
 - **Card.** Four counters (Logged forecasts, Awaiting grade, Graded groups, Prices through), a LIVE GRADES table, and
   BACKTESTS taken from cards 2, 3 and (for SLV) 5. They are not all walk-forward. Card 2 is a single 60/20/20 holdout
   (`oos_days` is the last 20%). Card 3 tests the fixed trend signal at each date against the forward return, with

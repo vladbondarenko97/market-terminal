@@ -282,11 +282,12 @@ Things to know:
 
 ## Forecast Lab tab
 
-Twelve model cards, 1 to 11 and 14 (full reference: [Forecast Lab](forecast-lab.md)). Controls above the cards:
+Thirteen model cards, 1 to 11, 14 and 16 (full reference: [Forecast Lab](forecast-lab.md)). Controls above the cards:
 
 - **SPY** / **SLV** choose the ticker for the per-ticker cards. **REFRESH** reloads.
 - The status line reads `TICKER · run <run id> · <time>` and adds `· N source issue(s)` when the run could not fetch some inputs.
 - The data loads every time the tab is opened and on each button press. There is no automatic refresh.
+- **KRONOS** (checkbox right after the tab name, off by default, remembered in this browser) overlays a scenario fan on cards 1, 10 and 11. Card 16 SCENARIO LAB always shows the fans and their scorecard. Details: [Forecast Lab](forecast-lab.md#scenario-fans-card-16-and-the-kronos-toggle).
 - Each card has **?** (help), **⛶** (full screen) and **COPY**. Esc closes help or leaves full screen.
 - A card whose data is missing or failed shows `Unavailable: <reason>`. That includes cards 4, 9 and 10 when the pipeline
   recorded an error for their block, card 11 when the whole refining block failed, card 14 when the chaos block is missing or failed (it prints the reason), and card 15 likewise for `fed_ops`. If `/api/forecast` itself fails
