@@ -57,7 +57,7 @@ class Build(unittest.TestCase):
     def test_every_contract_series_is_present_and_fresh(self):
         s = self.out["series"]
         self.assertEqual(set(s), set(fans.DAILY) | set(fans.WEEKLY) | set(fans.DAYS) | {"crack.diesel", "crack.321"})
-        self.assertEqual(self.out["status"], "partial")           # derived series have no Kronos model
+        self.assertEqual(self.out["status"], "fresh")             # the derived series' missing Kronos fans are by design
         self.assertEqual(self.out["version"], "fans_v1")
         for sid in list(fans.DAILY) + list(fans.WEEKLY):
             self.assertEqual({m["status"] for m in s[sid]["models"].values()}, {"fresh"}, sid)

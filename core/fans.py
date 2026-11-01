@@ -351,7 +351,7 @@ def _finish(series, kinfo, kron_s, errors):
     elif kinfo["status"] == "fresh" and not any(
             m.get("status") == "fresh" and k == "kronos" for s in series.values() for k, m in s["models"].items()):
         kinfo.update(status="missing", reason="no series had enough history for Kronos")
-    models = [m for s in series.values() for m in s["models"].values()]
+    models = [m for s in series.values() for m in s["models"].values() if m.get("reason") != REASON_JOINT]   # by design, not a gap
     fresh = [m for m in models if m["status"] == "fresh"]
     if not fresh:
         status, reason = "missing", "no series had enough history"
