@@ -342,6 +342,8 @@ const Fans = (() => {
         if (S.on) attach();
         if (document.getElementById('fc16') && typeof FC !== 'undefined' && FC.fans16) card16();
     }
+    // a run that the page did not start (scheduled, command line) commits a new snapshot: drop fans from an older one
+    function sync(runId) { if (runId && S.fans && S.fans.run_id && S.fans.run_id !== runId) reload(); }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 
     // cards 1, 10 and 11 rewrite their body on every render: put the fan back after each one
@@ -349,6 +351,6 @@ const Fans = (() => {
         const o = window[n];
         if (typeof o === 'function') window[n] = function () { const r = o.apply(this, arguments); try { attach(card); } catch (e) { console.error('fans', e); } return r; };
     });
-    return { enabled: () => S.on, panel, card16, attach, reload, ensure, copyData: () => ({ fans: S.fans, scorecard: S.score }), _impliedBand: impliedBand };
+    return { enabled: () => S.on, panel, card16, attach, reload, sync, ensure, copyData: () => ({ fans: S.fans, scorecard: S.score }), _impliedBand: impliedBand };
 })();
 window.Fans = Fans;
