@@ -53,3 +53,18 @@ earnings dates and option chains at request time through `yfinance`, not through
 results are not in the snapshot. That is by design for an intraday scan, but it breaks the "models run in the
 pipeline" and "pipeline network calls go through `SourceSession.fetch()`" rules: the calls are not captured,
 deduplicated or switched off offline. Their unit tests are offline (synthetic series, patched fetchers).
+
+### Scenario fans (fans_v1): weekly seasonal baselines for SPR and refinery utilization
+
+Found 2026-10-31 on real data. The seasonal baseline resamples week-over-week changes from the same calendar weeks of
+the past 10 years. For SPR stocks (`eia.WCSSTUS1`) those weeks include the 2022 emergency releases, which are policy
+moves, not seasonality, so the 8-week band sat entirely below the latest level. For refinery utilization
+(`eia.WPULEUS3`) independent weekly changes ignore mean reversion and the 90th percentile passed 100%. Both fans are
+shown with their scores and should be read with this in mind until the baseline is fixed.
+
+### Scenario fans (fans_v1): Kronos paths drift strongly on trending series
+
+Found 2026-10-31 on real data, consistent with the 2015–2026 spike backtest (Kronos lost to the bootstrap baseline on
+SPY, SLV and VIX). On the Oct 30 inputs the Kronos 20-day 80% band for HO=F was 2.63–3.77 against a last price of
+4.67, and for CL=F 78.7–92.4 against 104.4. The likely cause is the repository's input normalisation over a window of
+raw prices. Each card shows the Kronos scorecard next to the fan.

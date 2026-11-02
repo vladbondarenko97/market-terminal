@@ -65,6 +65,19 @@ There are two gates.
 Signal Watch rows graded `tested` say "Buy · standard size" and rows graded `thin` say "Buy · half size (small sample)".
 A rule that fails says "no measured edge". [For quants → How evidence is graded](for-quants.md#how-evidence-is-graded).
 
+## Scenario fans (`core/fans.py`, `FANS_VERSION = "fans_v1"`)
+
+For each series, 100 simulated paths over 20 NYSE trading days (daily series, holidays skipped) or 8 weeks (EIA series), from two sources.
+- **Kronos** (Kronos-small, MIT, a foundation model for candlesticks; T 1.0, top_p 0.9, lookback 400 bars, 512 context). 100 independent samples
+  (one window repeated 100 times with `sample_count=1`; averaging would erase the spread). Weekly EIA series are fed as single values
+  (open = high = low = close, volume 0) and marked experimental. Derived series (crack spreads, days of supply) have no Kronos fan until the legs can be sampled jointly.
+- **Baseline.** Daily: bootstrap of the trailing 504 daily log returns. Weekly: each step resamples a historical week-over-week change from the same week of year (plus or minus one week), last 10 years.
+  Crack spreads resample the same historical days for HO, RB and CL, so the legs stay correlated; days of supply (stocks / 4-week average product supplied) resample the same historical weeks for both.
+  Seeded per run date.
+
+The fans are scenarios, not forecasts: the quantiles describe the spread of the simulation. `scripts/backtest_fans.py` measures it (p10 to p90 hit rate, CRPS as a percentage of price,
+direction hit) walk-forward, and the live `kronos_fan_v1` / `baseline_fan_v1` log grades it as time passes. Until those say otherwise, treat Kronos as unproven against the baseline.
+
 ## Fixed model parameters
 
 These are constants, not fitted values:

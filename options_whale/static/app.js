@@ -933,6 +933,7 @@ async function followRun(beforeId) {
                 reloadFrame('mmriFrame');
                 reloadFrame('comexFrame');
                 log('VMRI, MMRI and COMEX inventory frames reloaded.', 'info');
+                if (window.Fans) Fans.reload();
                 return;
             }
         }

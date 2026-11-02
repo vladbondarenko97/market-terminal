@@ -787,6 +787,21 @@ to `CME_Data`, and keeps the legacy ledger tables and CSV headers unchanged. See
 - **Undo a schedule** with `./setup.sh --remove-schedule`.
 
 
+## Scenario fans (Kronos)
+
+The pipeline's `fans` stage builds 100-path scenario fans for 23 series (see [methodology](methodology.md#scenario-fans-corefanspy-fans_version--fans_v1)).
+The baseline fans need nothing extra. The Kronos fans are optional and need torch plus the model weights, both installed by you once:
+
+```bash
+.venv/bin/pip install -r requirements-kronos.txt
+PORTFOLIO_DATA_DIR=... .venv/bin/python scripts/fetch_kronos.py     # downloads two Hugging Face repos into <data folder>/models/kronos/
+```
+
+The run itself never downloads: it loads from that folder, on `mps` when available, else `cpu` (`KRONOS_DEVICE` overrides). Without torch or the weights,
+or with `KRONOS_ENABLED=0`, the `kronos` part of `fans` is `missing` with the reason and everything else runs unchanged. The stage's time is in
+`stage_seconds.fans` and `fans.kronos.seconds` (about 18 s per 100 paths of one daily series on an M-series Mac, so a few minutes with Kronos in the run; seconds without). Live runs
+also log the fans' 1-week and 1-month forecasts (`kronos_fan_v1`, `baseline_fan_v1`) and grade the matured ones (stage `fans_graded`, `fans.live_score` observations). Card 9's scorecard leaves these models out. [Backtest script](#backfills): `scripts/backtest_fans.py`.
+
 ## Backfills
 
 Three one-off loaders fill history the pipeline would otherwise take years to accumulate. You read them and run them; the
@@ -799,6 +814,7 @@ what they do first, a scratch `PORTFOLIO_DATA_DIR`.
 | Script | What it downloads | How long |
 |---|---|---|
 | `scripts/backfill_chaos_history.py [--years 3] [--limit N] [--sleep 0.25]` | For every NYSE trading day of the last `--years` years plus 45 days (newest first) not yet stored: the CBOE daily statistics file (small JSON, about 750 files for 3 years) and FINRA's consolidated short-volume file (about 0.5 MB text each, about 750 files, of which only the header and the SPY line are kept). Stores `chaos.equity_put_call` and `chaos.short_volume_spy`. A day with no file (HTTP 403 or 404) is counted and reported, not retried in that run. | Roughly 15 to 30 minutes for 3 years. Once both series span 3 years, the two Chaos / Peace components stop being `missing`; the pipeline keeps them current with its 5-day catch-up. |
+| `scripts/backtest_fans.py [--start 2015-01-01] [--every 20] [--paths 30] [--series A,B] [--limit N]` | Operator-run, writes to the database. Downloads full daily history per series from Yahoo and, at every Nth trading day, simulates and scores the Kronos and baseline fans; stores `fans.backtest_origin` and `fans.backtest` observations. Resumable: finished origins are skipped. Without torch and weights only the baseline is scored. | Hours with Kronos on a Mac (about 5 s per series and origin); minutes for the baseline alone. Try `--limit 2` first. |
 | `scripts/backfill_fed_ops.py` | One request per calendar year and source: NY Fed repo and reverse repo results from 2014 and the NY Fed reference rates (SOFR, TGCR, BGCR, EFFR) from 2018-04-02 (about 0.2 MB a year each), TreasuryDirect auction records from 2021 (about 3 MB a year) and every Fiscal Data buyback operation since 2024 (one request), plus the announced auction calendar (kept as a capture in `v2_payloads`). A finished past year that an earlier backfill stored is skipped (the pipeline's top-up rows do not count), so an interrupted run resumes; the current year is always fetched again. Stores `fedops.repo_day`, `fedops.ref_rate`, `fedops.auction`, `fedops.buyback` and prints the earliest date stored for each. | Under a minute. The pipeline then keeps the last 3 weeks current on every run. |
 | `scripts/backfill_form4.py [--symbols A,B] [--years 5] [--limit N] [--sleep 0.3]` | For each Edge Lab tracked symbol (or `--symbols`): the symbol's CIK from SEC's ticker list, its EDGAR submissions file (older files only if `--years` reaches back to them) and one small Form 4 XML per filing not yet stored. Stores one `edgar.form4` observation per filing (see [data](data.md)). A symbol with no CIK (a fund) is reported and skipped. | A few minutes per symbol. Re-run it to pick up new filings; the pipeline does not fetch Form 4 itself. |
 

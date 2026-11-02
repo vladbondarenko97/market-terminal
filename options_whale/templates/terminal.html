@@ -61,6 +61,7 @@
                 <div id="tab-macro" class="tab-btn active" onclick="switchTab('macro')">MACRO DIRECTION</div>
                 <div id="tab-arbitrage" class="tab-btn" onclick="switchTab('arbitrage')">TIME ARBITRAGE</div>
                 <div id="tab-forecast" class="tab-btn" onclick="switchTab('forecast')"><span class="fc-rainbow-text">FORECAST LAB</span></div>
+                <label class="fans-tog" title="Overlay Kronos scenario fans (100 sampled paths) on Forecast Lab cards 1, 10 and 11. Off by default."><input type="checkbox" id="fansToggle"> KRONOS</label>
             </nav>
 
             <div id="macro-tab" class="tab-content flex-1 flex flex-col overflow-hidden">
@@ -1703,6 +1704,19 @@
                             <div id="fc15" class="fc-body"><div class="fc-muted">Loading…</div></div>
                         </div>
                     </div>
+                    <div class="rainbow-card lg:col-span-2" style="--fc-delay:-8.46s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">16 · SCENARIO LAB</div><div class="fc-sub">Kronos vs baseline scenario fans for every series · backtest and live score · click a fan to inspect its paths</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="openForecastFaq('fc16')" title="How to read this card">?</button>
+                                    <button class="fc-icon" onclick="toggleForecastFullscreen('fc16')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="copyForecastCard('fc16')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="fc16" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1869,6 +1883,7 @@
 
     <script src="/static/app.js"></script>
     <script src="/static/forecast.js"></script>
+    <script src="/static/fans.js"></script>
     <script src="/static/assistant.js"></script>
 </body>
 
