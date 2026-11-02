@@ -55,7 +55,7 @@ It is `missing` with a reason when the list is unavailable.
 ### Scenario fans (card 16 and the KRONOS toggle)
 
 Data contract: [scenario-fans-contract.md](scenario-fans-contract.md). The module is `options_whale/static/fans.js` (global `Fans`).
-It reads `GET /api/fans` and `GET /api/fans/scorecard` once per page load, and again after a RE-SCAN run finishes.
+It reads `GET /api/fans` and `GET /api/fans/scorecard` once per page load, again after a RE-SCAN run finishes, and again when the Forecast Lab loads a newer run than the fans came from (a scheduled or command-line run).
 
 - **Card 16 SCENARIO LAB** always shows (it is the showcase and loads when the tab opens): a two-sentence explanation, a grid of
   small fans for every series (click one to open the full panel with the inspector), and a leaderboard with one row per series and

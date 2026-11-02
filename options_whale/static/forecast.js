@@ -68,6 +68,7 @@ async function loadForecast(ticker) {
         if (json.status !== 'success') throw new Error(json.message || 'load failed');
         FC.data = json;
         const r = json.run || {};
+        if (window.Fans) Fans.sync(r.run_id);
         document.getElementById('fcRunInfo').textContent = `${FC.ticker} · run ${r.run_id || '—'} · ${r.generated_local || ''}`
             + (json.source_errors && Object.keys(json.source_errors).length ? ` · ${Object.keys(json.source_errors).length} source issue(s)` : '');
         [renderSignals, renderImplied, renderVolForecast, renderTrend, renderPositioning, renderFairValue, renderMacro,
