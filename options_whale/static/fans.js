@@ -215,7 +215,8 @@ const Fans = (() => {
             const s = st.series();
             q('.fans-ids').innerHTML = have.length > 1 ? have.map(id => `<button data-id="${esc(id)}" class="${id === st.id ? 'active' : ''}">${esc(all[id].label)}</button>`).join('') : '';
             q('.fans-models').innerHTML = [['both', 'Both'], ['kronos', 'Kronos'], ['baseline', 'Baseline']].map(([k, l]) => `<button data-m="${k}" class="${k === st.model ? 'active' : ''}">${l}</button>`).join('');
-            q('.fans-badge').innerHTML = `<span class="fans-tag">${esc(badge(st.id))}</span>${s.note ? ` <span class="fans-tag fans-warn">${esc(s.note)}</span>` : ''}`;
+            const verdict = s.freq === 'D' && ok(s.models && s.models.kronos) && ((S.fans && S.fans.kronos) || {}).verdict;   // measured on daily series only
+            q('.fans-badge').innerHTML = `<span class="fans-tag">${esc(badge(st.id))}</span>${verdict ? ` <span class="fans-tag fans-warn" title="Kronos ${esc(verdict)}">Kronos loses to baseline out of sample</span>` : ''}${s.note ? ` <span class="fans-tag fans-warn">${esc(s.note)}</span>` : ''}`;
             q('.fans-legend').innerHTML = `<span><i class="fans-sw fans-hist"></i>history</span><span><i class="fans-sw fans-pk"></i>Kronos paths · p10/p50/p90</span>
                 <span><i class="fans-sw fans-bandsw"></i>baseline 80% band</span>${(s.levels || []).length ? '<span><i class="fans-sw fans-level"></i>levels</span>' : ''}`;
             const ex = q('.fans-extra'); ex.innerHTML = opts.extra ? opts.extra(st.id, s) || '' : '';
@@ -275,6 +276,7 @@ const Fans = (() => {
             const kr = S.fans.kronos || {};
             el.innerHTML = `<p class="fans-lead">Each fan is 100 possible futures for one series: Kronos, a model trained on market candles, samples the paths, and the baseline reshuffles the series’ own past changes (or last years’ season for weekly data). A path shows what it would take for the market to get there, not why it would; the table shows which of the two has actually been calibrated on history (a good 80% band holds the real outcome 80% of the time).</p>
                 ${kr.status && kr.status !== 'fresh' ? `<div class="fc-note">Kronos: ${esc(kr.reason || kr.status)}</div>` : ''}
+                ${kr.verdict ? `<div class="fc-note">Kronos ${esc(kr.verdict)}: shown as a comparison, not a forecast. The table has the scores.</div>` : ''}
                 <div class="fans-grid"></div><div class="fans-detail"></div>
                 <div class="fc-sub" style="margin:10px 0 4px">LEADERBOARD</div><div class="fans-lbw">${leaderboard(ids)}</div>`;
             const detail = el.querySelector('.fans-detail');

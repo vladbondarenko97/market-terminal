@@ -62,9 +62,12 @@ moves, not seasonality, so the 8-week band sat entirely below the latest level. 
 (`eia.WPULEUS3`) independent weekly changes ignore mean reversion and the 90th percentile passed 100%. Both fans are
 shown with their scores and should be read with this in mind until the baseline is fixed.
 
-### Scenario fans (fans_v1): Kronos paths drift strongly on trending series
+### Scenario fans: Kronos loses to the baseline (drift fixed in fans_v2)
 
-Found 2026-10-31 on real data, consistent with the 2015–2026 spike backtest (Kronos lost to the bootstrap baseline on
-SPY, SLV and VIX). On the Oct 30 inputs the Kronos 20-day 80% band for HO=F was 2.63–3.77 against a last price of
-4.67, and for CL=F 78.7–92.4 against 104.4. The likely cause is the repository's input normalisation over a window of
-raw prices. Each card shows the Kronos scorecard next to the fan.
+Found 2026-10-31: fans_v1 fed Kronos raw prices, which it z-scores over a 400-bar window, so on trending series the
+fans drifted hard (on the Oct 30 inputs the HO=F 20-day 80% band was 2.63–3.77 against a last price of 4.67). Fixed
+2026-11-03 in `fans_v2`: Kronos is fed returns, at T 1.3, with a spread widening fitted on 2015–19. Out of sample
+(2020–26, 12 daily series, 516 origins) the drift is gone (1-month band hit 26% → 74%), but Kronos still loses to the
+bootstrap baseline: 1-month CRPS 8.4% vs 6.3% of price, band hit 74% vs 83%, no direction edge (47%). The cards say so
+(`kronos.verdict`). Re-run `scripts/backtest_fans.py` to store Kronos v2 backtest scores; the scorecard shows only
+current model versions.

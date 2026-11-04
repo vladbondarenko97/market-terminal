@@ -789,7 +789,7 @@ to `CME_Data`, and keeps the legacy ledger tables and CSV headers unchanged. See
 
 ## Scenario fans (Kronos)
 
-The pipeline's `fans` stage builds 100-path scenario fans for 23 series (see [methodology](methodology.md#scenario-fans-corefanspy-fans_version--fans_v1)).
+The pipeline's `fans` stage builds 100-path scenario fans for 23 series (see [methodology](methodology.md#scenario-fans-corefanspy-fans_version--fans_v2)).
 The baseline fans need nothing extra. The Kronos fans are optional and need torch plus the model weights, both installed by you once:
 
 ```bash
@@ -800,7 +800,7 @@ PORTFOLIO_DATA_DIR=... .venv/bin/python scripts/fetch_kronos.py     # downloads 
 The run itself never downloads: it loads from that folder, on `mps` when available, else `cpu` (`KRONOS_DEVICE` overrides). Without torch or the weights,
 or with `KRONOS_ENABLED=0`, the `kronos` part of `fans` is `missing` with the reason and everything else runs unchanged. The stage's time is in
 `stage_seconds.fans` and `fans.kronos.seconds` (about 18 s per 100 paths of one daily series on an M-series Mac, so a few minutes with Kronos in the run; seconds without). Live runs
-also log the fans' 1-week and 1-month forecasts (`kronos_fan_v1`, `baseline_fan_v1`) and grade the matured ones (stage `fans_graded`, `fans.live_score` observations). Card 9's scorecard leaves these models out. [Backtest script](#backfills): `scripts/backtest_fans.py`.
+also log the fans' 1-week and 1-month forecasts (`kronos_fan_v2`, `baseline_fan_v1`) and grade the matured ones (stage `fans_graded`, `fans.live_score` observations). Card 9's scorecard leaves these models out. [Backtest script](#backfills): `scripts/backtest_fans.py`.
 
 ## Backfills
 

@@ -1062,7 +1062,7 @@ def _guarded_fans(session, today, frames_hist, options):
         return fans.build_fans({"today": today, "daily": daily, "weekly": weekly, "options": options})
     except Exception as e:
         import traceback
-        return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}"), "version": "fans_v1",
+        return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}"), "version": "fans_v2",
                 "trace": lake.redact(traceback.format_exc()[-1500:])}
 
 

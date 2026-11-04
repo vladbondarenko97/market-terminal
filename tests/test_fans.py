@@ -35,8 +35,8 @@ def weekly(seed, n=700, level=1000.0):
 
 
 def fake_predictor(df, x_ts, y_ts, n, steps, seed):
-    rng = np.random.default_rng(seed)
-    return df["close"].iloc[-1] * np.exp(np.cumsum(rng.normal(0, 0.01, (n, steps)), axis=1))
+    """Kronos sees log returns and returns predicted close returns."""
+    return np.random.default_rng(seed).normal(0, 0.01, (n, steps))
 
 
 def inputs():
@@ -46,7 +46,7 @@ def inputs():
     return {"today": TODAY, "daily": daily, "weekly": wk, "options": options}
 
 
-KINFO = {"status": "fresh", "reason": None, "model": "Kronos-small", "params": "24.7M", "T": 1.0, "top_p": 0.9,
+KINFO = {"status": "fresh", "reason": None, "model": "Kronos-small", "params": "24.7M", "T": 1.3, "top_p": 0.9,
          "lookback": 400, "device": "cpu", "seconds": 0.0}
 
 
@@ -59,7 +59,7 @@ class Build(unittest.TestCase):
         s = self.out["series"]
         self.assertEqual(set(s), set(fans.DAILY) | set(fans.WEEKLY) | set(fans.DAYS) | {"crack.diesel", "crack.321"})
         self.assertEqual(self.out["status"], "fresh")             # the derived series' missing Kronos fans are by design
-        self.assertEqual(self.out["version"], "fans_v1")
+        self.assertEqual(self.out["version"], "fans_v2")
         for sid in list(fans.DAILY) + list(fans.WEEKLY):
             self.assertEqual({m["status"] for m in s[sid]["models"].values()}, {"fresh"}, sid)
 
@@ -198,6 +198,7 @@ class Build(unittest.TestCase):
     def test_load_kronos_reports_why(self):
         with mock.patch.object(fans.config, "KRONOS_ENABLED", False):
             self.assertIn("KRONOS_ENABLED", fans.load_kronos()[1]["reason"])
+            self.assertNotIn("verdict", fans.load_kronos()[1])            # no Kronos fan, no claim about it
         p, info = fans.load_kronos()
         self.assertIsNone(p)                                        # no torch in the test environment, or no weights
         self.assertEqual(info["status"], "missing")
@@ -219,6 +220,44 @@ class Build(unittest.TestCase):
         self.assertNotIn("20", s["by_horizon"])
 
 
+class KronosReturns(unittest.TestCase):
+    def test_returns_in_compounded_and_widened_paths_out(self):
+        seen = {}
+
+        def pred(df, x_ts, y_ts, n, steps, seed):
+            seen["df"] = df
+            return np.tile(np.linspace(-0.01, 0.01, n)[:, None], (1, steps))     # constant daily return per path
+        w = fans._clean_ohlcv(walk(3))
+        a = fans._kronos_paths(pred, w, fans.trading_dates(w.index[-1].date(), 20), 1, n=101)
+        last = w["close"].iloc[-1]
+        np.testing.assert_allclose(seen["df"]["close"].values, np.diff(np.log(w["close"].values[-fans.LOOKBACK - 1:])))
+        self.assertEqual(len(seen["df"]), fans.LOOKBACK)
+        lr = np.log(a / last)                                      # median path is flat; the extremes are widened by k
+        np.testing.assert_allclose(lr[50], 0, atol=1e-12)
+        np.testing.assert_allclose(lr[-1, [0, 4, 19]], [0.01 * 1.15, 0.05 * 1.15, 0.20 * 1.10])
+
+
+    def test_current_score(self):
+        self.assertTrue(fans.current_score("kronos", "kronos_fan_v2") and fans.current_score("baseline", "fans_v1"))
+        self.assertFalse(fans.current_score("kronos", "fans_v1") or fans.current_score("kronos", "fans_v2")
+                         or fans.current_score("nope", "fans_v1"))
+
+    def test_weekly_kronos_is_not_widened_and_skips_non_positive_values(self):
+        seen = {}
+
+        def pred(df, x_ts, y_ts, n, steps, seed):
+            seen["df"] = df
+            return np.tile(np.linspace(-0.01, 0.01, n)[:, None], (1, steps))
+        inp = inputs()
+        inp["weekly"]["WDISTUS1"].iloc[-10] = 0.0
+        out = fans.build_fans({**inp, "daily": {}}, predictor=pred, kinfo=KINFO)
+        k = out["series"]["eia.WDISTUS1"]["models"]["kronos"]
+        self.assertEqual(k["status"], "fresh")
+        self.assertTrue(np.isfinite(seen["df"].values).all())
+        last = out["series"]["eia.WDISTUS1"]["last"]
+        np.testing.assert_allclose(np.log(k["paths"][-1][0] / last), 0.01, atol=3e-4)   # 4 significant digits; widened would be 0.0115
+
+
 class Rows(unittest.TestCase):
     def test_forecast_rows_and_idempotent_insert(self):
         out = fans.build_fans(inputs(), predictor=fake_predictor, kinfo=KINFO)
@@ -227,7 +266,7 @@ class Rows(unittest.TestCase):
         # 12 daily series with a symbol? crack/eia/days have none: 12 symbols x 2 models x 2 horizons
         self.assertEqual(len(rows), 12 * 2 * 2)
         spy = {(r[3], r[4]): r for r in rows if r[2] == "SPY"}
-        self.assertEqual(set(spy), {("kronos_fan_v1", "1w"), ("kronos_fan_v1", "1m"), ("baseline_fan_v1", "1w"),
+        self.assertEqual(set(spy), {("kronos_fan_v2", "1w"), ("kronos_fan_v2", "1m"), ("baseline_fan_v1", "1w"),
                                     ("baseline_fan_v1", "1m")})
         r = spy[("baseline_fan_v1", "1w")]
         s = out["series"]["SPY"]
@@ -238,7 +277,7 @@ class Rows(unittest.TestCase):
         lake.migrate(conn)
         self.assertEqual(fans.record_fans(conn, ctx), len(rows))
         fans.record_fans(conn, ctx)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM v2_forecasts WHERE model LIKE '%_fan_v1'").fetchone()[0], len(rows))
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM v2_forecasts WHERE model LIKE '%_fan_v_'").fetchone()[0], len(rows))
         conn.close()
 
     def test_no_rows_without_fans(self):
@@ -260,7 +299,7 @@ class Routes(ApiCase):
         conn = self.commit({"fans": out})
         conn.close()
         body = self.get_json("/api/fans")
-        self.assertEqual((body["run_id"], body["generated_at"], body["version"]), ("r1", "2026-03-13T20:00:00+00:00", "fans_v1"))
+        self.assertEqual((body["run_id"], body["generated_at"], body["version"]), ("r1", "2026-03-13T20:00:00+00:00", "fans_v2"))
         self.assertEqual(len(body["series"]["SPY"]["models"]["kronos"]["paths"]), 100)
 
     def test_fans_route_missing_when_the_snapshot_has_none(self):
@@ -274,8 +313,13 @@ class Routes(ApiCase):
         conn = self.commit(ctx)
         self.assertEqual(self.get_json("/api/fans/scorecard")["status"], "missing")
         summary = {"by_horizon": {"20": {"n": 5, "band_hit": 0.8, "crps_pct": 1.2, "dir_hit": 0.6}}, "period": ["2015-01-02", "2026-01-02"]}
+        old = {**summary, "period": ["2015-01-02", "2025-01-02"]}
         lake.record_observations(conn, [lake.obs("fans.backtest", "2026-01-02", entity="SPY", dims={"model": "kronos"},
-                                                 value=summary, source="t")])
+                                                 value=summary, source="t", derivation="kronos_fan_v2"),
+                                        lake.obs("fans.backtest", "2026-02-02", entity="SPY", dims={"model": "kronos"},
+                                                 value=old, source="t", derivation="fans_v1"),     # older Kronos: ignored
+                                        lake.obs("fans.backtest", "2026-02-02", entity="SPY", dims={"model": "baseline"},
+                                                 value=old, source="t", derivation="fans_v1")])   # baseline unchanged: kept
         # logged forecasts whose target date has passed, graded by the pipeline from the run's own closes
         run = {"run_id": "r1", "generated_at": "2026-03-13T20:00:00+00:00"}
         fans.record_fans(conn, {"run": run, "fans": out})
@@ -293,7 +337,7 @@ class Routes(ApiCase):
         self.assertEqual(live["by_horizon"]["1w"]["n"], 1)
         self.assertEqual(live["pending"], 0)
         self.assertEqual(live["graded_through"], "2026-04-30")
-        self.assertNotIn("backtest", spy["baseline"])
+        self.assertEqual(spy["baseline"]["backtest"], old)
 
     def test_scorecard_route_pending_is_always_present(self):
         out = fans.build_fans(inputs(), predictor=fake_predictor, kinfo=KINFO)
@@ -314,6 +358,10 @@ class Grading(unittest.TestCase):
         lake.migrate(conn)
         fans.record_fans(conn, {"run": {"run_id": "r1", "generated_at": "2026-03-13T20:00:00+00:00"}, "fans": out})
         closes = pd.Series(100.0, index=pd.bdate_range("2026-03-01", "2026-12-31"))
+        with lake._WRITE_LOCK, conn:                               # a fan row logged under an older version stays out too
+            conn.execute("INSERT INTO v2_forecasts (run_id, created_at, symbol, model, horizon, target_date, spot, p_up, lower68, "
+                         "upper68, direction, vol) VALUES ('r0', '2026-03-12T20:00:00+00:00', 'SPY', 'kronos_fan_v1', '1w', "
+                         "'2026-03-19', 100, 0.5, 99, 101, 'UP', 0.2)")
         card9 = forecast.scorecard(conn, lambda s: closes, "SPY")
         self.assertEqual((card9["graded"], card9["pending"], card9["logged"]), ([], 0, 0))
         fan = forecast.scorecard(conn, lambda s: closes, "SPY", only=tuple(fans.FAN_MODELS.values()))
