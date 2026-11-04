@@ -32,6 +32,7 @@ if ROOT_DIR not in sys.path:
 import config
 from config import DATA_DIR as _DATA_DIR, DB_PATH as _V2_DB_PATH, PROJECT_ROOT as _PROJECT_ROOT
 from core.chaos import CHAOS_VERSION
+from core.fans import FANS_VERSION
 from core import forecast as _v2fc, lake as _v2lake, metrics, positions as _v2pos, runlock
 from quant_engine import QuantEngine
 
@@ -1790,7 +1791,7 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/fans/scorecard" format="json" source="stored">
-      <description>Per series and model: backtest (stored by scripts/backtest_fans.py: per horizon n, band hit p10-p90, CRPS as % of price, direction hit, period) and live (stored fans.live_score, graded by the pipeline from logged kronos_fan_v1 / baseline_fan_v1 forecasts: n, coverage68, hit_rate per horizon, pending, graded_through). status missing when neither exists.</description>
+      <description>Per series and model: backtest (stored by scripts/backtest_fans.py: per horizon n, band hit p10-p90, CRPS as % of price, direction hit, period) and live (stored fans.live_score, graded by the pipeline from logged kronos_fan_v2 / baseline_fan_v1 forecasts: n, coverage68, hit_rate per horizon, pending, graded_through). Current FANS_VERSION only. status missing when neither exists.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/chaos/history" format="json" source="stored">
@@ -3058,18 +3059,19 @@ def api_fans():
 @app.route('/api/fans/scorecard', methods=['GET'])
 @guarded("Scenario fans scorecard")
 def api_fans_scorecard():
-    """Per series and model: the stored walk-forward backtest and the pipeline's stored live grading (fans.live_score)."""
+    """Per series and model: the stored walk-forward backtest and the pipeline's stored live grading (fans.live_score),
+    current FANS_VERSION only (an older version scored a different model)."""
     conn = _open_readonly()
     if conn is None:
         return _not_initialised()
     try:
         out = {}
-        for r in conn.execute("SELECT entity, dims_json, value_json FROM v2_observations WHERE metric_id = 'fans.backtest' "
-                              "ORDER BY observed_at, obs_id"):      # newest last: it overwrites
+        for r in conn.execute("SELECT entity, dims_json, value_json FROM v2_observations WHERE metric_id = 'fans.backtest' AND derivation = ? "
+                              "ORDER BY observed_at, obs_id", (FANS_VERSION,)):      # newest last: it overwrites
             model = json.loads(r["dims_json"]).get("model")
             out.setdefault(r["entity"], {}).setdefault(model, {})["backtest"] = json.loads(r["value_json"])
-        for r in conn.execute("SELECT entity, dims_json, value_json FROM v2_observations WHERE metric_id = 'fans.live_score' "
-                              "ORDER BY observed_at, obs_id"):      # written by the pipeline after each live run; newest last
+        for r in conn.execute("SELECT entity, dims_json, value_json FROM v2_observations WHERE metric_id = 'fans.live_score' AND derivation = ? "
+                              "ORDER BY observed_at, obs_id", (FANS_VERSION,)):      # by the pipeline after each live run; newest last
             model = json.loads(r["dims_json"]).get("model")
             out.setdefault(r["entity"], {}).setdefault(model, {})["live"] = json.loads(r["value_json"])
     except sqlite3.OperationalError as exc:

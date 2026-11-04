@@ -17,14 +17,17 @@ import pandas as pd
 import config
 from core import market_calendar
 
-FANS_VERSION = "fans_v1"
+FANS_VERSION = "fans_v2"
 N_PATHS = 100
 DAILY_STEPS = 20
 WEEKLY_STEPS = 8
 BOOT_DAYS = 504                  # trailing daily log returns the bootstrap resamples
 SEASON_YEARS = 10
 LOOKBACK = 400
-KRONOS_T, KRONOS_TOP_P = 1.0, 0.9
+KRONOS_T, KRONOS_TOP_P = 1.3, 0.9
+KRONOS_SPREAD = ((5, 1.15), (20, 1.10))   # (step, k): log spread around the median widened by k, fitted on 2015-19 CRPS
+KRONOS_VERDICT = ("loses to baseline out of sample: 2020-26 walk-forward, 12 daily series, 1m CRPS 8.4% vs 6.3% of price, "
+                  "80% band hit 74% vs 83%, direction 47%")
 QUANTILES = {"p10": 10, "p25": 25, "p50": 50, "p75": 75, "p90": 90}
 REASON_JOINT = "Phase 3: needs jointly sampled legs"
 WEEKLY_NOTE = "experimental: weekly single values, not candles"
@@ -167,6 +170,7 @@ def seasonal_paths(frame, future_dates, seed, n=N_PATHS):
 def load_kronos():
     """(predictor_fn, info) or (None, info) with info["reason"]. Loads ONLY from config.KRONOS_DIR; no network."""
     info = {"model": "Kronos-small", "params": "24.7M", "T": KRONOS_T, "top_p": KRONOS_TOP_P, "lookback": LOOKBACK,
+            "input": "log returns vs previous close", "spread": dict(KRONOS_SPREAD), "verdict": KRONOS_VERDICT,
             "device": None, "seconds": 0.0}
     if not config.KRONOS_ENABLED:
         return None, {**info, "status": "missing", "reason": "disabled: KRONOS_ENABLED=0"}
@@ -201,20 +205,32 @@ def load_kronos():
 
 
 
+def _to_returns(w):
+    """OHLC as log(x / previous close), volume as is. Kronos z-scores its window, and raw trending prices put the last
+    bar far from the window mean, so the fans drifted (fans_v1); returns are close to stationary."""
+    pc = w["close"].shift(1)
+    r = pd.DataFrame({c: np.log(w[c] / pc) for c in ("open", "high", "low", "close")})
+    r["volume"] = w["volume"]
+    return r.iloc[1:]
+
+
 def _kronos_paths(predictor, window, future_dates, seed, n=N_PATHS):
-    """window: DataFrame open/high/low/close/volume with a DatetimeIndex."""
-    w = window.tail(LOOKBACK)
+    """window: DataFrame open/high/low/close/volume with a DatetimeIndex (positive values). Kronos sees returns; its
+    close returns are compounded from the last close, then widened by KRONOS_SPREAD around the median."""
+    w = _to_returns(window.tail(LOOKBACK + 1))
     if len(w) < 60:
         return None
     x_ts = pd.Series(w.index)
     y_ts = pd.Series(pd.to_datetime(list(future_dates)))
-    a = np.asarray(predictor(w.reset_index(drop=True), x_ts, y_ts, n, len(future_dates), seed), dtype=float)
-    if a.shape != (n, len(future_dates)) or not np.isfinite(a).all():
-        raise ValueError(f"Kronos returned an unusable array {a.shape}")
-    return a
+    r = np.asarray(predictor(w.reset_index(drop=True), x_ts, y_ts, n, len(future_dates), seed), dtype=float)
+    if r.shape != (n, len(future_dates)) or not np.isfinite(r).all():
+        raise ValueError(f"Kronos returned an unusable array {r.shape}")
+    lp = np.log(window["close"].iloc[-1]) + np.cumsum(r, axis=1)
+    med = np.median(lp, axis=0)
+    k = np.interp(np.arange(1, lp.shape[1] + 1), *zip(*KRONOS_SPREAD))
+    return np.exp(med + k * (lp - med))
 
 
-# ------------------------------------------------------------------ series assembly
 def _hist(dates, values, k):
     return {"dates": [pd.Timestamp(d).date().isoformat() for d in dates[-k:]], "values": _round(np.asarray(values)[-k:])}
 
@@ -376,7 +392,7 @@ def _finish(series, kinfo, kron_s, errors):
 
 
 # ------------------------------------------------------------------ forecast log
-FAN_MODELS = {"kronos": "kronos_fan_v1", "baseline": "baseline_fan_v1"}
+FAN_MODELS = {"kronos": "kronos_fan_v2", "baseline": "baseline_fan_v1"}
 FAN_HORIZONS = (("1w", 5), ("1m", 20))      # forecast.HORIZONS keys and their trading-day steps
 
 
