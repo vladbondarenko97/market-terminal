@@ -6,7 +6,7 @@ Two endpoints, each behind its own secret path segment, so holdings can be share
     /<MCP_BROKERAGE_TOKEN>/mcp   get_brokerage_positions   (live SnapTrade holdings)
 A blank token switches that endpoint off; a token under 24 characters, or the same token twice, stops the server. Only GETs of the whitelisted
 sources are made. The secret path is the only guard (MCP clients cannot send our own header): treat each link like a password.
-Run: .venv/bin/python mcp_server.py   (listens on 127.0.0.1:MCP_PORT; a Cloudflare Tunnel publishes it, see docs/operations.md)
+Run: .venv/bin/python mcp_server.py   (listens on MCP_HOST, default 127.0.0.1, port MCP_PORT; a Cloudflare Tunnel publishes it, see docs/operations.md)
 """
 import asyncio
 import contextlib
@@ -331,4 +331,5 @@ def build_app():
 
 
 if __name__ == "__main__":
-    uvicorn.run(build_app(), host="127.0.0.1", port=PORT, log_level="warning")
+    # MCP_HOST stays 127.0.0.1 on the Mac; the Docker image sets 0.0.0.0 (compose publishes the port on 127.0.0.1 only).
+    uvicorn.run(build_app(), host=config.optional_env("MCP_HOST", default="127.0.0.1"), port=PORT, log_level="warning")

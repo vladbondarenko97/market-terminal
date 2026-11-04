@@ -1,0 +1,62 @@
+# docker compose up --build          the web terminal on http://127.0.0.1:8080 and the MCP server on 127.0.0.1:8787
+# docker compose --profile collector up -d   also run the scheduled pipeline (needs your keys in .env)
+# Settings come from .env (optional: without it the terminal starts and every data source reports "missing").
+x-common: &common
+  image: ghcr.io/vladbondarenko97/market-terminal:latest
+  build: .
+  env_file:
+    - { path: .env, required: false }
+  volumes:
+    - data:/data
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *common
+    command: python options_whale/api_router.py
+    environment:
+      PORTFOLIO_DATA_DIR: /data      # set here so a Mac path in .env cannot point inside the container
+      TZ: America/Chicago
+      OPTIONS_WHALE_PORT: "8080"
+    ports:
+      - "127.0.0.1:${OPTIONS_WHALE_PORT:-8080}:8080"   # loopback only; put your own proxy in front to share it
+
+  mcp:
+    <<: *common
+    command: python mcp_server.py
+    environment:
+      PORTFOLIO_DATA_DIR: /data      # set here so a Mac path in .env cannot point inside the container
+      TZ: America/Chicago
+      MCP_PORT: "8787"
+      TERMINAL_URL: http://web:8080
+    depends_on: [web]
+    restart: on-failure:3          # with no MCP_*_TOKEN set it exits by design (see README); do not loop on that
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8787}:8787"
+
+  # The launchd schedule, as a loop: wakes each minute (Chicago time), runs the pipeline at 8:31, 11:30 and 14:45
+  # Monday to Friday, and the rule-alert check every 15 minutes from 8:35 to 14:50. The pipeline itself still gates on
+  # the NYSE calendar, so holidays are skipped. SCHEDULED_RUNS=1 is what lets scheduled runs go ahead.
+  collector:
+    <<: *common
+    profiles: [collector]
+    environment:
+      PORTFOLIO_DATA_DIR: /data      # set here so a Mac path in .env cannot point inside the container
+      TZ: America/Chicago
+      SCHEDULED_RUNS: "1"
+    command:
+      - sh
+      - -c
+      - |
+        while :; do
+          sleep $$((60 - $$(date +%S | sed 's/^0//')))
+          d=$$(date +%u); h=$$(date +%-H); m=$$(date +%-M)
+          [ "$$d" -le 5 ] || continue
+          case "$$h:$$m" in
+            8:31|11:30|14:45) python main_pipeline.py run --trigger scheduled ;;
+          esac
+          if [ "$$h" -ge 8 ] && [ "$$h" -le 14 ] && [ $$((m % 15)) -eq 5 ]; then python main_pipeline.py signal-alerts; fi
+        done
+
+volumes:
+  data:

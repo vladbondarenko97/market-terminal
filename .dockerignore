@@ -1,0 +1,17 @@
+# Keep secrets, local state and history out of the image.
+.env
+.env.*
+!.env.example
+index.keys.js
+.venv
+.git
+.github
+.claude
+.DS_Store
+__pycache__
+*.pyc
+# Your data never goes into the image; it lives in the /data volume.
+CME_Data
+# Not needed at runtime (the Mac menu bar app and the unit tests).
+menubar
+tests

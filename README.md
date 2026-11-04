@@ -195,6 +195,19 @@ Everything is optional. Copy `.env.example` to `.env` (`setup.sh` does it) and f
 The repository does not include a database or a sample run, and it should not: several sources (CME, Databento,
 eBay) have their own terms on passing their data on. If you fork it, keep `CME_Data/` and `.env` out of git the same way.
 
+## Docker
+
+```bash
+docker compose up --build        # the terminal on http://127.0.0.1:8080, the MCP server on 127.0.0.1:8787
+```
+
+Settings come from `.env` if you have one (without it the terminal starts and each data source reports "missing").
+The MCP server stays off until you set `MCP_MARKET_TOKEN` and/or `MCP_BROKERAGE_TOKEN` (24+ characters).
+Data lives in the `data` volume, and both ports are published on 127.0.0.1 only. The scheduled pipeline is a
+separate profile, so it only runs when you ask for it: `docker compose --profile collector up -d` (needs your keys in
+`.env`; Chicago-time schedule as in [Operations](docs/operations.md), NYSE holidays skipped). The image has no
+browser, so the optional CME download is skipped. A prebuilt image is `ghcr.io/vladbondarenko97/market-terminal:latest`.
+
 ## What you get
 
 <details>
