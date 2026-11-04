@@ -70,7 +70,7 @@ A rule that fails says "no measured edge". [For quants → How evidence is grade
 For each series, 100 simulated paths over 20 NYSE trading days (daily series, holidays skipped) or 8 weeks (EIA series), from two sources.
 - **Kronos** (Kronos-small, MIT, a foundation model for candlesticks; T 1.3, top_p 0.9, lookback 400 bars, 512 context). It is fed returns, not prices:
   each bar as log(open, high, low, close / previous close), and its predicted close returns are compounded from the last close. The log spread around
-  the median is then widened by 1.15 at step 5 and 1.10 at step 20 (fitted on 2015-19). 100 independent samples
+  the median is then widened by 1.15 at step 5 and 1.10 at step 20 (fitted on 2015-19; daily series only, weekly EIA fans are not widened). 100 independent samples
   (one window repeated 100 times with `sample_count=1`; averaging would erase the spread). Weekly EIA series are fed as single values
   (open = high = low = close, volume 0) and marked experimental. Derived series (crack spreads, days of supply) have no Kronos fan until the legs can be sampled jointly.
 - **Baseline.** Daily: bootstrap of the trailing 504 daily log returns. Weekly: each step resamples a historical week-over-week change from the same week of year (plus or minus one week), last 10 years.

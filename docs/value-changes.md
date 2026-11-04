@@ -51,9 +51,11 @@ Newest first, then the changes that came with the v2 pipeline.
   (ULSD median -22%). T and the widening were picked on 2015-19 and tested once on 2020-26 (12 daily series, 516
   origins): 1-month CRPS 8.4% of price (price-fed v1 settings: 13.5%; baseline 6.3%), 80% band hit 74% (v1: 26%;
   baseline 83%). Kronos still loses to the baseline, and the card says so (`kronos.verdict`). The forecast log model is
-  now `kronos_fan_v2`; `kronos_fan_v1` rows stay as they are and are no longer graded. `GET /api/fans/scorecard` reads
-  only `fans_v2` observations, so backtest scores show again after `scripts/backtest_fans.py` is re-run. Baseline fans
-  are unchanged (`baseline_fan_v1`).
+  now `kronos_fan_v2`; `kronos_fan_v1` rows stay as they are and are no longer graded. Backtest and live-score observations are now
+  tagged with the model version (`derivation` = `kronos_fan_v2` / `baseline_fan_v1`), and `GET /api/fans/scorecard`
+  reads only current versions: the baseline keeps its v1 scores, Kronos shows scores again after
+  `scripts/backtest_fans.py` is re-run. Weekly EIA Kronos fans are fed returns too but not widened (fitted on daily
+  series only). Baseline fans are unchanged (`baseline_fan_v1`).
 - **Scenario fans added** (`fans_v1`, 2026-10-31): new snapshot key `fans`: per series 100 simulated paths and p10/p25/p50/p75/p90
   per step from Kronos-small (T 1.0, top_p 0.9, 400-bar lookback, independent samples) and from a baseline (bootstrap of the
   trailing 504 daily log returns; seasonal week-over-week resampling for EIA series; joint bootstrap for the crack spreads and

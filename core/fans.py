@@ -26,8 +26,8 @@ SEASON_YEARS = 10
 LOOKBACK = 400
 KRONOS_T, KRONOS_TOP_P = 1.3, 0.9
 KRONOS_SPREAD = ((5, 1.15), (20, 1.10))   # (step, k): log spread around the median widened by k, fitted on 2015-19 CRPS
-KRONOS_VERDICT = ("loses to baseline out of sample: 2020-26 walk-forward, 12 daily series, 1m CRPS 8.4% vs 6.3% of price, "
-                  "80% band hit 74% vs 83%, direction 47%")
+# The result of the fans_v2 retest (docs/value-changes.md has the numbers); the scorecard shows the current scores.
+KRONOS_VERDICT = "loses to the baseline out of sample (2020-26 walk-forward, 12 daily series)"
 QUANTILES = {"p10": 10, "p25": 25, "p50": 50, "p75": 75, "p90": 90}
 REASON_JOINT = "Phase 3: needs jointly sampled legs"
 WEEKLY_NOTE = "experimental: weekly single values, not candles"
@@ -170,7 +170,7 @@ def seasonal_paths(frame, future_dates, seed, n=N_PATHS):
 def load_kronos():
     """(predictor_fn, info) or (None, info) with info["reason"]. Loads ONLY from config.KRONOS_DIR; no network."""
     info = {"model": "Kronos-small", "params": "24.7M", "T": KRONOS_T, "top_p": KRONOS_TOP_P, "lookback": LOOKBACK,
-            "input": "log returns vs previous close", "spread": dict(KRONOS_SPREAD), "verdict": KRONOS_VERDICT,
+            "input": "log returns vs previous close", "spread": dict(KRONOS_SPREAD),
             "device": None, "seconds": 0.0}
     if not config.KRONOS_ENABLED:
         return None, {**info, "status": "missing", "reason": "disabled: KRONOS_ENABLED=0"}
@@ -200,7 +200,7 @@ def load_kronos():
         out = pred.predict_batch([df] * n, [x_ts] * n, [y_ts] * n, pred_len=steps, T=KRONOS_T, top_p=KRONOS_TOP_P,
                                  sample_count=1, verbose=False)
         return np.stack([o["close"].values for o in out])
-    return predict, {**info, "status": "fresh", "reason": None, "device": device}
+    return predict, {**info, "status": "fresh", "reason": None, "device": device, "verdict": KRONOS_VERDICT}
 
 
 
@@ -214,18 +214,20 @@ def _to_returns(w):
     return r.iloc[1:]
 
 
-def _kronos_paths(predictor, window, future_dates, seed, n=N_PATHS):
+def _kronos_paths(predictor, window, future_dates, seed, n=N_PATHS, widen=True):
     """window: DataFrame open/high/low/close/volume with a DatetimeIndex (positive values). Kronos sees returns; its
-    close returns are compounded from the last close, then widened by KRONOS_SPREAD around the median."""
-    w = _to_returns(window.tail(LOOKBACK + 1))
-    if len(w) < 60:
+    close returns are compounded from the last close, then (daily only: widen) widened by KRONOS_SPREAD around the median."""
+    if len(window) < 60:
         return None
+    w = _to_returns(window.tail(LOOKBACK + 1))
     x_ts = pd.Series(w.index)
     y_ts = pd.Series(pd.to_datetime(list(future_dates)))
     r = np.asarray(predictor(w.reset_index(drop=True), x_ts, y_ts, n, len(future_dates), seed), dtype=float)
     if r.shape != (n, len(future_dates)) or not np.isfinite(r).all():
         raise ValueError(f"Kronos returned an unusable array {r.shape}")
     lp = np.log(window["close"].iloc[-1]) + np.cumsum(r, axis=1)
+    if not widen:
+        return np.exp(lp)
     med = np.median(lp, axis=0)
     k = np.interp(np.arange(1, lp.shape[1] + 1), *zip(*KRONOS_SPREAD))
     return np.exp(med + k * (lp - med))
@@ -246,11 +248,11 @@ def _series(id_, label, group, unit, freq, symbol, last_date, last, hist, dates,
             "dates": [d.isoformat() for d in dates], "models": models, "levels": levels or [], "note": note}
 
 
-def _try_kronos(predictor, kinfo, window, dates, seed):
+def _try_kronos(predictor, kinfo, window, dates, seed, widen=True):
     if predictor is None:
         return _missing(kinfo.get("reason") or "Kronos unavailable")
     try:
-        a = _kronos_paths(predictor, window, dates, seed)
+        a = _kronos_paths(predictor, window, dates, seed, widen=widen)
         return _missing("history too short for Kronos") if a is None else _model(a)
     except Exception as e:
         from core import lake
@@ -280,10 +282,10 @@ def build_fans(inputs, predictor=None, kinfo=None):
     kinfo.setdefault("seconds", 0.0)
     series, kron_s, errors = {}, 0.0, []
 
-    def run_kronos(window, dates, seed):
+    def run_kronos(window, dates, seed, widen=True):
         nonlocal kron_s
         t0 = time.monotonic()
-        m = _try_kronos(predictor, kinfo, window, dates, seed)
+        m = _try_kronos(predictor, kinfo, window, dates, seed, widen)
         kron_s += time.monotonic() - t0
         if m["status"] == "error":
             errors.append(m["reason"])
@@ -337,8 +339,9 @@ def build_fans(inputs, predictor=None, kinfo=None):
         dates = [s.index[-1].date() + timedelta(days=7 * (k + 1)) for k in range(WEEKLY_STEPS)]
         seed = _seed(sid, run_key)
         sp = seasonal_paths(s.to_frame("v"), dates, seed)
-        w = pd.DataFrame({"open": s, "high": s, "low": s, "close": s, "volume": 0.0})
-        models = {"kronos": run_kronos(w, dates, seed),
+        pos = s[s > 0]                    # Kronos sees log returns; the spread widening was fitted on daily series only
+        w = pd.DataFrame({"open": pos, "high": pos, "low": pos, "close": pos, "volume": 0.0})
+        models = {"kronos": run_kronos(w, dates, seed, widen=False),
                   "baseline": _missing("history too short", kind="seasonal") if sp is None
                   else _model(sp[..., 0], kind="seasonal")}
         series[sid] = _series(sid, label, "inventories", unit, "W", None, s.index[-1], s.iloc[-1],
@@ -393,6 +396,14 @@ def _finish(series, kinfo, kron_s, errors):
 
 # ------------------------------------------------------------------ forecast log
 FAN_MODELS = {"kronos": "kronos_fan_v2", "baseline": "baseline_fan_v1"}
+ALL_FAN_MODELS = frozenset(FAN_MODELS.values()) | {"kronos_fan_v1"}     # every name ever logged: card 9 leaves them all out
+
+
+def current_score(model, derivation):
+    """Does a stored fans.backtest(_origin) / fans.live_score row score the current version of `model`? Rows are tagged
+    with the model's own name (FAN_MODELS); rows from before that carry "fans_v1", which only the v1 models still match."""
+    name = FAN_MODELS.get(model)
+    return bool(name) and (derivation == name or (derivation == "fans_v1" and name.endswith("_fan_v1")))
 FAN_HORIZONS = (("1w", 5), ("1m", 20))      # forecast.HORIZONS keys and their trading-day steps
 
 
@@ -456,7 +467,7 @@ def grade_live(conn, ctx):
             by_h = {g["horizon"]: {"n": g["n"], "coverage68": g["coverage68"], "hit_rate": g["hit_rate"]} for g in sc["graded"]}
             recs.append(lake.obs(LIVE_METRIC, run["generated_at"], entity=sid, dims={"model": mk},
                                  value={"by_horizon": by_h, "pending": sc["pending"], "graded_through": sc["last_price_date"]},
-                                 source="core/fans.py", derivation=FANS_VERSION))
+                                 source="core/fans.py", derivation=name))
     return lake.record_observations(conn, recs, run_id=run["run_id"])
 
 

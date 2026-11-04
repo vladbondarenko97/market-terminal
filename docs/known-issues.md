@@ -69,5 +69,5 @@ fans drifted hard (on the Oct 30 inputs the HO=F 20-day 80% band was 2.63–3.77
 2026-11-03 in `fans_v2`: Kronos is fed returns, at T 1.3, with a spread widening fitted on 2015–19. Out of sample
 (2020–26, 12 daily series, 516 origins) the drift is gone (1-month band hit 26% → 74%), but Kronos still loses to the
 bootstrap baseline: 1-month CRPS 8.4% vs 6.3% of price, band hit 74% vs 83%, no direction edge (47%). The cards say so
-(`kronos.verdict`). Re-run `scripts/backtest_fans.py` to store fans_v2 backtest scores; the scorecard shows only the
-current version.
+(`kronos.verdict`). Re-run `scripts/backtest_fans.py` to store Kronos v2 backtest scores; the scorecard shows only
+current model versions.

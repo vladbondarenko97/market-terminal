@@ -3,7 +3,7 @@ full daily history and writes lake observations to the database in PORTFOLIO_DAT
 
 For every Nth trading day since --start it simulates --paths paths 20 days ahead, scores the 5- and 20-day
 horizons (p10-p90 band hit, CRPS as % of price, direction hit) and stores one observation per origin
-(`fans.backtest_origin`, so a re-run skips origins finished under the current FANS_VERSION), then one summary per series and model
+(`fans.backtest_origin`, tagged with the model's version name, so a re-run skips origins finished for the current model version), then one summary per series and model
 (`fans.backtest`, read by GET /api/fans/scorecard). Additive only. Needs requirements-kronos.txt and the
 weights (scripts/fetch_kronos.py) for the Kronos column; without them only the baseline is scored.
 
@@ -46,8 +46,8 @@ def main():
         print(f"Kronos skipped: {kinfo['reason']}")
     wanted = [s for s in a.series.split(",") if s] or list(fans.DAILY)
     done = {(r["entity"], r["dims_json"]) for r in conn.execute(
-        "SELECT entity, dims_json FROM v2_observations WHERE metric_id = 'fans.backtest_origin' AND derivation = ?",
-        (fans.FANS_VERSION,))}
+        "SELECT entity, dims_json, derivation FROM v2_observations WHERE metric_id = 'fans.backtest_origin'")
+        if fans.current_score(lake.json.loads(r["dims_json"]).get("model"), r["derivation"])}
     for sid in wanted:
         label, group, unit, sym = fans.DAILY[sid]
         df = history(sym)
@@ -82,19 +82,19 @@ def main():
                 for h in HORIZONS:
                     res[str(h)] = fans.score_origin(paths[:, h - 1], close[o - 1], close[o - 1 + h])
                 recs.append(lake.obs("fans.backtest_origin", day, entity=sid, dims={"model": m, "origin": day}, value=res,
-                                     source=SOURCE, derivation=fans.FANS_VERSION))
+                                     source=SOURCE, derivation=fans.FAN_MODELS[m]))
             lake.record_observations(conn, recs)
             print(f"{sid} {day} +{len(recs)}", flush=True)
         for m in ("baseline", "kronos"):
             rows = [lake.json.loads(r["value_json"]) for r in conn.execute(
-                "SELECT value_json, dims_json FROM v2_observations WHERE metric_id = 'fans.backtest_origin' AND entity = ? "
-                "AND derivation = ?", (sid, fans.FANS_VERSION))
-                if lake.json.loads(r["dims_json"]).get("model") == m]
+                "SELECT value_json, dims_json, derivation FROM v2_observations WHERE metric_id = 'fans.backtest_origin' "
+                "AND entity = ?", (sid,))
+                if lake.json.loads(r["dims_json"]).get("model") == m and fans.current_score(m, r["derivation"])]
             if rows:
                 s = fans.summarise_scores(rows, HORIZONS)
                 s["paths"] = a.paths
                 lake.record_observations(conn, [lake.obs("fans.backtest", s["period"][1], entity=sid, dims={"model": m}, value=s,
-                                                         source=SOURCE, derivation=fans.FANS_VERSION)])
+                                                         source=SOURCE, derivation=fans.FAN_MODELS[m])])
                 print(f"{sid} {m}: {s['by_horizon']}")
 
 

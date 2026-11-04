@@ -7,7 +7,7 @@ ctx["fans"] = {
   "status": "fresh" | "partial" | "missing" | "error", "reason": str|None, "version": "fans_v2",
   "kronos": {"status": "fresh"|"missing"|"error", "reason": str|None, "model": "Kronos-small", "params": "24.7M",
              "T": 1.3, "top_p": 0.9, "lookback": 400, "input": "log returns vs previous close",
-             "spread": {"5": 1.15, "20": 1.10}, "verdict": str, "device": "mps"|"cpu", "seconds": float},
+             "spread": {"5": 1.15, "20": 1.10}, "verdict": str (only when status is fresh), "device": "mps"|"cpu", "seconds": float},
   "series": {
     "<id>": {
       "label": "SPY", "group": "markets"|"fuels"|"inventories"|"derived", "unit": "$"|"$/bbl"|"$/gal"|"%"|"kb"|"days"|"index",
@@ -37,4 +37,4 @@ Series ids (Phase 1):
 
 Routes (stored data only):
 - `GET /api/fans` → the latest snapshot's `fans` block plus `run_id` and `generated_at`.
-- `GET /api/fans/scorecard` → `{status: "success"|"missing", reason, series: {<id>: {kronos|baseline: {backtest?, live?}}}}`. `backtest` (stored by scripts/backtest_fans.py): `{by_horizon: {"5": {n, band_hit, crps_pct, dir_hit}, "20": {...}}, period: [first, last origin], paths}` (`band_hit` = share inside p10-p90, `crps_pct` = CRPS as % of price, `dir_hit` = median direction right). `live` (stored by the pipeline after each live run as the `fans.live_score` observation, graded from the run's own series history; only `kronos_fan_v2` / `baseline_fan_v1` rows, so card 9's scorecard is unaffected): `{pending, by_horizon: {"1w": {n, coverage68, hit_rate}, "1m": {...}}, graded_through}`; `pending` counts only fan rows and is always present (0 when none). The grading window is the ~90 trading days of `hist`, so it is a rolling score. Only observations stored under the current `FANS_VERSION` count. A series, model or part with nothing stored is absent.
+- `GET /api/fans/scorecard` → `{status: "success"|"missing", reason, series: {<id>: {kronos|baseline: {backtest?, live?}}}}`. `backtest` (stored by scripts/backtest_fans.py): `{by_horizon: {"5": {n, band_hit, crps_pct, dir_hit}, "20": {...}}, period: [first, last origin], paths}` (`band_hit` = share inside p10-p90, `crps_pct` = CRPS as % of price, `dir_hit` = median direction right). `live` (stored by the pipeline after each live run as the `fans.live_score` observation, graded from the run's own series history; only `kronos_fan_v2` / `baseline_fan_v1` rows, so card 9's scorecard is unaffected): `{pending, by_horizon: {"1w": {n, coverage68, hit_rate}, "1m": {...}}, graded_through}`; `pending` counts only fan rows and is always present (0 when none). The grading window is the ~90 trading days of `hist`, so it is a rolling score. Only observations that score a current model version count (`fans.current_score`: derivation `kronos_fan_v2` / `baseline_fan_v1`, or the pre-v2 tag `fans_v1` for the unchanged baseline). A series, model or part with nothing stored is absent.
