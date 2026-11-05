@@ -58,6 +58,8 @@ async function askLoadStatus() {
         if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
         const be = document.getElementById('askBackend'), savedBe = localStorage.getItem('terminal_ask_backend');
         be.value = ['local', 'claude'].includes(savedBe) ? savedBe : (s.engine || 'local');
+        be.querySelector('option[value=local]').disabled = !!s.local_off;   // the dash switch stopped the 9B: Sonnet only
+        if (s.local_off) be.value = 'claude';
         askSyncBackend();
     } catch (e) {
         dot.className = 'ask-dot bad';

@@ -23,6 +23,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import requests
 from flask import Response, jsonify, request, stream_with_context
@@ -1011,8 +1012,14 @@ CLAUDE_TOOLS = [{"name": t["function"]["name"], "description": t["function"]["de
                 for t in LOCAL_TOOLS]
 
 
+NINEB_OFF = Path.home() / ".imessage_9b_off"   # the assistant's dash Local/Cloud switch (agents/mcp) on Cloud: oMLX is stopped
+
+
 def pick_engine(requested=None):
-    """The engine for one question: the request's if it names a known one, else ASSISTANT_ENGINE, else local."""
+    """The engine for one question: claude while the 9B is switched off, else the request's if it names a known one,
+    else ASSISTANT_ENGINE, else local."""
+    if NINEB_OFF.exists():
+        return "claude"
     default = str(optional_env("ASSISTANT_ENGINE", default="local")).strip().lower()
     default = default if default in ENGINES else "local"
     asked = str(requested or "").strip().lower()
@@ -1384,7 +1391,7 @@ def register(app, port=None):
         except Exception as e:
             local["error"] = type(e).__name__
         threading.Thread(target=brief, args=(app,), daemon=True).start()     # the page is open: have the brief ready
-        return jsonify({"status": "success", "version": 3, "local": local, "engine": pick_engine(),
+        return jsonify({"status": "success", "version": 3, "local": local, "engine": pick_engine(), "local_off": NINEB_OFF.exists(),
                         "claude": {"model": CLAUDE_MODEL, "key": bool(optional_env("ANTHROPIC_API_KEY", default=""))},
                         "sources": [{"name": n, "params": list(p), "about": d} for n, (_r, p, d) in SOURCES.items()]})
 

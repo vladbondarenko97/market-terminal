@@ -11,6 +11,7 @@ import support  # noqa: E402,F401  (sets up the environment)
 
 sys.path.insert(0, str(support.ROOT / "options_whale"))
 import assistant as A  # noqa: E402
+A.NINEB_OFF = Path("/nonexistent/.imessage_9b_off")   # never the live dash switch (on Cloud the engine checks would see claude)
 from flask import Flask, jsonify  # noqa: E402
 
 
@@ -95,6 +96,9 @@ class ClaudeEngine(unittest.TestCase):
             self.assertEqual(A.pick_engine("nonsense"), "claude")
         with mock.patch.dict(os.environ, {"ASSISTANT_ENGINE": "gpt"}):
             self.assertEqual(A.pick_engine(), "local")
+        with mock.patch.object(A, "NINEB_OFF", NS(exists=lambda: True)):   # the 9B switched off: Sonnet whatever was asked
+            self.assertEqual(A.pick_engine("local"), "claude")
+            self.assertEqual(A.pick_engine(), "claude")
 
     def test_tools_are_converted_once(self):
         self.assertEqual([t["name"] for t in A.CLAUDE_TOOLS], ["fetch_source", "calc"])
