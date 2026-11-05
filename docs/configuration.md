@@ -260,6 +260,6 @@ Places that read `.env` without importing `config`, and why:
 | `ASSISTANT_LOCAL_API_KEY` | `local` | Bearer token for the server, if it wants one |
 | `ASSISTANT_LOCAL_REASONING` | `auto` | `auto`, `none`, `low`, `medium`, `high`. `auto`: none to route or answer from the brief, low over fetched data |
 | `ASSISTANT_ENGINE` | `local` | Console assistant engine: `local` (the model server above) or `claude` (Claude Sonnet, `claude-sonnet-5-5`, through the Anthropic SDK, same sources and guards). The console's engine menu (Local 9B / Sonnet) overrides it per question; an unknown value falls back to this one. The Oracle container sets `claude` |
-| `ANTHROPIC_API_KEY` | none | Key for the `claude` engine. On the Mac: `security add-generic-password -U -s market-terminal -a ANTHROPIC_API_KEY -w` (the Keychain fills it); elsewhere an environment variable. Without it the Sonnet engine answers with an error and the local engine is unaffected |
+| `ANTHROPIC_API_KEY` | none | Key for the `claude` engine. On the Mac: `security add-generic-password -U -s market-terminal -a ANTHROPIC_API_KEY -w` (the Keychain fills it); elsewhere an environment variable. Without it the Sonnet engine answers with an error and the local engine is unaffected | A key that isn't scoped to a workspace also needs `ANTHROPIC_WORKSPACE_ID` (the `wrkspc_…` ID from console.anthropic.com → Settings → Workspaces).
 | `ASSISTANT_MAX_SECONDS` | `150` | Time limit per question |
 | `ASSISTANT_MAX_CHARS` | `12000` | Size limit per data source shown to the model |

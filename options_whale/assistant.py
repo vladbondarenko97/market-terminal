@@ -1253,7 +1253,8 @@ def run_local(app, conv, question, model, reasoning=None):
 
 def _claude_client(key):
     import anthropic                      # imported here so the local engine works without the package
-    return anthropic.Anthropic(api_key=key, timeout=MAX_SECONDS)
+    ws = optional_env("ANTHROPIC_WORKSPACE_ID", default="")   # needed by a key that isn't scoped to one workspace
+    return anthropic.Anthropic(api_key=key, timeout=MAX_SECONDS, default_headers={"anthropic-workspace-id": ws} if ws else None)
 
 
 def run_claude(app, conv, question, model=CLAUDE_MODEL, reasoning=None):
