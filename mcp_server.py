@@ -283,6 +283,10 @@ def build_app():
             await send({"type": "http.response.body", "body": b""})
 
     async def app(scope, receive, send):
+        if scope["type"] == "http" and scope["path"] == "/healthz":   # liveness for the front door's per-connector check; no log line
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+            return
         if scope["type"] == "lifespan":
             try:
                 async with contextlib.AsyncExitStack() as stack:

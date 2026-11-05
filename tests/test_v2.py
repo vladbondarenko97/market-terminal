@@ -584,7 +584,6 @@ class T10Assistant(unittest.TestCase):
             self.assertIn("GET", m.group(1) or "'GET'", f"{name}: {route} does not accept GET")
         for forbidden in ("/run", "/api/silver_eagle_prices"):
             self.assertNotIn(forbidden, [r for r, _p, _d in A.SOURCES.values()])  # a pipeline run and a 2-minute web scrape
-        self.assertNotIn("claude", (ROOT / "options_whale" / "assistant.py").read_text().lower())   # one engine, on this machine
 
     def test_shape_outlines_large_data_and_opens_paths(self):
         sys.path.insert(0, str(ROOT / "options_whale"))

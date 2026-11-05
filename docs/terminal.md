@@ -447,6 +447,10 @@ Code engine and added the routing below.
   gamma and the VMRI history are pre-shaped (`SHAPERS`): plain contract names, local times, trades apart from cash
   tickets, gamma distances already worked out, the VMRI history as one dated row per week with the date the record
   starts. `calc` does the arithmetic. `/run` and the eBay scrape are not sources.
+- **Engines.** `ASSISTANT_ENGINE=local|claude` (default `local`) picks who answers; the console's engine menu (Local 9B / Sonnet)
+  overrides it per question (`engine` in the `/api/assistant/ask` body). `claude` runs Claude Sonnet (`claude-sonnet-5-5`) through the
+  Anthropic SDK with the same prompt, sources and guards; effort is fixed at medium and `ASSISTANT_LOCAL_REASONING` does not apply.
+  It needs `ANTHROPIC_API_KEY` (Keychain item in service `market-terminal` on the Mac). The `done` event reports engine `claude`.
 - **Reasoning.** `ASSISTANT_LOCAL_REASONING=auto` (default): no deliberate reasoning to answer from the brief or to
   pick sources, brief reasoning once data has been fetched. Sent both as `reasoning_effort` and as the chat
   template's `enable_thinking`, so oMLX and vLLM-style servers really switch it off.

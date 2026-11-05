@@ -39,6 +39,9 @@ LOCAL_API_KEY = optional_env("ASSISTANT_LOCAL_API_KEY", default="local")
 LOCAL_REASONING = optional_env("ASSISTANT_LOCAL_REASONING", default="auto")      # auto | none | low | medium | high
 MAX_SECONDS = float(optional_env("ASSISTANT_MAX_SECONDS", default="150"))        # per question; a runaway answer is cut here
 MAX_TOKENS = 2000         # per model call, reasoning included: bounds a model that starts looping
+ENGINES = ("local", "claude")
+CLAUDE_MODEL = "claude-sonnet-5-5"
+CLAUDE_MAX_TOKENS = 8000  # per call; Sonnet's adaptive thinking shares it with the answer
 
 MAX_ROUNDS = 8            # tool-call rounds per question
 MAX_CALLS = 16            # distinct tool calls per question
@@ -1004,6 +1007,18 @@ LOCAL_TOOLS = [
         "parameters": {"type": "object", "required": ["expression"], "properties": {"expression": {"type": "string"}}}}},
 ]
 
+CLAUDE_TOOLS = [{"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]}
+                for t in LOCAL_TOOLS]
+
+
+def pick_engine(requested=None):
+    """The engine for one question: the request's if it names a known one, else ASSISTANT_ENGINE, else local."""
+    default = str(optional_env("ASSISTANT_ENGINE", default="local")).strip().lower()
+    default = default if default in ENGINES else "local"
+    asked = str(requested or "").strip().lower()
+    return asked if asked in ENGINES else default
+
+
 # ---------------------------------------------------------------- conversations (in memory)
 _CONVERSATIONS = OrderedDict()      # id -> {"turns": [(question, answer)]}
 
@@ -1236,6 +1251,124 @@ def run_local(app, conv, question, model, reasoning=None):
            "seconds": round(time.monotonic() - started, 1), "empty": not answer}
 
 
+def _claude_client(key):
+    import anthropic                      # imported here so the local engine works without the package
+    return anthropic.Anthropic(api_key=key, timeout=MAX_SECONDS)
+
+
+def run_claude(app, conv, question, model=CLAUDE_MODEL, reasoning=None):
+    """Same events as run_local, answered by Claude (Anthropic SDK, manual tool-use loop with streaming). `reasoning` is
+    ignored: effort is fixed at medium. ponytail: the guards are copied from run_local, not shared; factor out if they diverge."""
+    key = optional_env("ANTHROPIC_API_KEY", default="")
+    if not key:
+        yield {"type": "error", "message": "No ANTHROPIC_API_KEY: add it with security add-generic-password -U -s market-terminal -a ANTHROPIC_API_KEY -w"}
+        return
+    import anthropic
+    sysmsgs = system_messages(app)
+    system = [{"type": "text", "text": sysmsgs[0]["content"]},
+              {"type": "text", "text": sysmsgs[1]["content"], "cache_control": {"type": "ephemeral"}}]     # tools + system are cached
+    messages, shown = [], list(sysmsgs)
+    for q, a in conv["turns"][-MAX_TURNS_KEPT:]:
+        messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
+        shown += [{"content": q}, {"content": a}]
+    asked = f"{question}\n\n(Asked {datetime.now().strftime('%A %B %-d, %Y, %-I:%M %p')} local time.)"
+    started, lookups, tokens, fetched = time.monotonic(), 0, 0, set()
+    entry = guide_entry(app, question)
+    if entry:
+        fetched.add("guide")
+        yield {"type": "tool", "name": "guide", "detail": "fetched for a what-is question", "bytes": len(entry), "failed": False}
+        asked += ("\n\nGuide entry for this question (source guide, already fetched): explain from it, in plain words, and "
+                  f"fetch the source it names for today's reading.\n{entry}")
+    messages.append({"role": "user", "content": asked})
+    shown.append({"content": asked})
+    answer, seen, pushed_back, nudged = "", set(), False, False
+    client, _round = _claude_client(key), 0
+    while _round <= MAX_ROUNDS:
+        if _round == MAX_ROUNDS:                         # out of rounds: no tools, say so
+            messages.append({"role": "user", "content": "No lookups are left. Answer now in plain words from the results above."})
+        args = {"model": model, "max_tokens": CLAUDE_MAX_TOKENS, "system": system, "messages": messages,
+                "thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "medium"}}
+        if _round < MAX_ROUNDS:
+            args["tools"] = CLAUDE_TOOLS                 # tool_choice stays auto: forcing a call is a 400 on Sonnet 5.5
+        late = False
+        try:
+            with client.messages.stream(**args) as stream:
+                for ev in stream:
+                    if time.monotonic() - started > MAX_SECONDS:
+                        late = True
+                        break
+                    if ev.type == "content_block_delta":
+                        if ev.delta.type == "text_delta":
+                            yield {"type": "delta", "text": ev.delta.text}
+                        elif ev.delta.type == "thinking_delta":
+                            yield {"type": "thinking", "text": ev.delta.thinking}
+                final = None if late else stream.get_final_message()
+        except anthropic.APIError as e:
+            yield {"type": "error", "message": f"Claude API error ({type(e).__name__}): {str(e)[:200]}"}
+            return
+        if late:
+            yield {"type": "error", "message": f"No answer within {MAX_SECONDS:.0f} s. Ask a narrower question."}
+            break
+        _round += 1
+        tokens += final.usage.output_tokens or 0
+        uses = [b for b in final.content if b.type == "tool_use"]
+        if final.stop_reason == "refusal":
+            yield {"type": "error", "message": "Claude declined to answer this request."}
+            return
+        if final.stop_reason == "max_tokens" and uses:
+            yield {"type": "error", "message": "Claude ran out of room mid-lookup. Ask a narrower question."}
+            return
+        text = "".join(b.text for b in final.content if b.type == "text")
+        if not uses:
+            answer = text.strip()
+            unfetched = claims_unfetched_source(answer, fetched)
+            push = None
+            if unfetched and lookups and not pushed_back and _round < MAX_ROUNDS:
+                push = (f"You named {', '.join(unfetched)} as a source but never fetched it, so its numbers are not real. "
+                        "Call fetch_source for it, then answer from the result.")
+            elif not lookups and not pushed_back and _round < MAX_ROUNDS and (UNFETCHED_CLAIM.search(answer)
+                                                                              or unsourced_numbers(answer, shown) or unfetched):
+                push = "You haven't fetched any source yet. Call fetch_source for the source that holds this, then answer from the result."
+            if push:
+                pushed_back = True
+            elif not nudged and _round < MAX_ROUNDS and unfinished(answer):
+                nudged, push = True, "Write the final answer now, with the numbers, for the user. No working notes."
+            if push:
+                yield {"type": "replace", "text": ""}
+                messages += [{"role": "assistant", "content": final.content}, {"role": "user", "content": push}]
+                continue
+            break
+        if text:
+            yield {"type": "replace", "text": ""}        # text before a tool call is working notes, not the answer
+        messages.append({"role": "assistant", "content": final.content})      # whole turn back unchanged, thinking blocks included
+        results = []
+        for b in uses:
+            a = b.input if isinstance(b.input, dict) else {}
+            call = (b.name, json.dumps(a, sort_keys=True))
+            if call in seen or len(seen) >= MAX_CALLS:
+                result = "error: you already have this result (or made too many calls). Answer now with what you have."
+            else:
+                seen.add(call)
+                if b.name == "calc":
+                    result = calc(a.get("expression", ""))
+                    yield {"type": "tool", "name": "calc", "detail": f"{a.get('expression', '')} = {result}"}
+                elif b.name == "fetch_source":
+                    lookups += 1
+                    fetched.add(resolve_source(a.get("source", ""), a.get("path", ""))[0])
+                    result = fetch_source(app, a.get("source", ""), a.get("query", ""), a.get("path", ""), a.get("last", 10))
+                    yield {"type": "tool", "name": a.get("source", "?"), "detail": " ".join(str(x) for x in (a.get("query"), a.get("path")) if x),
+                           "bytes": len(result), "failed": result.startswith("error:")}
+                else:
+                    result = f"error: unknown tool {b.name}"
+            shown.append({"content": result})
+            results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})
+        messages.append({"role": "user", "content": results})      # every result of one assistant turn in one user message
+    if answer:
+        conv["turns"].append((question, answer))
+    yield {"type": "done", "engine": "claude", "model": model, "lookups": lookups, "tokens": tokens,
+           "seconds": round(time.monotonic() - started, 1), "empty": not answer}
+
+
 # ---------------------------------------------------------------- routes
 def register(app, port=None):
     @app.route("/api/assistant/status", methods=["GET"])
@@ -1250,7 +1383,8 @@ def register(app, port=None):
         except Exception as e:
             local["error"] = type(e).__name__
         threading.Thread(target=brief, args=(app,), daemon=True).start()     # the page is open: have the brief ready
-        return jsonify({"status": "success", "version": 3, "local": local,
+        return jsonify({"status": "success", "version": 3, "local": local, "engine": pick_engine(),
+                        "claude": {"model": CLAUDE_MODEL, "key": bool(optional_env("ANTHROPIC_API_KEY", default=""))},
                         "sources": [{"name": n, "params": list(p), "about": d} for n, (_r, p, d) in SOURCES.items()]})
 
     @app.route("/api/assistant/data", methods=["GET"])
@@ -1271,7 +1405,10 @@ def register(app, port=None):
         if not question:
             return jsonify({"status": "error", "message": "question is empty"}), 400
         conv = _conversation(str(body.get("conversation") or uuid.uuid4())[:64])
-        events = run_local(app, conv, question, str(body.get("model") or LOCAL_MODEL)[:120], body.get("reasoning"))
+        if pick_engine(body.get("engine")) == "claude":
+            events = run_claude(app, conv, question)
+        else:
+            events = run_local(app, conv, question, str(body.get("model") or LOCAL_MODEL)[:120], body.get("reasoning"))
 
         def stream():
             try:

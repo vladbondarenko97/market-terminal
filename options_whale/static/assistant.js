@@ -45,6 +45,7 @@ function askMarkdown(src) {
     return out.join('');
 }
 
+const askBackend = () => document.getElementById('askBackend').value || 'local';
 const askModel = () => document.getElementById('askEngine').value || '';
 
 async function askLoadStatus() {
@@ -55,12 +56,28 @@ async function askLoadStatus() {
         const models = [local.model, ...local.models.filter(m => m !== local.model)];
         sel.innerHTML = models.map((m, i) => `<option value="${askEsc(m)}">${askEsc(m)}${i ? '' : ' (default)'}</option>`).join('');
         if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
-        dot.className = `ask-dot ${local.ok ? (local.model_installed ? 'ok' : 'warn') : 'bad'}`;
-        dot.title = (local.ok ? `Model server running at ${local.url}` + (local.model_installed ? '' : ` · default model ${local.model} is not installed`)
-                              : `Model server not reachable at ${local.url}`) + ` · ${s.sources.length} read-only data sources`;
+        const be = document.getElementById('askBackend'), savedBe = localStorage.getItem('terminal_ask_backend');
+        be.value = ['local', 'claude'].includes(savedBe) ? savedBe : (s.engine || 'local');
+        askSyncBackend();
     } catch (e) {
         dot.className = 'ask-dot bad';
         dot.title = 'Assistant unavailable: ' + e.message;
+    }
+}
+
+// The local model menu only matters for the local engine; the dot shows whether the chosen engine is ready.
+function askSyncBackend() {
+    const claude = askBackend() === 'claude', s = ASK.status, dot = document.getElementById('askDot');
+    document.getElementById('askEngine').classList.toggle('hidden', claude);
+    if (!s) return;
+    if (claude) {
+        dot.className = `ask-dot ${s.claude && s.claude.key ? 'ok' : 'bad'}`;
+        dot.title = s.claude && s.claude.key ? `Claude ${s.claude.model}` : 'No ANTHROPIC_API_KEY on the server';
+    } else {
+        const l = s.local;
+        dot.className = `ask-dot ${l.ok ? (l.model_installed ? 'ok' : 'warn') : 'bad'}`;
+        dot.title = (l.ok ? `Model server running at ${l.url}` + (l.model_installed ? '' : ` · default model ${l.model} is not installed`)
+                          : `Model server not reachable at ${l.url}`) + ` · ${s.sources.length} read-only data sources`;
     }
 }
 
@@ -144,7 +161,7 @@ async function askSend(text) {
     ASK.abort = new AbortController();
     try {
         const res = await fetch(`${API_BASE}/api/assistant/ask`, { method: 'POST', signal: ASK.abort.signal,
-            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, model, conversation: ASK.conversation }) });
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, model, engine: askBackend(), conversation: ASK.conversation }) });
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
         const reader = res.body.getReader(), decoder = new TextDecoder();
         let buffer = '';
@@ -175,6 +192,7 @@ document.addEventListener('DOMContentLoaded', () => {
     input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!ASK.busy) askSend(); } });
     input.addEventListener('input', () => { input.style.height = ''; input.style.height = Math.min(input.scrollHeight, 96) + 'px'; });
     document.getElementById('askEngine').addEventListener('change', e => localStorage.setItem('terminal_ask_engine', e.target.value));
+    document.getElementById('askBackend').addEventListener('change', e => { localStorage.setItem('terminal_ask_backend', e.target.value); askSyncBackend(); });
     askLoadStatus();
     askShowSuggestions();
 });

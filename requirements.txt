@@ -5,6 +5,7 @@ pandas
 numpy
 scipy
 requests
+anthropic
 urllib3
 databento
 playwright

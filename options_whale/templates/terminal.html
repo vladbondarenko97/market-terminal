@@ -1734,6 +1734,8 @@
                             <span id="askDot" class="ask-dot" title="Checking the model server…"></span>Console<span
                                 class="console-title-ext"> Engine v3 · ask the terminal</span></span>
                         <div class="console-actions flex flex-wrap gap-3 items-center">
+                            <select id="askBackend" class="ask-select" onclick="event.stopPropagation()" title="Which engine answers"
+                                aria-label="Engine"><option value="local">Local 9B</option><option value="claude">Sonnet</option></select>
                             <select id="askEngine" class="ask-select" onclick="event.stopPropagation()" title="Which model on this machine answers"
                                 aria-label="Answering model"><option value="">Local model</option></select>
                             <button onclick="event.stopPropagation(); askNewChat()" class="text-[9px] text-zinc-500 hover:text-white uppercase"
