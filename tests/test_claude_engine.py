@@ -1,4 +1,5 @@
 """The Claude engine of the console assistant, with the Anthropic client mocked (no network, no key)."""
+import json
 import os
 import sys
 import unittest
@@ -11,6 +12,7 @@ import support  # noqa: E402,F401  (sets up the environment)
 
 sys.path.insert(0, str(support.ROOT / "options_whale"))
 import assistant as A  # noqa: E402
+A.CLAUDE_CLI = ""   # these tests drive the API engine; ClaudeCodeEngine below covers the Claude Code path
 A.NINEB_OFF = Path("/nonexistent/.imessage_9b_off")   # never the live dash switch (on Cloud the engine checks would see claude)
 from flask import Flask, jsonify  # noqa: E402
 
@@ -99,6 +101,25 @@ class ClaudeEngine(unittest.TestCase):
         with mock.patch.object(A, "NINEB_OFF", NS(exists=lambda: True)):   # the 9B switched off: Sonnet whatever was asked
             self.assertEqual(A.pick_engine("local"), "claude")
             self.assertEqual(A.pick_engine(), "claude")
+
+    def test_claude_code_turns_keep_the_event_shape(self):
+        """Claude Code (subscription) instead of the API: one `claude -p` per turn, tool calls as JSON, same events."""
+        outs = iter(['{"tool_calls": [{"name": "fetch_source", "input": {"source": "gex", "query": "ticker=SPY"}}]}',
+                     '{"answer": "The call wall is 775."}'])
+        prompts = []
+
+        def run(cmd, input=None, **kw):
+            prompts.append((cmd, input))
+            return NS(returncode=0, stdout=json.dumps({"result": next(outs), "usage": {"output_tokens": 5}}), stderr="")
+        with mock.patch.object(A, "CLAUDE_CLI", "claude"), mock.patch.object(A.subprocess, "run", run), \
+             mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}), mock.patch.object(A, "brief", lambda app: "BRIEF TEXT"):
+            events = list(A.run_claude(_app(), {"turns": []}, "where is the gex call wall right now"))
+        self.assertEqual([e["type"] for e in events], ["tool", "delta", "done"])
+        self.assertEqual(events[1]["text"], "The call wall is 775.")
+        self.assertEqual((events[-1]["model"], events[-1]["lookups"], events[-1]["tokens"]), ("claude-sonnet-5-5 (Claude Code)", 1, 10))
+        self.assertEqual(prompts[0][0][:4], ["claude", "-p", "--model", "claude-sonnet-5-5"])
+        self.assertIn("775", prompts[1][1])   # the tool result reached the second turn
+        self.assertIn('"name": "fetch_source"', prompts[1][1])
 
     def test_tools_are_converted_once(self):
         self.assertEqual([t["name"] for t in A.CLAUDE_TOOLS], ["fetch_source", "calc"])

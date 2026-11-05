@@ -16,7 +16,10 @@ import bisect
 import json
 import math
 import operator
+import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -24,6 +27,7 @@ import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace as NS
 
 import requests
 from flask import Response, jsonify, request, stream_with_context
@@ -1264,14 +1268,65 @@ def _claude_client(key):
     return anthropic.Anthropic(api_key=key, timeout=MAX_SECONDS, default_headers={"anthropic-workspace-id": ws} if ws else None)
 
 
+# Claude Code on this machine (the subscription, no API key): the Mac. Without it (Oracle's container) the API engine answers.
+CLAUDE_CLI = shutil.which("claude") or next((str(p) for p in [Path.home() / ".local/bin/claude"] if p.exists()), "")
+CLAUDE_CODE_FLAGS = ["--tools", "", "--no-session-persistence", "--output-format", "json", "--strict-mcp-config",
+                     "--mcp-config", '{"mcpServers":{}}', "--disable-slash-commands", "--setting-sources", ""]   # slim: no CLAUDE.md, skills or MCP
+
+
+def _claude_code_turn(system, messages, tools, model):
+    """One model turn through Claude Code (`claude -p`) in the SDK's shape (content blocks, stop_reason, usage), so
+    run_claude's loop and guards work unchanged. Tools travel as JSON in the prompt; the answer arrives whole, not streamed."""
+    def show(content):
+        if isinstance(content, str):
+            return content
+        out = []
+        for b in content:
+            b = b if isinstance(b, dict) else vars(b)
+            if b.get("type") == "text":
+                out.append(b["text"])
+            elif b.get("type") == "tool_use":
+                out.append("CALLED " + json.dumps({"name": b["name"], "input": b["input"]}))
+            elif b.get("type") == "tool_result":
+                out.append(f"RESULT: {b['content']}")
+        return "\n".join(out)
+    convo = "\n\n".join(f"{m['role'].upper()}: {show(m['content'])}" for m in messages)
+    how = ("TOOLS (JSON schemas): " + json.dumps([{k: t[k] for k in ("name", "description", "input_schema")} for t in tools])
+           + '\n\nReply with ONLY one JSON object, no prose or code fences: {"tool_calls": [{"name": ..., "input": {...}}]} to call '
+           'tools, or {"answer": "..."} with the final answer.') if tools else "Reply with the final answer text only."
+    r = subprocess.run([CLAUDE_CLI, "-p", "--model", model, "--system-prompt", "\n\n".join(b["text"] for b in system), *CLAUDE_CODE_FLAGS],
+                       input=convo + "\n\n" + how, capture_output=True, text=True, timeout=MAX_SECONDS, cwd="/tmp",
+                       env={k: v for k, v in os.environ.items() if not k.startswith("ANTHROPIC_")})   # the API key would replace the subscription login
+    try:
+        d = json.loads(r.stdout)
+    except ValueError:
+        d = {}
+    if r.returncode or not d.get("result") or d.get("is_error"):
+        raise RuntimeError((r.stderr or r.stdout or "no output").strip()[:200])
+    out, blocks = d["result"].strip(), None
+    try:
+        j = json.loads(out[out.find("{"): out.rfind("}") + 1]) if tools else None
+    except ValueError:
+        j = None
+    if isinstance(j, dict) and j.get("tool_calls"):
+        blocks = [NS(type="tool_use", id=f"cc_{i}", name=c.get("name"), input=c.get("input") or {}) for i, c in enumerate(j["tool_calls"])]
+    elif isinstance(j, dict) and "answer" in j:
+        out = str(j["answer"])
+    blocks = blocks or [NS(type="text", text=out)]
+    return NS(content=blocks, stop_reason="tool_use" if blocks[0].type == "tool_use" else "end_turn",
+              usage=NS(output_tokens=(d.get("usage") or {}).get("output_tokens") or 0))
+
+
 def run_claude(app, conv, question, model=CLAUDE_MODEL, reasoning=None):
-    """Same events as run_local, answered by Claude (Anthropic SDK, manual tool-use loop with streaming). `reasoning` is
-    ignored: effort is fixed at medium. ponytail: the guards are copied from run_local, not shared; factor out if they diverge."""
-    key = optional_env("ANTHROPIC_API_KEY", default="")
-    if not key:
+    """Same events as run_local, answered by Claude: through Claude Code when it is installed (CLAUDE_CLI), else the Anthropic
+    SDK (manual tool-use loop with streaming). `reasoning` is ignored: effort is fixed at medium.
+    ponytail: the guards are copied from run_local, not shared; factor out if they diverge."""
+    key, via_code = optional_env("ANTHROPIC_API_KEY", default=""), bool(CLAUDE_CLI)
+    if not key and not via_code:
         yield {"type": "error", "message": "No ANTHROPIC_API_KEY: add it with security add-generic-password -U -s market-terminal -a ANTHROPIC_API_KEY -w"}
         return
-    import anthropic
+    if not via_code:
+        import anthropic
     sysmsgs = system_messages(app)
     system = [{"type": "text", "text": sysmsgs[0]["content"]},
               {"type": "text", "text": sysmsgs[1]["content"], "cache_control": {"type": "ephemeral"}}]     # tools + system are cached
@@ -1290,7 +1345,7 @@ def run_claude(app, conv, question, model=CLAUDE_MODEL, reasoning=None):
     messages.append({"role": "user", "content": asked})
     shown.append({"content": asked})
     answer, seen, pushed_back, nudged = "", set(), False, False
-    client, _round = _claude_client(key), 0
+    client, _round = None if via_code else _claude_client(key), 0
     while _round <= MAX_ROUNDS:
         if _round == MAX_ROUNDS:                         # out of rounds: no tools, say so
             messages.append({"role": "user", "content": "No lookups are left. Answer now in plain words from the results above."})
@@ -1300,19 +1355,27 @@ def run_claude(app, conv, question, model=CLAUDE_MODEL, reasoning=None):
             args["tools"] = CLAUDE_TOOLS                 # tool_choice stays auto: forcing a call is a 400 on Sonnet 5.5
         late = False
         try:
-            with client.messages.stream(**args) as stream:
-                for ev in stream:
-                    if time.monotonic() - started > MAX_SECONDS:
-                        late = True
-                        break
-                    if ev.type == "content_block_delta":
-                        if ev.delta.type == "text_delta":
-                            yield {"type": "delta", "text": ev.delta.text}
-                        elif ev.delta.type == "thinking_delta":
-                            yield {"type": "thinking", "text": ev.delta.thinking}
-                final = None if late else stream.get_final_message()
-        except anthropic.APIError as e:
-            yield {"type": "error", "message": f"Claude API error ({type(e).__name__}): {str(e)[:200]}"}
+            if via_code:
+                final = _claude_code_turn(system, messages, args.get("tools"), model)
+                for b in final.content:
+                    if b.type == "text":
+                        yield {"type": "delta", "text": b.text}
+            else:
+                with client.messages.stream(**args) as stream:
+                    for ev in stream:
+                        if time.monotonic() - started > MAX_SECONDS:
+                            late = True
+                            break
+                        if ev.type == "content_block_delta":
+                            if ev.delta.type == "text_delta":
+                                yield {"type": "delta", "text": ev.delta.text}
+                            elif ev.delta.type == "thinking_delta":
+                                yield {"type": "thinking", "text": ev.delta.thinking}
+                    final = None if late else stream.get_final_message()
+        except Exception as e:
+            if not via_code and not isinstance(e, anthropic.APIError):
+                raise
+            yield {"type": "error", "message": f"Claude {'Code' if via_code else 'API'} error ({type(e).__name__}): {str(e)[:200]}"}
             return
         if late:
             yield {"type": "error", "message": f"No answer within {MAX_SECONDS:.0f} s. Ask a narrower question."}
@@ -1373,7 +1436,7 @@ def run_claude(app, conv, question, model=CLAUDE_MODEL, reasoning=None):
         messages.append({"role": "user", "content": results})      # every result of one assistant turn in one user message
     if answer:
         conv["turns"].append((question, answer))
-    yield {"type": "done", "engine": "claude", "model": model, "lookups": lookups, "tokens": tokens,
+    yield {"type": "done", "engine": "claude", "model": model + (" (Claude Code)" if via_code else ""), "lookups": lookups, "tokens": tokens,
            "seconds": round(time.monotonic() - started, 1), "empty": not answer}
 
 
@@ -1392,7 +1455,8 @@ def register(app, port=None):
             local["error"] = type(e).__name__
         threading.Thread(target=brief, args=(app,), daemon=True).start()     # the page is open: have the brief ready
         return jsonify({"status": "success", "version": 3, "local": local, "engine": pick_engine(), "local_off": NINEB_OFF.exists(),
-                        "claude": {"model": CLAUDE_MODEL, "key": bool(optional_env("ANTHROPIC_API_KEY", default=""))},
+                        "claude": {"model": CLAUDE_MODEL, "key": bool(CLAUDE_CLI or optional_env("ANTHROPIC_API_KEY", default="")),
+                                   "via": "claude code" if CLAUDE_CLI else "api"},
                         "sources": [{"name": n, "params": list(p), "about": d} for n, (_r, p, d) in SOURCES.items()]})
 
     @app.route("/api/assistant/data", methods=["GET"])
