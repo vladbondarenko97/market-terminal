@@ -20,7 +20,7 @@ PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forex
                    "ebay": 1, "cme": 1,
                    "cboe": 1, "finra": 1, "treasury": 1, "rss": 6,
                    "federalreserve": 1, "nyfed": 2,
-                   "sec": 2, "alpaca": 3}
+                   "sec": 2, "alpaca": 3, "wikipedia": 1, "gdelt": 1}
 
 
 class SourceUnavailable(Exception):

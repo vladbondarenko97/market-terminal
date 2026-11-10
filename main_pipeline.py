@@ -13,8 +13,10 @@
                                                                  # observations as CSV (read-only; fetched_at = when it was known)
   python main_pipeline.py narrative [--engine local|claude] [--model NAME] [--run RUN_ID] [--budget-usd X]
                                                                  # write + validate + store a Briefing for a saved run; delivers nothing
-  python main_pipeline.py bars [--symbol SYM]... [--backfill] [--deep] [--from-lake] [--offline]
+  python main_pipeline.py bars [--symbol SYM]... [--backfill] [--deep] [--from-lake] [--fans] [--scheduled] [--offline]
                                                                  # CHART tab bars into CHART_STORE (own lock; not the run lock)
+  python main_pipeline.py headlines [--date D | --backfill FROM [--to D]] [--offline]
+                                                                 # CHART day-view headlines (Wikipedia, GDELT) into CHART_STORE
   python main_pipeline.py status                                 # last 10 runs + the current run's status
   python main_pipeline.py ntfy-test                              # send the latest run's phone brief to NTFY_URL
 
@@ -37,7 +39,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -927,35 +929,74 @@ def backfill_positions():
         lock.release()
 
 
-def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, offline=False):
+def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, fans=False, scheduled=False, offline=False):
     """CHART tab bars job: --from-lake imports stored captures (no network); otherwise Yahoo (and Alpaca with --deep) for the
-    given symbols (added and backfilled) or every tracked symbol (the 7-day top-up). Exit 0 clean, 1 on any provider error."""
-    from core import bars, sources
+    given symbols (added and backfilled) or every tracked symbol (the 7-day top-up). --fans builds the chart fans from the stored
+    bars (no network); --scheduled is the top-up, then the fans when it is after 16:30 New York on a trading day and none are
+    built yet today. Exit 0 clean, 1 on any provider error."""
+    from core import bars, chartfans, sources
     try:
         symbols = [bars.norm_symbol(x) for x in symbols or []]
     except ValueError as e:
         print(e)
         return 2
-    if offline and not from_lake:
-        print("offline: the bars job needs the network (Yahoo, Alpaca); nothing fetched. --from-lake works offline.")
+    fetch = not offline and (scheduled or bool(symbols) or not (from_lake or fans))
+    if offline and not (from_lake or fans or scheduled):
+        print("offline: the bars job needs the network (Yahoo, Alpaca); nothing fetched. --from-lake and --fans work offline.")
         return 0
+    rc = 0
     with bars.job_lock():
         conn = bars.connect()
         try:
             if from_lake:
                 print("from-lake:", bars.from_lake(conn))
-            if offline:
-                return 0
-            if not from_lake or symbols:
+            if fetch:
                 res = bars.collect(conn, sources.SourceSession(conn, "bars-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")),
                                    symbols or bars.tracked(conn), backfill=backfill or bool(symbols), deep=deep)
                 print(f"bars: {res['added']} added, {len(res['errors'])} errors")
                 for err in res["errors"]:
                     print("  ", err)
-                return 1 if res["errors"] else 0
-            return 0
+                rc = 1 if res["errors"] else 0
+            if fans or (scheduled and chartfans.due() and not chartfans.built_today(conn)):
+                main = lake.connect_readonly(config.DB_PATH) if config.DB_PATH.exists() else None
+                try:
+                    res = chartfans.build_all(conn, main)
+                finally:
+                    if main is not None:
+                        main.close()
+                print(f"fans: {res['added']} rows added" + (f" (Kronos: {res['kronos']})" if res["kronos"] else ""))
+            return rc
         finally:
             conn.close()
+
+
+def headlines_command(day=None, backfill=None, to=None, offline=False):
+    """CHART tab day-view headlines (Wikipedia Current events, GDELT) into chart.db v2_news_items: one date (--date) or every
+    trading day from --backfill to --to (default yesterday), skipping days already done so a killed run resumes."""
+    from core import bars, headlines, sources
+    try:
+        first = date.fromisoformat(backfill or day or "")
+        last = date.fromisoformat(to) if to else (first if day else date.today() - timedelta(days=1))
+    except ValueError:
+        print("headlines: give --date YYYY-MM-DD, or --backfill YYYY-MM-DD [--to YYYY-MM-DD]")
+        return 2
+    errors = added = 0
+    s = None
+    for d in [first] if day else headlines.trading_days(first, last):
+        with bars.job_lock():                                  # per day, so an on-demand job waits at most one day
+            conn = bars.connect()
+            try:
+                if headlines.is_done(conn, d):
+                    continue
+                s = s or sources.SourceSession(conn, "headlines-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), offline=offline)
+                res = headlines.collect_day(conn, s, d)
+            finally:
+                conn.close()
+        added, errors = added + res["added"], errors + len(res["errors"])
+        for err in res["errors"]:
+            print("  ", err)
+    print(f"headlines: {added} added, {errors} errors")
+    return 1 if errors else 0
 
 
 def _database_ready():
@@ -1020,7 +1061,14 @@ def main(argv=None):
     bp.add_argument("--backfill", action="store_true", help="full Yahoo backfill (1d/1wk max, 1h 730d, 5m 60d, 1m about 30d)")
     bp.add_argument("--deep", action="store_true", help="also Alpaca 1m since 2016 (needs ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)")
     bp.add_argument("--from-lake", action="store_true", help="import every stored ohlcv payload and cache/bars_*.csv (read-only, no network)")
-    bp.add_argument("--offline", action="store_true", help="no network; only --from-lake does anything")
+    bp.add_argument("--fans", action="store_true", help="build the chart fans (daily for symbols and series without a snapshot fan, 1h and 5m for SPY and SLV) from the stored bars; no network")
+    bp.add_argument("--scheduled", action="store_true", help="the 7-day top-up, then --fans when it is after 16:30 New York on a trading day and none are built today")
+    bp.add_argument("--offline", action="store_true", help="no network; only --from-lake and --fans do anything")
+    hp = sub.add_parser("headlines", help="CHART tab day-view headlines (Wikipedia Current events, GDELT) into CHART_STORE/chart.db")
+    hp.add_argument("--date", help="one date, YYYY-MM-DD")
+    hp.add_argument("--backfill", metavar="FROM", help="every trading day from FROM (YYYY-MM-DD) to --to; days already done are skipped")
+    hp.add_argument("--to", help="last day of --backfill (default yesterday)")
+    hp.add_argument("--offline", action="store_true", help="no network; nothing is fetched")
     sub.add_parser("status", help="print the last 10 runs and the current run's status ('interrupted' = the run died)")
     sub.add_parser("cme-login", help="log in to CME in a browser window (MFA) and save the session (takes the run lock)")
     sub.add_parser("ntfy-test", help="send the latest run's phone brief (summary + report attachment) to NTFY_URL; "
@@ -1045,7 +1093,10 @@ def _dispatch(a):
                    max_volume_files=min(getattr(a, "cme_max_files", 10), config.CME_BACKFILL_MAX_ATTEMPTS),
                    login_wait_seconds=max(0, getattr(a, "login_wait", 15)) * 60)
     if a.cmd == "bars":
-        return bars_command(a.symbol, backfill=a.backfill, deep=a.deep, from_lake=a.from_lake, offline=a.offline)
+        return bars_command(a.symbol, backfill=a.backfill, deep=a.deep, from_lake=a.from_lake, fans=a.fans,
+                            scheduled=a.scheduled, offline=a.offline)
+    if a.cmd == "headlines":
+        return headlines_command(a.date, a.backfill, a.to, a.offline)
     if a.cmd == "import-history":
         return import_history_command(backup=not a.no_backup)
     if a.cmd == "backfill-positions":
