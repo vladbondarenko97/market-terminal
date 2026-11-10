@@ -440,7 +440,15 @@ BACKFILL = (("1d", {"period": "max"}), ("1wk", {"period": "max"}), ("1h", {"peri
 
 
 def _fetch_yahoo(conn, s, symbol, tf, kw, now=None):
-    df, pid = sources.yf_history(s, symbol, interval=tf, prepost=tf in INTRADAY, **kw)
+    try:
+        df, pid = sources.yf_history(s, symbol, interval=tf, prepost=tf in INTRADAY, **kw)
+    except sources.SourceUnavailable as exc:
+        # some contracts (e.g. 10Y=F) answer a long daily period with nothing ("must be one of: 1d, 5d"): ask for 5 days,
+        # so their daily bars build up from now on
+        if exc.outcome != "empty" or tf not in ("1d", "1wk") or kw.get("period") in (None, "1d", "5d"):
+            raise
+        kw = {"period": "5d"}
+        df, pid = sources.yf_history(s, symbol, interval=tf, prepost=False, **kw)
     return ingest(conn, symbol, tf, df, "yahoo", pid, now, partial_first="period" in kw and kw["period"] not in ("max",))
 
 
@@ -482,6 +490,8 @@ def collect(conn, s, symbols, backfill=False, deep=False, now=None):
             try:
                 added += _fetch_yahoo(conn, s, symbol, tf, kw, now)
             except sources.SourceUnavailable as exc:
+                if exc.outcome == "empty" and tf in INTRADAY:
+                    continue      # Yahoo keeps no minutes that far back (or none at all) for this symbol: no data, not a failure
                 errors.append(f"yahoo {symbol} {tf}: {exc}")
         try:
             added += collect_shares(conn, s, symbol, now)
