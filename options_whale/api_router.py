@@ -1804,6 +1804,33 @@ def api_help():
       <description>Weekly EIA stock and days-of-supply history behind Forecast Lab card 11, built from files the pipeline captured.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/chart/catalog" format="json" source="stored">
+      <description>CHART tab: tracked symbols (those with stored bars: symbol, name, kind, exchange, description, first and last date) and the non-price series (id, label, unit, freq, description, first, last).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/bars" format="json" source="stored">
+      <description>CHART tab: columnar OHLCV {t (unix seconds), o, h, l, c, v}, the newest 20,000 bars in the range. A symbol with no stored bars starts its download in the background and answers 202 {"status": "loading"}; poll again. A download that found nothing answers 404 once.</description>
+      <parameters>
+        <param name="symbol" type="string" default="SPY" description="letters, digits, . ^ = -, up to 15; upper-cased; anything else is a 400" />
+        <param name="tf" type="string" default="1d" description="1m 5m 15m 30m 1h 4h 1d 1wk 1mo; others are a 400" />
+        <param name="from" type="string" default="" description="first date, YYYY-MM-DD" />
+        <param name="to" type="string" default="" description="last date, YYYY-MM-DD (through the end of that day)" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/series" format="json" source="stored">
+      <description>CHART tab: one non-price series as {t, v, label, unit, description}: EIA stocks and days of supply, Chaos, RRP, SOFR, VMRI. Ids are listed by /api/chart/catalog; an unknown id is a 404.</description>
+      <parameters>
+        <param name="id" type="string" default="" description="series id, e.g. eia.days.distillate" />
+        <param name="from" type="string" default="" description="first date, YYYY-MM-DD" />
+        <param name="to" type="string" default="" description="last date, YYYY-MM-DD" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/lookup" format="json" source="live">
+      <description>CHART tab symbol search: matches among the stored symbols (with descriptions), then Yahoo search results for the rest (symbol, name, kind, exchange; stored false). Cached 10 minutes per query; if Yahoo fails only the stored matches come back. Nothing is stored.</description>
+      <parameters>
+        <param name="q" type="string" default="" description="text to search (symbol or name)" />
+      </parameters>
+    </endpoint>
     <endpoint method="GET" path="/api/chaos" format="json" source="stored">
       <description>The Chaos / Peace block (Forecast Lab card 14) of the latest committed snapshot: score, regime, components, levers, election studies. 503 until a pipeline run has created the database; 404 when the snapshot has no chaos block.</description>
       <parameters />
@@ -3311,6 +3338,163 @@ def api_eia_history():
     if hist.get("status") != "fresh":
         return json_error(hist.get("reason") or "no EIA data yet: run the pipeline", 404)
     return jsonify(dict(hist, status="success"))
+
+
+# ---------------------------------------------------------------- CHART tab (core/bars.py; stored data, one live lookup)
+from core import bars as _chartbars
+
+_CHART_JOBS = {}                  # symbol -> Popen of the `main_pipeline.py bars --symbol` job started for it
+_CHART_JOBS_LOCK = threading.Lock()
+_LOOKUP_CACHE = {}                # query -> (monotonic time, Yahoo quotes), 10 minutes
+
+
+@app.before_request
+def chart_forward():
+    """CHART_REMOTE set: every /api/chart/* request goes to that terminal and its answer comes back unchanged."""
+    if not (config.CHART_REMOTE and request.path.startswith("/api/chart/")):
+        return None
+    try:
+        r = requests.get(config.CHART_REMOTE + request.full_path.rstrip("?"), timeout=20)
+    except requests.RequestException as exc:
+        app.logger.error("chart host unreachable: %s", exc)
+        return json_error("chart host unreachable", 502)
+    return Response(r.content, r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+
+
+def _chart_ts(name):
+    raw = (request.args.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return pd.Timestamp(raw)
+    except ValueError:
+        raise ApiError(f"{name} must be a date (YYYY-MM-DD)", 400)
+
+
+def _chart_symbol():
+    try:
+        return _chartbars.norm_symbol(request.args.get("symbol") or "SPY")
+    except ValueError:
+        raise ApiError("symbol is not valid", 400)
+
+
+def _chart_start_job(sym):
+    """No bars for `sym`: start one background `bars --symbol` job (one per symbol) and answer 202 loading. A job that
+    ended without leaving bars is answered once as an error and forgotten, so the next request may try again."""
+    with _CHART_JOBS_LOCK:
+        job = _CHART_JOBS.get(sym)
+        if job is not None and job.poll() is not None:
+            del _CHART_JOBS[sym]
+            return json_error(f"no price history found for {sym}", 404)
+        if job is None:
+            try:
+                config.CHART_STORE.mkdir(parents=True, exist_ok=True)
+                with open(config.CHART_STORE / "bars_job.log", "ab") as log:
+                    proc = subprocess.Popen([PYTHON_BIN, str(_PROJECT_ROOT / "main_pipeline.py"), "bars", "--symbol", sym],
+                                            cwd=str(_PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log,
+                                            stderr=subprocess.STDOUT, start_new_session=True)
+            except Exception as exc:
+                app.logger.error("Could not start the bars job for %s: %s", sym, exc, exc_info=exc)
+                return json_error("could not start the price download (see the server log)", 500)
+            _CHART_JOBS[sym] = proc
+            threading.Thread(target=proc.wait, daemon=True).start()     # reap the child when it ends
+    return jsonify({"status": "loading", "symbol": sym}), 202
+
+
+@app.route('/api/chart/bars', methods=['GET'])
+@guarded("Chart bars")
+def api_chart_bars():
+    """Columnar OHLCV from the chart store. A symbol with no bars starts its download in the background (202)."""
+    sym, tf = _chart_symbol(), (request.args.get("tf") or "1d")
+    if tf not in _chartbars.NATIVE and tf not in _chartbars.DERIVED:
+        raise ApiError("tf must be one of 1m 5m 15m 30m 1h 4h 1d 1wk 1mo", 400)
+    start, end = _chart_ts("from"), _chart_ts("to")
+    conn = _chartbars.connect_readonly()
+    try:
+        if conn is None or not conn.execute("SELECT 1 FROM v2_bars WHERE symbol = ? LIMIT 1", (sym,)).fetchone():
+            return _chart_start_job(sym)
+        df = _chartbars.read_bars(conn, sym, tf, start, end)
+    finally:
+        if conn is not None:
+            conn.close()
+    col = lambda c, nd=4: [None if pd.isna(v) else round(float(v), nd) for v in df[c]]
+    return jsonify({"status": "success", "symbol": sym, "tf": tf,
+                    "t": [int(x.timestamp()) for x in df.index], "o": col("open"), "h": col("high"), "l": col("low"),
+                    "c": col("close"), "v": col("volume", 0)})
+
+
+@app.route('/api/chart/series', methods=['GET'])
+@guarded("Chart series")
+def api_chart_series():
+    """One non-price series (EIA stocks and days of supply, Chaos, RRP, SOFR, VMRI) as {t, v}, from portfolio.db."""
+    sid = request.args.get("id") or ""
+    if sid not in _chartbars.SERIES:
+        raise ApiError("unknown series id (see /api/chart/catalog)", 404)
+    start, end = _chart_ts("from"), _chart_ts("to")
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        t, v = _chartbars.read_series(conn, sid, start, end)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    label, unit, _, desc, _ = _chartbars.SERIES[sid]
+    return jsonify({"status": "success", "id": sid, "label": label, "unit": unit, "description": desc, "t": t, "v": v})
+
+
+@app.route('/api/chart/catalog', methods=['GET'])
+@guarded("Chart catalog")
+def api_chart_catalog():
+    """Tracked symbols (those with bars) and the non-price series, with descriptions and first/last dates."""
+    cconn, mconn = _chartbars.connect_readonly(), _open_readonly()
+    try:
+        symbols = _chartbars.catalog_symbols(cconn) if cconn is not None else []
+        series = _chartbars.catalog_series(mconn)
+    finally:
+        for c in (cconn, mconn):
+            if c is not None:
+                c.close()
+    return jsonify({"status": "success", "symbols": symbols, "series": series})
+
+
+@app.route('/api/chart/lookup', methods=['GET'])
+@guarded("Chart lookup")
+def api_chart_lookup():
+    """Symbol search for the box: stored symbols first, then Yahoo's search for the rest (live; never stored)."""
+    q = (request.args.get("q") or "").strip()[:40]
+    if not q:
+        return jsonify({"status": "success", "matches": []})
+    cconn = _chartbars.connect_readonly()
+    try:
+        have = _chartbars.catalog_symbols(cconn) if cconn is not None else []
+    finally:
+        if cconn is not None:
+            cconn.close()
+    ql = q.lower()
+    matches = [dict(m, stored=True) for m in have if ql in m["symbol"].lower() or ql in (m["name"] or "").lower()]
+    hit = _LOOKUP_CACHE.get(ql)
+    if hit is None or time.monotonic() - hit[0] > 600:
+        try:
+            quotes = yf.Search(q, max_results=8).quotes or []
+            hit = _LOOKUP_CACHE[ql] = (time.monotonic(), quotes)
+            if len(_LOOKUP_CACHE) > 200:
+                _LOOKUP_CACHE.clear()
+        except Exception as exc:                  # Yahoo down or blocked: the stored matches still answer
+            app.logger.warning("chart lookup failed: %s", exc)
+            hit = (0, [])
+    seen = {m["symbol"] for m in matches}
+    for x in hit[1]:
+        sym = str(x.get("symbol") or "").upper()
+        if sym and sym not in seen and _chartbars.SYMBOL_RE.match(sym):
+            seen.add(sym)
+            matches.append({"symbol": sym, "name": x.get("longname") or x.get("shortname") or sym,
+                            "kind": x.get("quoteType") or "", "exchange": x.get("exchDisp") or x.get("exchange") or "",
+                            "description": "", "stored": False})
+    return jsonify({"status": "success", "matches": matches})
 
 
 # ---------------------------------------------------------------- ask-in-words assistant (read-only)

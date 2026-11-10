@@ -769,3 +769,34 @@ div.fans-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(1
 .fans-lb tr.fans-win td:nth-child(2) { color: #4ade80; font-weight: 700; }
 .fans-lb td:nth-child(2) { text-align: left; }
 @media (max-width: 767px) { .fans-tog { margin-left: 4px; font-size: 9px; letter-spacing: .06em; white-space: nowrap; } .fans-lb { display: block; overflow-x: auto; } }
+
+/* CHART tab (static/chart.js) */
+.ch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 16px 4px; }
+.ch-wrap { position: relative; }
+.ch-input { width: 170px; background: #050507; color: #e4e4e7; border: 1px solid #27272a; border-radius: 4px; padding: 5px 8px; font-size: 12px; text-transform: uppercase; }
+.ch-input:focus { outline: 1px solid #3b82f6; }
+.ch-btns { display: flex; flex-wrap: wrap; gap: 2px; }
+.ch-btn { font-size: 10px; font-weight: 700; letter-spacing: .08em; padding: 5px 9px; border: 1px solid #27272a; border-radius: 4px; color: #a1a1aa; background: transparent; cursor: pointer; }
+.ch-btn:hover { color: #fff; border-color: #52525b; }
+.ch-btn.on { color: #050507; background: #e4e4e7; border-color: #e4e4e7; }
+.ch-drop { position: absolute; top: 100%; left: 0; z-index: 50; width: min(440px, 92vw); max-height: 60vh; overflow-y: auto; background: #09090b; border: 1px solid #3f3f46; border-radius: 4px; box-shadow: 0 12px 32px rgba(0, 0, 0, .85); }
+.ch-row { display: block; width: 100%; text-align: left; padding: 7px 10px; border: 0; border-bottom: 1px solid #18181b; background: transparent; color: #e4e4e7; font-size: 12px; cursor: pointer; }
+.ch-row:hover { background: #18181b; }
+.ch-kind, .ch-desc, .ch-name { color: #71717a; font-size: 11px; }
+.ch-name { color: #a1a1aa; }
+.ch-act { margin-top: 4px; display: flex; gap: 6px; }
+.ch-status { padding: 0 16px; min-height: 16px; font-size: 11px; color: #a1a1aa; }
+.ch-status.bad { color: #f87171; }
+.ch-info { padding: 2px 16px; display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: #d4d4d8; }
+.ch-info-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; border-left: 3px solid #3f3f46; padding-left: 8px; }
+.ch-info-row .ch-desc { flex: 1 1 260px; }
+.ch-val { font-variant-numeric: tabular-nums; color: #fff; }
+.ch-x { color: #71717a; background: transparent; border: 0; cursor: pointer; font-size: 14px; line-height: 1; }
+.ch-x:hover { color: #f87171; }
+.ch-chart { flex: 1 1 auto; min-height: 320px; margin: 4px 16px; border: 1px solid #18181b; }
+.ch-tracked { display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 4px 16px 10px; max-height: 90px; overflow-y: auto; }
+.ch-tracked-h { font-size: 9px; letter-spacing: .2em; color: #52525b; align-self: center; }
+.ch-chip { font-size: 11px; color: #a1a1aa; border: 1px solid #27272a; border-radius: 4px; padding: 2px 7px; background: transparent; cursor: pointer; max-width: 100%; text-align: left; }
+.ch-chip:hover { color: #fff; border-color: #52525b; }
+.ch-chip span { color: #71717a; }
+@media (max-width: 767px) { .ch-bar { padding: 8px 10px 4px; } .ch-input { width: 130px; } .ch-info, .ch-status, .ch-tracked { padding-left: 10px; padding-right: 10px; } .ch-chart { margin: 4px 10px; min-height: 280px; } }
