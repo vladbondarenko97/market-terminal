@@ -13,6 +13,8 @@
                                                                  # observations as CSV (read-only; fetched_at = when it was known)
   python main_pipeline.py narrative [--engine local|claude] [--model NAME] [--run RUN_ID] [--budget-usd X]
                                                                  # write + validate + store a Briefing for a saved run; delivers nothing
+  python main_pipeline.py bars [--symbol SYM]... [--backfill] [--deep] [--from-lake] [--offline]
+                                                                 # CHART tab bars into CHART_STORE (own lock; not the run lock)
   python main_pipeline.py status                                 # last 10 runs + the current run's status
   python main_pipeline.py ntfy-test                              # send the latest run's phone brief to NTFY_URL
 
@@ -925,6 +927,37 @@ def backfill_positions():
         lock.release()
 
 
+def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, offline=False):
+    """CHART tab bars job: --from-lake imports stored captures (no network); otherwise Yahoo (and Alpaca with --deep) for the
+    given symbols (added and backfilled) or every tracked symbol (the 7-day top-up). Exit 0 clean, 1 on any provider error."""
+    from core import bars, sources
+    try:
+        symbols = [bars.norm_symbol(x) for x in symbols or []]
+    except ValueError as e:
+        print(e)
+        return 2
+    if offline and not from_lake:
+        print("offline: the bars job needs the network (Yahoo, Alpaca); nothing fetched. --from-lake works offline.")
+        return 0
+    with bars.job_lock():
+        conn = bars.connect()
+        try:
+            if from_lake:
+                print("from-lake:", bars.from_lake(conn))
+            if offline:
+                return 0
+            if not from_lake or symbols:
+                res = bars.collect(conn, sources.SourceSession(conn, "bars-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")),
+                                   symbols or bars.tracked(conn), backfill=backfill or bool(symbols), deep=deep)
+                print(f"bars: {res['added']} added, {len(res['errors'])} errors")
+                for err in res["errors"]:
+                    print("  ", err)
+                return 1 if res["errors"] else 0
+            return 0
+        finally:
+            conn.close()
+
+
 def _database_ready():
     if DB_PATH.exists():
         return True
@@ -981,6 +1014,13 @@ def main(argv=None):
     ex.add_argument("--since", type=date.fromisoformat, help="first observed date, YYYY-MM-DD")
     ex.add_argument("--until", type=date.fromisoformat, help="last observed date, YYYY-MM-DD")
     ex.add_argument("--out", default="-", help="output file (default - = stdout)")
+    bp = sub.add_parser("bars", help="CHART tab bars: fetch (Yahoo; Alpaca with --deep) or import stored captures into CHART_STORE "
+                                     "(own file lock, not the run lock)")
+    bp.add_argument("--symbol", action="append", default=[], help="add this symbol and backfill it (repeatable); default: every tracked symbol, 7-day top-up")
+    bp.add_argument("--backfill", action="store_true", help="full Yahoo backfill (1d/1wk max, 1h 730d, 5m 60d, 1m about 30d)")
+    bp.add_argument("--deep", action="store_true", help="also Alpaca 1m since 2016 (needs ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)")
+    bp.add_argument("--from-lake", action="store_true", help="import every stored ohlcv payload and cache/bars_*.csv (read-only, no network)")
+    bp.add_argument("--offline", action="store_true", help="no network; only --from-lake does anything")
     sub.add_parser("status", help="print the last 10 runs and the current run's status ('interrupted' = the run died)")
     sub.add_parser("cme-login", help="log in to CME in a browser window (MFA) and save the session (takes the run lock)")
     sub.add_parser("ntfy-test", help="send the latest run's phone brief (summary + report attachment) to NTFY_URL; "
@@ -1004,6 +1044,8 @@ def _dispatch(a):
                    use_browser=not getattr(a, "no_cme_browser", False), skip_cme=getattr(a, "skip_cme", False),
                    max_volume_files=min(getattr(a, "cme_max_files", 10), config.CME_BACKFILL_MAX_ATTEMPTS),
                    login_wait_seconds=max(0, getattr(a, "login_wait", 15)) * 60)
+    if a.cmd == "bars":
+        return bars_command(a.symbol, backfill=a.backfill, deep=a.deep, from_lake=a.from_lake, offline=a.offline)
     if a.cmd == "import-history":
         return import_history_command(backup=not a.no_backup)
     if a.cmd == "backfill-positions":
