@@ -110,8 +110,19 @@ def connect_readonly():
         return None
 
 
+def _intraday_symbols():
+    root = config.CHART_STORE / "bars"
+    return {d.name.replace("_", "^") for d in root.iterdir() if d.is_dir()} if root.exists() else set()
+
+
 def tracked(conn):
-    return [r[0] for r in conn.execute("SELECT DISTINCT symbol FROM v2_bars ORDER BY symbol")]
+    """Symbols with daily bars or intraday day files (Yahoo has no daily history for some, e.g. 10Y=F)."""
+    return sorted({r[0] for r in conn.execute("SELECT DISTINCT symbol FROM v2_bars")} | _intraday_symbols())
+
+
+def has(conn, symbol):
+    return bool(conn.execute("SELECT 1 FROM v2_bars WHERE symbol = ? LIMIT 1", (symbol,)).fetchone()) or \
+        _day_dir(symbol, "1h").exists() or _day_dir(symbol, "5m").exists()
 
 
 # ---------------------------------------------------------------- normalise and store
@@ -258,6 +269,17 @@ def read_bars(conn, symbol, tf, start=None, end=None, limit=20000):
             break
     if rule and not df.empty:
         df = _resample(df, rule)
+    if df.empty and tf in ("1d", "1wk", "1mo"):            # no daily history stored: build it from the intraday files
+        for src in ("1h", "5m"):
+            df = _read_files(symbol, src, start, end, 10 ** 9)
+            if not df.empty:
+                break
+        if not df.empty:
+            df = _resample(df, "1D")
+            df.index = pd.DatetimeIndex(df.index.tz_convert(NY).date).tz_localize("UTC")   # like stored daily bars
+            if tf != "1d":
+                df = df.resample("W-MON" if tf == "1wk" else "MS", label="left", closed="left").agg(
+                    {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["open"])
     if start is not None:
         df = df[df.index >= start]
     if end is not None:

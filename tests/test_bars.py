@@ -71,6 +71,14 @@ class Store(Base):
         self.assertEqual(bars.tracked(self.conn), ["SPY"])
         self.assertFalse((config.CHART_STORE / "bars/SPY/1m").exists())
 
+    def test_a_symbol_with_only_intraday_bars_is_tracked_and_gets_daily_bars(self):
+        bars.ingest(self.conn, "10Y=F", "1h", intraday("2026-05-28", "09:30", 6, freq="h"), "yahoo", now=NOW)
+        self.assertTrue(bars.has(self.conn, "10Y=F"))
+        self.assertIn("10Y=F", bars.tracked(self.conn))
+        d = bars.read_bars(self.conn, "10Y=F", "1d")
+        self.assertEqual([str(x.date()) for x in d.index], ["2026-05-28"])
+        self.assertEqual(len(bars.read_bars(self.conn, "10Y=F", "1mo")), 1)
+
     def test_insert_or_ignore_keeps_the_first_copy(self):
         bars.ingest(self.conn, "SPY", "1d", daily(["2026-05-28"], close=100.0), "yahoo", now=NOW)
         n = bars.ingest(self.conn, "SPY", "1d", daily(["2026-05-28"], close=555.0), "yahoo", now=NOW)

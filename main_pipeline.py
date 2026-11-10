@@ -30,6 +30,7 @@ not, 1 when there is nothing to resend. `ntfy-test` exits 0 when the brief was s
 An offline run writes its files to <data>/<day folder>/offline_<run id>/ and never to the shared day files.
 """
 import argparse
+import contextlib
 import csv
 import json
 import os
@@ -945,7 +946,9 @@ def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, fans=F
         print("offline: the bars job needs the network (Yahoo, Alpaca); nothing fetched. --from-lake and --fans work offline.")
         return 0
     rc = 0
-    with bars.job_lock():
+    # a symbol you just typed must not queue behind a long backfill: its own job takes no lock (day files are written
+    # through a temporary file and v2_bars is INSERT OR IGNORE, so two jobs touching one symbol cannot corrupt it)
+    with (contextlib.nullcontext() if symbols and not (from_lake or fans or scheduled or deep) else bars.job_lock()):
         conn = bars.connect()
         try:
             if from_lake:
