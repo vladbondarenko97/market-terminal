@@ -34,6 +34,8 @@ hc start
 python main_pipeline.py run --trigger "$TRIGGER"
 STATUS=$?
 case $STATUS in 0|3) hc ;; 75) ;; *) hc fail ;; esac
+# new data -> the Oracle copy of market.vlad.yt now, not at the next fixed sync time (~/dev/infra/oracle/market-sync.sh)
+case $STATUS in 0|3) launchctl kickstart "gui/$(id -u)/com.vlad.marketsync" 2>/dev/null || true ;; esac
 
 case $STATUS in
     0) ;;
