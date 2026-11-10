@@ -12,6 +12,9 @@ COPY requirements.txt .
 # download (core/cme.py) drives a browser, and that needs a login you finish by hand, which a container cannot show.
 # Without a browser the CME step reports "missing" and the run continues.
 RUN pip install -r requirements.txt
+# Kronos (core/fans.py, the CHART tab's fans) on CPU: the CPU wheel index keeps CUDA out of the amd64 image.
+COPY requirements-kronos.txt .
+RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-kronos.txt
 
 # A non-root user owns /data, so a fresh named volume is writable by it.
 RUN useradd --create-home --uid 1000 app && mkdir /data && chown app /data

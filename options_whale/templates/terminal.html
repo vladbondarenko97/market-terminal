@@ -11,6 +11,7 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.8/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 
 <body class="h-screen flex flex-col overflow-hidden relative">
@@ -61,6 +62,7 @@
                 <div id="tab-macro" class="tab-btn active" onclick="switchTab('macro')">MACRO DIRECTION</div>
                 <div id="tab-arbitrage" class="tab-btn" onclick="switchTab('arbitrage')">TIME ARBITRAGE</div>
                 <div id="tab-forecast" class="tab-btn" onclick="switchTab('forecast')"><span class="fc-rainbow-text">FORECAST LAB</span></div>
+                <div id="tab-chart" class="tab-btn" onclick="switchTab('chart')">CHART</div>
                 <label class="fans-tog" title="Overlay Kronos scenario fans (100 sampled paths) on Forecast Lab cards 1, 10 and 11. Off by default."><input type="checkbox" id="fansToggle"> KRONOS</label>
             </nav>
 
@@ -1472,6 +1474,50 @@
                 </div>
             </div>
 
+            <div id="chart-tab" class="tab-content hidden flex-1 flex flex-col overflow-hidden">
+                <div class="ch-bar">
+                    <div class="ch-wrap">
+                        <input id="chSym" class="ch-input" placeholder="Symbol or name" autocomplete="off" spellcheck="false" aria-label="Symbol">
+                        <div id="chLookup" class="ch-drop hidden"></div>
+                    </div>
+                    <div id="chTf" class="ch-btns" aria-label="Timeframe"></div>
+                    <div id="chRange" class="ch-btns" aria-label="Range"></div>
+                    <div id="chLayout" class="ch-btns" aria-label="Layout"></div>
+                    <button id="chSync" class="ch-btn" type="button" title="Sync crosshair and visible range across charts">SYNC</button>
+                </div>
+                <div class="ch-bar ch-bar2">
+                    <div id="chAddWrap" class="ch-wrap">
+                        <button id="chAdd" class="ch-btn" type="button">+ SERIES</button>
+                        <div id="chSeriesPick" class="ch-drop hidden"></div>
+                    </div>
+                    <div id="chCmpWrap" class="ch-wrap ch-cmp">
+                        <button id="chCmpBtn" class="ch-btn" type="button" title="Overlay another symbol on the active chart">+ COMPARE</button>
+                        <input id="chCmp" class="ch-input" placeholder="Symbol" autocomplete="off" spellcheck="false" aria-label="Compare symbol">
+                        <div id="chCmpLookup" class="ch-drop hidden"></div>
+                    </div>
+                    <button id="chPct" class="ch-btn" type="button" title="Percent change from the left edge of the visible range">%</button>
+                    <div id="chIndWrap" class="ch-wrap">
+                        <button id="chInd" class="ch-btn" type="button">INDICATORS</button>
+                        <div id="chIndDrop" class="ch-drop ch-ind-drop hidden"></div>
+                    </div>
+                    <label class="ch-chk" title="Supply and demand zones: classic (base and impulse from the bars), ours (GEX walls and dark pool clusters) or both">ZONES
+                        <select id="chZones" class="ch-sel"><option value="off">off</option><option value="classic">classic</option><option value="ours">ours</option><option value="both">both</option></select></label>
+                    <label class="ch-chk" title="Classic zones: an impulse candle must be at least k times the ATR(14)">k <input id="chK" class="ch-in" type="number" min="0.5" step="0.1"></label>
+                    <button id="chLv" class="ch-btn" type="button" title="GEX walls and other levels as price lines">LEVELS</button>
+                    <button id="chEv" class="ch-btn" type="button" title="Macro events and our runs as markers">EVENTS</button>
+                    <button id="chBl" class="ch-btn" type="button" title="Dark pool blocks as markers sized by notional">BLOCKS</button>
+                    <button id="chToolH" class="ch-btn" type="button" title="Horizontal line: click the chart">H-LINE</button>
+                    <button id="chToolT" class="ch-btn" type="button" title="Trend line: click two points">TREND</button>
+                    <span id="chDraws" class="ch-draws"></span>
+                </div>
+                <div id="chStatus" class="ch-status"></div>
+                <div id="chInfo" class="ch-info"></div>
+                <div id="chExplore" class="ch-explore hidden"></div>
+                <div id="chGrid" class="ch-grid"></div>
+                <div id="chDay" class="ch-day hidden" aria-label="Day view"></div>
+                <div id="chTracked" class="ch-tracked"></div>
+            </div>
+
             <div id="forecast-tab" class="tab-content hidden flex-1 flex flex-col overflow-hidden">
                 <div class="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
                     <div class="text-[10px] tracking-[0.25em] text-zinc-400 uppercase">
@@ -1886,6 +1932,7 @@
     <script src="/static/app.js"></script>
     <script src="/static/forecast.js"></script>
     <script src="/static/fans.js"></script>
+    <script src="/static/chart.js"></script>
     <script src="/static/assistant.js"></script>
 </body>
 

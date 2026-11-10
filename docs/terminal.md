@@ -293,6 +293,27 @@ Thirteen model cards, 1 to 11, 14 and 16 (full reference: [Forecast Lab](forecas
   recorded an error for their block, card 11 when the whole refining block failed, card 14 when the chaos block is missing or failed (it prints the reason), and card 15 likewise for `fed_ops`. If `/api/forecast` itself fails
   (for example `503` before the first run), every card shows the server's message.
 
+## Chart tab
+
+TradingView's open-source Lightweight Charts (v5, pinned from jsDelivr) over our stored bars, from `static/chart.js`. It builds on the first open and reopens as you left it: layout, active chart, SYNC and each chart's symbol, timeframe, range, series, compare symbols, indicators, Kronos toggles, zones, overlays are remembered in this browser (`localStorage`; drawings per symbol). The toolbar edits the **active chart** (blue border); click a chart to make it active.
+
+- **Symbol box:** type a symbol or a name; after 250 ms a list shows matches (stored symbols first, then Yahoo's search). Enter or a click loads it. A symbol with no stored history shows `Loading <SYM> history…` while the server downloads it, asks again every 3 s and gives up after 2 minutes. Default 1 chart, SPY, 1D.
+- **Timeframes** 1m 5m 15m 30m 1h 4h 1D 1W 1M and **ranges** 1D 5D 1M 3M 6M YTD 1Y 5Y MAX (anchored on the newest bar). Wheel zooms, drag pans. Intraday times are New York time.
+- **Layout 1 | 2 | 2×2 | 3×2:** several charts, each with its own symbol, timeframe, series, indicators and fan toggles (one column on phones). **SYNC** links the crosshair and the visible time range across charts.
+- **+ SERIES:** stored non-price series (diesel days of supply, EIA stocks, Chaos, RRP, SOFR, VMRI), on the left scale or in a lower pane. Remove with the x in the info strip.
+- **+ COMPARE:** type a symbol to add it to the active chart, on its own left scale. **%** switches the right scale to percent change from the left edge of the visible range, and moves compare symbols onto it. Remove with the x in the info strip.
+- **INDICATORS:** a list of Volume (on by default), SMA, EMA, WMA, VWAP (session-anchored, intraday charts only), Bollinger Bands, RSI (30/70 lines), MACD (histogram), Stochastic (20/80 lines), ATR, OBV. Click to add; the same indicator can be added more than once (EMA 9 and EMA 21). Each added one has editable length / source (close or hl2) / standard deviation / colour and an x. MA, Bollinger and VWAP draw on the price pane, the others in their own pane. Maths is in `CI` at the top of `chart.js`, checked by `node tests/chart_math.test.mjs`.
+- **Kronos fans:** the **KRONOS** box in the header turns a scenario fan on for every item on the chart (symbol, compare symbols, added series). Each row of the info strip has a small **K** button: switch one item off, or on alone while the box is off. The fan starts at the item's last bar: p10 to p90 shaded, p25 to p75 darker, a dashed median; Kronos magenta, baseline cyan. Fans for a series in a lower pane use that pane's scale. Daily and weekly charts use the 1d fan; 1h and 5m charts use the same fan timeframe, other intraday charts fall back to 1d (a note says so). A model with no forecast shows its reason, and the verdict text shows when the route returns one. Fans come from `/api/chart/fan`; where it is missing the panel shows the server's message.
+- **Scenario explorer** (appears while any fan is on): item, model (Both / Kronos / Baseline), **all paths** (thin translucent lines), a slider over the paths, ◀ ▶ to step, ▶ to play (about 4 paths a second), and a readout of the highlighted path's final value and % against the last value, plus the p10 / p50 / p90 terminal values.
+- **ZONES** off | classic | ours | both. Classic is computed from the bars on screen: an impulse candle (range at least **k** times ATR14, k = 1.5, body at least 60%) after 1 to 3 small-body candles marks a demand (up) or supply (down) zone from the base's low to high; it runs right until a close goes through it (then faded and dashed), the label gives the impulse size and touch count; the 6 strongest fresh zones and the 3 latest broken ones are kept. Ours draws the zones from `/api/chart/overlays` (GEX walls, dark pool clusters).
+- **LEVELS** (price lines from overlays, also on with ours zones), **EVENTS** (macro events and our runs as markers), **BLOCKS** (dark pool blocks, marker size by notional).
+- **Day view:** click a candle to open a side panel (bottom sheet on phones) for that date: prices of the chart's symbols, series values with week-over-week change, our runs, the calendar and headlines (links open in a new tab). While headlines load the panel asks again every 3 s for up to 2 minutes. x or Esc closes it.
+- **Measure:** shift-drag between two points (mouse) shows the price change, percent, bars and elapsed time; Esc or the next click clears it.
+- **H-LINE / TREND:** click the chart once (horizontal line) or twice (trend line). Drawings are saved per symbol and listed as chips next to the buttons; click a chip to remove it. Esc cancels a tool.
+- **Info strip** under the toolbar: each item's name, description, last value and date. **TRACKED** at the bottom lists every symbol with stored bars.
+
+Routes: `/api/chart/*` ([api](api.md)). A route that is missing or fails shows its reason in the status line, never a zero. Not built yet: live poll.
+
 ## Engine Positions
 
 Panel 15 on the Macro Direction tab. It lists the trade ticket the execution engine produced on each live run, and

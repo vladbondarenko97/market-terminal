@@ -3189,6 +3189,8 @@ function switchTab(tabName) {
         if (window.arbInterval) clearInterval(window.arbInterval);
     }
 
+    if (tabName === 'chart' && window.initChartTab) window.initChartTab();   // chart.js: builds the chart on first open
+
     log(`WORKSPACE ROUTING: ${tabName.toUpperCase()} ACTIVE`, 'info');
 }
 

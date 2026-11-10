@@ -20,7 +20,7 @@ PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forex
                    "ebay": 1, "cme": 1,
                    "cboe": 1, "finra": 1, "treasury": 1, "rss": 6,
                    "federalreserve": 1, "nyfed": 2,
-                   "sec": 2}
+                   "sec": 2, "alpaca": 3, "wikipedia": 1, "gdelt": 1}
 
 
 class SourceUnavailable(Exception):
@@ -122,17 +122,55 @@ def _frame_capture(df):
 
 
 # ---------------------------------------------------------------- Yahoo
-def yf_history(s, symbol, period="7d", interval="1d"):
+def yf_history(s, symbol, period="7d", interval="1d", *, start=None, end=None, prepost=False):
+    """start/end (YYYY-MM-DD) replace period; prepost adds extended-hours bars. Both stay out of the request when unused."""
     import yfinance as yf
 
     def call():
-        df = yf.Ticker(symbol).history(period=period, interval=interval)
+        kw = {"start": start, "end": end} if start else {"period": period}
+        df = yf.Ticker(symbol).history(interval=interval, prepost=prepost, **kw)
         if df is None or df.empty:
-            raise SourceUnavailable("yahoo", "empty", f"{symbol} {period}/{interval}")
+            raise SourceUnavailable("yahoo", "empty", f"{symbol} {start or period}/{interval}")
         return df
-    df, pid = s.fetch("yahoo", {"fn": "history", "symbol": symbol, "period": period, "interval": interval}, call,
-                      kind="ohlcv", fmt="csv", capture=_frame_capture)
+    req = {"fn": "history", "symbol": symbol, "period": period, "interval": interval}
+    if start:
+        req.update(start=start, end=end)
+    if prepost:
+        req["prepost"] = True
+    df, pid = s.fetch("yahoo", req, call, kind="ohlcv", fmt="csv", capture=_frame_capture)
     return df, pid
+
+
+def alpaca_bars(s, key, secret, symbol, start, end):
+    """1-minute bars (all-market SIP feed, split/dividend adjusted) for one US symbol, start..end (YYYY-MM-DD), every page.
+    Market data only: the keys are never used to trade."""
+    import requests
+    if not key or not secret:
+        raise SourceUnavailable("alpaca", "not_configured", "ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY missing")
+
+    def call():
+        rows, token = [], None
+        while True:
+            params = {"symbols": symbol, "timeframe": "1Min", "start": start, "end": end, "limit": 10000,
+                      "adjustment": "all", "feed": "sip"}
+            if token:
+                params["page_token"] = token
+            r = requests.get("https://data.alpaca.markets/v2/stocks/bars", timeout=30, params=params,
+                             headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret})
+            if r.status_code != 200:
+                raise SourceUnavailable("alpaca", f"http_{r.status_code}", f"{symbol} {start}")
+            body = r.json()
+            rows += (body.get("bars") or {}).get(symbol) or []
+            token = body.get("next_page_token")
+            if not token:
+                break
+        if not rows:
+            raise SourceUnavailable("alpaca", "empty", f"{symbol} {start}..{end}")
+        df = pd.DataFrame(rows).rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"})
+        df.index = pd.to_datetime(df.pop("t"), utc=True)
+        return df[["Open", "High", "Low", "Close", "Volume"]]
+    return s.fetch("alpaca", {"fn": "bars", "symbol": symbol, "start": start, "end": end}, call, kind="ohlcv", fmt="csv",
+                   capture=_frame_capture)
 
 
 def yf_quote(s, symbol):

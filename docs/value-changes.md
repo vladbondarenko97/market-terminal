@@ -28,6 +28,7 @@ When you change how a stored value is computed:
 | `FEATURES_VERSION` (`core/metrics.py`) | `features_v1` | `<model_features>` block in the tactical XML |
 | `VERSION` (`core/forecast.py`) | `forecast_v3` | Forecast Lab cards 1–9 |
 | `VERSION` (`core/refining.py`) | `refining_v1` | Diesel & refining and EIA inventory models (cards 10–11) |
+| `INTRADAY_VERSIONS` (`core/chartfans.py`) | `kronos_fan_intraday_v1`, `baseline_fan_intraday_v1` | CHART tab 1h (24 steps) and 5m (48 steps) fans of SPY and SLV, stored in `chart.db` `v2_chart_fans` (not in the snapshot) |
 | `FANS_VERSION` (`core/fans.py`) | `fans_v2` | Scenario fans (`fans` snapshot block) and the `kronos_fan_v2` / `baseline_fan_v1` forecast log rows |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
 | `STUDY_VERSION` (`core/chaos.py`) | `regime_study_v2` | The regime study of card 14 (`chaos.long.study`: base rates, early-warning onsets) |
@@ -44,6 +45,12 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 ## Changes
 
 Newest first, then the changes that came with the v2 pipeline.
+
+- **CHART tab fans** (`kronos_fan_intraday_v1`, `baseline_fan_intraday_v1`, 2026-11-10): new, not a change to an existing value.
+  `bars --fans` builds 1h and 5m fans for SPY and SLV from the stored Parquet bars (the last 401 bars; the baseline bootstraps
+  the trailing 504 bar returns, overnight gaps included; Kronos gets naive New York times and no spread widening, which was
+  fitted on daily series only), on a 04:00-20:00 New York trading-day grid of future bars. They are not backtested. The daily
+  fans for symbols and series the snapshot does not forecast reuse `kronos_fan_v2` / `baseline_fan_v1` unchanged.
 
 - **Kronos fans fed returns** (`fans_v2`, 2026-11-03): Kronos now sees each bar as log(open/high/low/close / previous
   close) instead of raw prices, samples at T 1.3 (was 1.0), and its log spread around the median is widened by 1.15 at

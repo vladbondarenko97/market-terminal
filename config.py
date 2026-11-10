@@ -21,6 +21,7 @@ SECRET_NAMES = (
     "DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOLD_API_KEY", "EBAY_APP_ID", "EBAY_CERT_ID",
     "CME_LOGIN_USERNAME", "CME_LOGIN_PASSWORD", "EMAIL_PASSWORD", "UPLOAD_TOKEN", "NTFY_URL", "ASSISTANT_LOCAL_API_KEY", "ANTHROPIC_API_KEY",
     "SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY", "MCP_MARKET_TOKEN", "MCP_BROKERAGE_TOKEN",
+    "ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY", "HF_TOKEN",
 )
 
 
@@ -163,6 +164,10 @@ EIA_API_KEY = optional_env("EIA_API_KEY", default="")
 SEC_USER_AGENT = optional_env("SEC_USER_AGENT", default="")   # "Name email": the contact string SEC asks automated clients to send
 NEWS_FEEDS_FILE = optional_env("NEWS_FEEDS_FILE", default="")   # empty: the bundled core/news_feeds.json
 GOLD_API_KEY = optional_env("GOLD_API_KEY", default="")
+ALPACA_API_KEY_ID = optional_env("ALPACA_API_KEY_ID", default="")           # market data only (core/bars.py --deep); never trades
+ALPACA_API_SECRET_KEY = optional_env("ALPACA_API_SECRET_KEY", default="")
+HF_TOKEN = optional_env("HF_TOKEN", default="")       # scripts/backup_chart_hf.py: write token for HF_REPO only
+HF_REPO = optional_env("HF_REPO", default="")         # private dataset for the chart store backup, e.g. you/market-chart-store
 EBAY_APP_ID = optional_env("EBAY_APP_ID", default="")
 EBAY_CERT_ID = optional_env("EBAY_CERT_ID", default="")
 EMAIL_SENDER = optional_env("EMAIL_SENDER", default="")
@@ -197,6 +202,10 @@ ALPHAFLOW_DEBUG = flag_env("ALPHAFLOW_DEBUG")
 KRONOS_ENABLED = optional_env("KRONOS_ENABLED", default="1").strip() != "0"
 KRONOS_DIR = DATA_DIR / "models" / "kronos"
 KRONOS_DEVICE = optional_env("KRONOS_DEVICE", default="").strip()      # blank: mps if available, else cpu
+
+# CHART tab (core/bars.py): its own folder (chart.db + bars/ day files). CHART_REMOTE forwards /api/chart/* to another terminal.
+CHART_STORE = Path(optional_env("CHART_STORE", default="") or DATA_DIR / "chart").expanduser()
+CHART_REMOTE = (optional_env("CHART_REMOTE", default="") or "").strip().rstrip("/")
 
 # Source limits
 MAX_PROVIDER_CONCURRENCY = 3

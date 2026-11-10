@@ -1,3 +1,4 @@
+import bisect
 import functools
 import json
 import math
@@ -32,7 +33,7 @@ if ROOT_DIR not in sys.path:
 import config
 from config import DATA_DIR as _DATA_DIR, DB_PATH as _V2_DB_PATH, PROJECT_ROOT as _PROJECT_ROOT
 from core.chaos import CHAOS_VERSION
-from core.fans import current_score as _fan_current_score
+from core.fans import KRONOS_VERDICT, current_score as _fan_current_score
 from core import forecast as _v2fc, lake as _v2lake, metrics, positions as _v2pos, runlock
 from quant_engine import QuantEngine
 
@@ -1804,6 +1805,54 @@ def api_help():
       <description>Weekly EIA stock and days-of-supply history behind Forecast Lab card 11, built from files the pipeline captured.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/chart/catalog" format="json" source="stored">
+      <description>CHART tab: tracked symbols (those with stored bars: symbol, name, kind, exchange, description, first and last date) and the non-price series (id, label, unit, freq, description, first, last).</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/bars" format="json" source="stored">
+      <description>CHART tab: columnar OHLCV {t (unix seconds), o, h, l, c, v}, the newest 20,000 bars in the range. A symbol with no stored bars starts its download in the background and answers 202 {"status": "loading"}; poll again. A download that found nothing answers 404 once.</description>
+      <parameters>
+        <param name="symbol" type="string" default="SPY" description="letters, digits, . ^ = -, up to 15; upper-cased; anything else is a 400" />
+        <param name="tf" type="string" default="1d" description="1m 5m 15m 30m 1h 4h 1d 1wk 1mo; others are a 400" />
+        <param name="from" type="string" default="" description="first date, YYYY-MM-DD" />
+        <param name="to" type="string" default="" description="last date, YYYY-MM-DD (through the end of that day)" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/series" format="json" source="stored">
+      <description>CHART tab: one non-price series as {t, v, label, unit, description}: EIA stocks and days of supply, Chaos, RRP, SOFR, VMRI. Ids are listed by /api/chart/catalog; an unknown id is a 404.</description>
+      <parameters>
+        <param name="id" type="string" default="" description="series id, e.g. eia.days.distillate" />
+        <param name="from" type="string" default="" description="first date, YYYY-MM-DD" />
+        <param name="to" type="string" default="" description="last date, YYYY-MM-DD" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/lookup" format="json" source="live">
+      <description>CHART tab symbol search: matches among the stored symbols (with descriptions), then Yahoo search results for the rest (symbol, name, kind, exchange; stored false). Cached 10 minutes per query; if Yahoo fails only the stored matches come back. Nothing is stored.</description>
+      <parameters>
+        <param name="q" type="string" default="" description="text to search (symbol or name)" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/fan" format="json" source="stored">
+      <description>CHART tab scenario fans of one item: the future dates, the last value and, per model (kronos, baseline), status, reason, 100 paths and p05 to p95 per step. The 1d fans of items the latest snapshot forecasts (SPY, SLV, ^VIX, SI=F, GC=F, HG=F, CL=F, HO=F, RB=F, NG=F, DX-Y.NYB, ^TNX, EIA stocks and days of supply) are the snapshot's (source snapshot); everything else and all intraday fans come from chart.db, built by `bars --fans` (source chart). status missing (HTTP 200) when none is stored.</description>
+      <parameters>
+        <param name="item" type="string" default="" description="a symbol or a series id from /api/chart/catalog" />
+        <param name="tf" type="string" default="1d" description="1d, 1h or 5m (1h and 5m exist for SPY and SLV)" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/overlays" format="json" source="stored">
+      <description>CHART tab overlays for a symbol: levels (call wall, put wall, zero gamma, max pain of the latest snapshot, open engine ticket entry and target strike), zones (the GEX range between the walls), markers (High impact stored calendar events: fomc, eia, macro; unix seconds) and blocks (stored dark pool prints: t, price, size, notional). Symbols the snapshot does not cover get empty levels and zones.</description>
+      <parameters>
+        <param name="symbol" type="string" default="SPY" description="letters, digits, . ^ = -, up to 15" />
+      </parameters>
+    </endpoint>
+    <endpoint method="GET" path="/api/chart/day" format="json" source="stored">
+      <description>CHART tab day view for one New York date: closes of the given symbols (a symbol that did not trade that day is left out), series values as of the date with week-over-week change, the pipeline runs of that day with a short summary, the High and Medium impact calendar events and headlines (Wikipedia, GDELT). Headlines not stored yet start one background download per date: headlines_status loading, then stored or none.</description>
+      <parameters>
+        <param name="date" type="string" default="" description="YYYY-MM-DD; anything else is a 400" />
+        <param name="symbols" type="string" default="" description="comma-separated symbols, at most 20" />
+        <param name="series" type="string" default="" description="comma-separated series ids from /api/chart/catalog; an unknown id is a 400" />
+      </parameters>
+    </endpoint>
     <endpoint method="GET" path="/api/chaos" format="json" source="stored">
       <description>The Chaos / Peace block (Forecast Lab card 14) of the latest committed snapshot: score, regime, components, levers, election studies. 503 until a pipeline run has created the database; 404 when the snapshot has no chaos block.</description>
       <parameters />
@@ -3027,6 +3076,20 @@ def api_chaos():
     return jsonify({"status": "success", "run": run, "as_of": fc["chaos"].get("as_of"), "data": fc["chaos"]})
 
 
+def _snapshot_fans(conn):
+    """{"fans", "run_id", "generated_at"} of the latest committed snapshot (cached per run), or None before the first run."""
+    row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+    if not row:
+        return None
+    key = f"fans_snapshot:{row['run_id']}"
+    hit = data_cache.get(key)
+    if hit is None:
+        ctx = _v2lake.load_snapshot(conn, row["run_id"])
+        hit = {"fans": ctx.get("fans"), "run_id": ctx["run"]["run_id"], "generated_at": ctx["run"]["generated_at"]}
+        data_cache.set(key, hit)
+    return hit
+
+
 @app.route('/api/fans', methods=['GET'])
 @guarded("Scenario fans")
 def api_fans():
@@ -3035,21 +3098,15 @@ def api_fans():
     if conn is None:
         return _not_initialised()
     try:
-        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
-        if not row:
-            return jsonify({"status": "missing", "reason": "no snapshot yet: run the pipeline"}), 404
-        key = f"fans_snapshot:{row['run_id']}"
-        hit = data_cache.get(key)
-        if hit is None:
-            ctx = _v2lake.load_snapshot(conn, row["run_id"])
-            hit = {"fans": ctx.get("fans"), "run_id": ctx["run"]["run_id"], "generated_at": ctx["run"]["generated_at"]}
-            data_cache.set(key, hit)
+        hit = _snapshot_fans(conn)
     except sqlite3.OperationalError as exc:
         if _uninitialised(exc):
             return _not_initialised()
         raise
     finally:
         conn.close()
+    if hit is None:
+        return jsonify({"status": "missing", "reason": "no snapshot yet: run the pipeline"}), 404
     if not hit["fans"]:
         return jsonify({"status": "missing", "reason": "the latest snapshot has no fans block (run made before scenario fans)",
                         "run_id": hit["run_id"], "generated_at": hit["generated_at"]}), 404
@@ -3311,6 +3368,437 @@ def api_eia_history():
     if hist.get("status") != "fresh":
         return json_error(hist.get("reason") or "no EIA data yet: run the pipeline", 404)
     return jsonify(dict(hist, status="success"))
+
+
+# ---------------------------------------------------------------- CHART tab (core/bars.py; stored data, one live lookup)
+from core import bars as _chartbars
+
+_CHART_JOBS = {}                  # symbol -> Popen of the `main_pipeline.py bars --symbol` job started for it
+_CHART_JOBS_LOCK = threading.Lock()
+_LOOKUP_CACHE = {}                # query -> (monotonic time, Yahoo quotes), 10 minutes
+
+
+@app.before_request
+def chart_forward():
+    """CHART_REMOTE set: every /api/chart/* request goes to that terminal and its answer comes back unchanged."""
+    if not (config.CHART_REMOTE and request.path.startswith("/api/chart/")):
+        return None
+    try:
+        r = requests.get(config.CHART_REMOTE + request.full_path.rstrip("?"), timeout=20,
+                         headers={k: v for k, v in request.headers.items() if k == "X-Chart-Request"})
+    except requests.RequestException as exc:
+        app.logger.error("chart host unreachable: %s", exc)
+        return json_error("chart host unreachable", 502)
+    return Response(r.content, r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+
+
+_PER_RUN = {}                     # name -> (latest run_id, value): recomputed once per pipeline run
+
+
+def _per_run(conn, name, build):
+    """`build()` once per latest committed run (stored data only changes when a run commits)."""
+    try:
+        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    rid = row[0] if row else None
+    hit = _PER_RUN.get(name)
+    if hit is None or hit[0] != rid or rid is None:
+        hit = _PER_RUN[name] = (rid, build())
+    return hit[1]
+
+
+def _chart_ts(name):
+    raw = (request.args.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return pd.Timestamp(raw)
+    except ValueError:
+        raise ApiError(f"{name} must be a date (YYYY-MM-DD)", 400)
+
+
+def _chart_symbol():
+    try:
+        return _chartbars.norm_symbol(request.args.get("symbol") or "SPY")
+    except ValueError:
+        raise ApiError("symbol is not valid", 400)
+
+
+def _chart_spawn(key, *args):
+    """Start `main_pipeline.py <args>` detached (log: CHART_STORE/bars_job.log), remember it under `key` and reap it when it
+    ends. Returns an error response, or None. The caller holds _CHART_JOBS_LOCK.
+    These start from GET routes, which reject_cross_site_writes does not check, so they need the CHART tab's own header
+    (another site cannot send it: a custom header needs a CORS preflight, never granted here) and at most 4 run at once."""
+    if request.headers.get("X-Chart-Request") != "1":
+        return json_error("starting a download needs the CHART tab (X-Chart-Request header)", 403)
+    if sum(1 for p in _CHART_JOBS.values() if p.poll() is None) >= 4:
+        return jsonify({"status": "busy", "message": "4 downloads are already running; try again shortly"}), 429
+    try:
+        config.CHART_STORE.mkdir(parents=True, exist_ok=True)
+        with open(config.CHART_STORE / "bars_job.log", "ab") as log:
+            proc = subprocess.Popen([PYTHON_BIN, str(_PROJECT_ROOT / "main_pipeline.py"), *args], cwd=str(_PROJECT_ROOT),
+                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    except Exception as exc:
+        app.logger.error("Could not start the %s job: %s", key, exc, exc_info=exc)
+        return json_error("could not start the download (see the server log)", 500)
+    _CHART_JOBS[key] = proc
+    threading.Thread(target=proc.wait, daemon=True).start()
+    return None
+
+
+def _chart_start_job(sym):
+    """No bars for `sym`: start one background `bars --symbol` job (one per symbol) and answer 202 loading. A job that
+    ended without leaving bars is answered once as an error and forgotten, so the next request may try again."""
+    with _CHART_JOBS_LOCK:
+        job = _CHART_JOBS.get(sym)
+        if job is not None and job.poll() is not None:
+            del _CHART_JOBS[sym]
+            return json_error(f"no price history found for {sym}", 404)
+        if job is None:
+            err = _chart_spawn(sym, "bars", "--symbol", sym)
+            if err:
+                return err
+    return jsonify({"status": "loading", "symbol": sym}), 202
+
+
+@app.route('/api/chart/bars', methods=['GET'])
+@guarded("Chart bars")
+def api_chart_bars():
+    """Columnar OHLCV from the chart store. A symbol with no bars starts its download in the background (202)."""
+    sym, tf = _chart_symbol(), (request.args.get("tf") or "1d")
+    if tf not in _chartbars.NATIVE and tf not in _chartbars.DERIVED:
+        raise ApiError("tf must be one of 1m 5m 15m 30m 1h 4h 1d 1wk 1mo", 400)
+    start, end = _chart_ts("from"), _chart_ts("to")
+    with _CHART_JOBS_LOCK:
+        job = _CHART_JOBS.get(sym)
+    if job is not None and job.poll() is None:         # daily bars land first; wait for the intraday ones too
+        return jsonify({"status": "loading", "symbol": sym}), 202
+    conn = _chartbars.connect_readonly()
+    try:
+        if conn is None or not conn.execute("SELECT 1 FROM v2_bars WHERE symbol = ? LIMIT 1", (sym,)).fetchone():
+            return _chart_start_job(sym)
+        df = _chartbars.read_bars(conn, sym, tf, start, end)
+    finally:
+        if conn is not None:
+            conn.close()
+    col = lambda c, nd=4: [None if pd.isna(v) else round(float(v), nd) for v in df[c]]
+    return jsonify({"status": "success", "symbol": sym, "tf": tf,
+                    "t": [int(x.timestamp()) for x in df.index], "o": col("open"), "h": col("high"), "l": col("low"),
+                    "c": col("close"), "v": col("volume", 0)})
+
+
+@app.route('/api/chart/series', methods=['GET'])
+@guarded("Chart series")
+def api_chart_series():
+    """One non-price series (EIA stocks and days of supply, Chaos, RRP, SOFR, VMRI) as {t, v}, from portfolio.db."""
+    sid = request.args.get("id") or ""
+    if sid not in _chartbars.SERIES:
+        raise ApiError("unknown series id (see /api/chart/catalog)", 404)
+    start, end = _chart_ts("from"), _chart_ts("to")
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        t, v = _chartbars.read_series(conn, sid, start, end)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    label, unit, _, desc, _ = _chartbars.SERIES[sid]
+    return jsonify({"status": "success", "id": sid, "label": label, "unit": unit, "description": desc, "t": t, "v": v})
+
+
+@app.route('/api/chart/catalog', methods=['GET'])
+@guarded("Chart catalog")
+def api_chart_catalog():
+    """Tracked symbols (those with bars) and the non-price series, with descriptions and first/last dates."""
+    cconn, mconn = _chartbars.connect_readonly(), _open_readonly()
+    try:
+        symbols = _chartbars.catalog_symbols(cconn) if cconn is not None else []
+        series = _per_run(mconn, "catalog", lambda: _chartbars.catalog_series(mconn)) if mconn is not None else _chartbars.catalog_series(None)
+    finally:
+        for c in (cconn, mconn):
+            if c is not None:
+                c.close()
+    return jsonify({"status": "success", "symbols": symbols, "series": series})
+
+
+@app.route('/api/chart/lookup', methods=['GET'])
+@guarded("Chart lookup")
+def api_chart_lookup():
+    """Symbol search for the box: stored symbols first, then Yahoo's search for the rest (live; never stored)."""
+    q = (request.args.get("q") or "").strip()[:40]
+    if not q:
+        return jsonify({"status": "success", "matches": []})
+    cconn = _chartbars.connect_readonly()
+    try:
+        have = _chartbars.catalog_symbols(cconn) if cconn is not None else []
+    finally:
+        if cconn is not None:
+            cconn.close()
+    ql = q.lower()
+    matches = [dict(m, stored=True) for m in have if ql in m["symbol"].lower() or ql in (m["name"] or "").lower()]
+    hit = _LOOKUP_CACHE.get(ql)
+    if hit is None or time.monotonic() - hit[0] > 600:
+        try:
+            quotes = yf.Search(q, max_results=8).quotes or []
+            hit = _LOOKUP_CACHE[ql] = (time.monotonic(), quotes)
+            if len(_LOOKUP_CACHE) > 200:
+                _LOOKUP_CACHE.clear()
+        except Exception as exc:                  # Yahoo down or blocked: the stored matches still answer
+            app.logger.warning("chart lookup failed: %s", exc)
+            hit = (0, [])
+    seen = {m["symbol"] for m in matches}
+    for x in hit[1]:
+        sym = str(x.get("symbol") or "").upper()
+        if sym and sym not in seen and _chartbars.SYMBOL_RE.match(sym):
+            seen.add(sym)
+            matches.append({"symbol": sym, "name": x.get("longname") or x.get("shortname") or sym,
+                            "kind": x.get("quoteType") or "", "exchange": x.get("exchDisp") or x.get("exchange") or "",
+                            "description": _chartbars.DESCRIPTIONS.get(sym) or " · ".join(      # kind and exchange are shown already
+                                filter(None, [x.get("sectorDisp"), x.get("industryDisp")])),
+                            "stored": False})
+    return jsonify({"status": "success", "matches": matches})
+
+
+# ---------------------------------------------------------------- CHART tab phases 2-4: fans, overlays, day view
+from core import chartfans as _chartfans, headlines as _headlines
+
+NY = ZoneInfo("America/New_York")
+
+
+def _ny_date(stamp):
+    """New York calendar date of an ISO timestamp (a bare date, or a naive time, counts as UTC)."""
+    t = pd.Timestamp(stamp)
+    return (t.tz_localize("UTC") if t.tzinfo is None else t).tz_convert(NY).date()
+
+
+@app.route('/api/chart/fan', methods=['GET'])
+@guarded("Chart fan")
+def api_chart_fan():
+    """Scenario fans for a chart item. 1d fans of items the snapshot forecasts come from the snapshot; everything else
+    (other symbols, intraday) from chart.db v2_chart_fans, built by `bars --fans`."""
+    item, tf = (request.args.get("item") or "").strip(), request.args.get("tf") or "1d"
+    if tf not in ("1d", "1h", "5m") or not re.match(r"^[A-Za-z0-9.^=:_\-]{1,40}$", item):
+        raise ApiError("item must be a symbol or series id and tf one of 1d 1h 5m", 400)
+    item = item if item in _chartbars.SERIES else item.upper()
+    if item in _chartfans.NO_FAN:
+        return jsonify({"status": "missing", "reason": _chartfans.NO_FAN[item]})
+    out = {"status": "success", "item": item, "tf": tf, "verdict": _chartfans.INTRADAY_VERDICT if tf != "1d" else KRONOS_VERDICT}
+    sid = _chartfans.SNAPSHOT_ITEMS.get(item) if tf == "1d" else None
+    mconn = _open_readonly() if sid else None
+    if mconn is not None:
+        try:
+            hit = _snapshot_fans(mconn)
+        except sqlite3.OperationalError:
+            hit = None
+        finally:
+            mconn.close()
+        s = ((hit or {}).get("fans") or {}).get("series", {}).get(sid) or {}
+        if s.get("asof") and s.get("models"):
+            models = {k: _chartfans.pack(m) for k, m in s["models"].items()}
+            if item in _chartfans.KRONOS_SERIES and models.get("kronos", {}).get("status") == "missing":
+                cconn = _chartbars.connect_readonly()          # Kronos run straight on the ratio (bars --fans)
+                try:
+                    got = _chartfans.read(cconn, item, tf)
+                finally:
+                    if cconn is not None:
+                        cconn.close()
+                if got and got[3].get("kronos", {}).get("paths") and got[2] == s["dates"]:
+                    models["kronos"] = got[3]["kronos"]
+                    out["verdict"] = "Kronos on the weekly days-of-supply ratio is not backtested yet; the daily Kronos fan loses to the baseline out of sample"
+            return jsonify({**out, "source": "snapshot", "asof": s["asof"], "last": s["last"], "dates": s["dates"], "models": models})
+    cconn = _chartbars.connect_readonly()
+    try:
+        got = _chartfans.read(cconn, item, tf)
+    finally:
+        if cconn is not None:
+            cconn.close()
+    if got is None:
+        return jsonify({"status": "missing", "reason": f"no {tf} fan stored for {item}: they are built by `main_pipeline.py bars --fans`"})
+    asof, last, dates, models = got
+    models = {k: models.get(k) or {"status": "missing", "reason": "not built"} for k in ("kronos", "baseline")}
+    return jsonify({**out, "source": "chart", "asof": asof, "last": last, "dates": dates, "models": models})
+
+
+def _chart_snapshot_levels(conn):
+    """{symbol: {"levels": [...], "zones": [...]}} for the symbols the latest snapshot has GEX or max pain for (cached per run)."""
+    row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+    if not row:
+        return {}
+    key = f"chart_levels:{row['run_id']}"
+    out = data_cache.get(key)
+    if out is None:
+        out, opts = {}, _v2lake.load_snapshot(conn, row["run_id"]).get("options") or {}
+        for sym, o in opts.items():
+            g, mp, levels, zones = o.get("gex") or {}, (o.get("max_pain") or {}).get("strike"), [], []
+            if g.get("status") in ("fresh", "partial"):
+                for k, label in (("call_wall", "Call wall"), ("put_wall", "Put wall"), ("zero_gamma", "Zero gamma")):
+                    if isinstance(g.get(k), (int, float)) and math.isfinite(g[k]):
+                        levels.append({"label": label, "price": round(g[k], 2), "kind": k})
+                if g.get("call_wall") and g.get("put_wall"):           # the dealer-gamma range between the two walls
+                    zones.append({"label": "GEX range (put wall to call wall)", "lo": round(min(g["put_wall"], g["call_wall"]), 2),
+                                  "hi": round(max(g["put_wall"], g["call_wall"]), 2), "kind": "gex"})
+            if isinstance(mp, (int, float)) and math.isfinite(mp):
+                levels.append({"label": "Max pain", "price": round(mp, 2), "kind": "max_pain"})
+            if levels:
+                out[sym] = {"levels": levels, "zones": zones}
+        data_cache.set(key, out)
+    return out
+
+
+def _event_kind(title):
+    t = title.upper()
+    return "fomc" if "FOMC" in t or "FEDERAL FUNDS" in t else "eia" if any(w in t for w in ("CRUDE OIL INV", "DISTILLATE", "GASOLINE", "EIA")) else "macro"
+
+
+def _calendar_events(conn, first, last):
+    """Stored High/Medium impact USD calendar events from `first` to `last` (dates, New York): [(utc Timestamp or None, date, title, impact)],
+    each event once (every run stores it again with newer forecast/actual values)."""
+    lo, hi = (first - timedelta(days=1)).isoformat(), (last + timedelta(days=2)).isoformat()
+    seen, out = set(), []
+    for r in conn.execute("""SELECT observed_at, dims_json FROM v2_observations WHERE metric_id = 'calendar.event' AND entity = 'USD'
+                             AND observed_at >= ? AND observed_at < ? ORDER BY observed_at""", (lo, hi)):
+        d = json.loads(r["dims_json"] or "{}")
+        if d.get("impact") in ("High", "Medium") and (r["observed_at"], d.get("title")) not in seen:
+            seen.add((r["observed_at"], d.get("title")))
+            timed = len(r["observed_at"]) > 10
+            when = pd.Timestamp(r["observed_at"]).tz_convert("UTC") if timed else None
+            day = when.tz_convert(NY).date() if timed else date.fromisoformat(r["observed_at"][:10])
+            if first <= day <= last:
+                out.append((when, day, d.get("title") or "", d["impact"]))
+    return out
+
+
+@app.route('/api/chart/overlays', methods=['GET'])
+@guarded("Chart overlays")
+def api_chart_overlays():
+    """Stored overlays for a symbol: GEX walls, zero gamma and max pain of the latest snapshot (SPY, SLV), open engine ticket
+    entry and target, High impact macro events as markers, and dark pool prints (trade.block observations)."""
+    sym = _chart_symbol()
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        snap = _chart_snapshot_levels(conn).get(sym) or {}
+        levels, zones = list(snap.get("levels") or []), list(snap.get("zones") or [])
+        for t in conn.execute("""SELECT signal_id, position_type, strike, underlying_price FROM v2_trade_signals WHERE underlying = ?
+                                 AND position_type IN ('CALL', 'PUT') AND deleted_at IS NULL AND (expiration IS NULL OR expiration >= date('now'))""", (sym,)):
+            name = f"#{t['signal_id']} {t['position_type']}"
+            if t["underlying_price"]:
+                levels.append({"label": f"{name} entry", "price": round(t["underlying_price"], 2), "kind": "entry"})
+            if t["strike"]:
+                levels.append({"label": f"{name} target strike", "price": round(t["strike"], 2), "kind": "target"})
+        markers = _per_run(conn, "markers", lambda: [
+            {"t": int((w or pd.Timestamp(d, tz="UTC")).timestamp()), "label": title, "kind": _event_kind(title)}
+            for w, d, title, impact in _calendar_events(conn, date(2000, 1, 1), date(2100, 1, 1)) if impact == "High"])
+        blocks = []
+        for r in conn.execute("""SELECT observed_at, value_json FROM v2_observations WHERE metric_id = 'trade.block' AND entity = ?
+                                 ORDER BY observed_at DESC LIMIT 500""", (sym,)):
+            v = json.loads(r["value_json"] or "{}")
+            if v.get("price") and v.get("size"):
+                blocks.append({"t": int(pd.Timestamp(r["observed_at"]).tz_convert("UTC").timestamp()), "price": round(v["price"], 4),
+                               "size": v["size"], "notional": round(v["price"] * v["size"], 2)})
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    return jsonify({"status": "success", "levels": levels, "zones": zones, "markers": markers, "blocks": blocks[::-1]})
+
+
+def _chart_headlines(day, cconn, mconn):
+    """(headlines, status): stored ones, else one background `headlines --date` job per date (loading) and then none."""
+    rows = _headlines.stored(cconn, day)
+    seen = {r["url"] for r in rows}
+    rows += [r for r in _headlines.stored(mconn, day) if r["url"] not in seen]
+    if rows:
+        return rows[:50], "stored"
+    if day >= date.today() or (cconn is not None and _headlines.is_done(cconn, day)):
+        return [], "none"
+    key = f"headlines:{day}"
+    with _CHART_JOBS_LOCK:
+        job = _CHART_JOBS.get(key)
+        if job is None:
+            if _chart_spawn(key, "headlines", "--date", day.isoformat()):
+                return [], "none"
+        elif job.poll() is not None:
+            if job.poll():                                  # it failed: forget it, the next request may try again
+                del _CHART_JOBS[key]
+            return [], "none"
+    return [], "loading"
+
+
+@app.route('/api/chart/day', methods=['GET'])
+@guarded("Chart day")
+def api_chart_day():
+    """Everything stored about one New York date: closes of the given symbols, series values as of that date, the pipeline
+    runs of that day, the macro calendar and headlines (fetched in the background the first time a date is asked for)."""
+    try:
+        day = date.fromisoformat(request.args.get("date") or "")
+        symbols = [_chartbars.norm_symbol(x) for x in (request.args.get("symbols") or "").split(",") if x.strip()][:20]
+    except ValueError:
+        raise ApiError("date must be YYYY-MM-DD and symbols valid symbols", 400)
+    sids = [x for x in (request.args.get("series") or "").split(",") if x.strip()][:20]
+    if any(x not in _chartbars.SERIES for x in sids):
+        raise ApiError("unknown series id (see /api/chart/catalog)", 400)
+    cconn, mconn = _chartbars.connect_readonly(), _open_readonly()
+    try:
+        prices = []
+        for sym in symbols if cconn is not None else ():
+            rows = cconn.execute("SELECT ts, open, high, low, close, volume FROM v2_bars WHERE symbol = ? AND tf = '1d' AND ts <= ? "
+                                 "ORDER BY ts DESC LIMIT 2", (sym, day.isoformat())).fetchall()
+            if rows and rows[0]["ts"] == day.isoformat():       # a day the symbol did not trade has no row, not a zero
+                prev = rows[1]["close"] if len(rows) > 1 else None
+                prices.append({"symbol": sym, "o": rows[0]["open"], "h": rows[0]["high"], "l": rows[0]["low"], "c": rows[0]["close"],
+                               "v": rows[0]["volume"], "chg_pct": round((rows[0]["close"] / prev - 1) * 100, 3) if prev else None})
+        series, runs, calendar = [], [], []
+        if mconn is not None:
+            try:
+                for sid in sids:
+                    t, v = _chartbars.read_series(mconn, sid, end=pd.Timestamp(day))
+                    if t:
+                        i = bisect.bisect_right(t, t[-1] - 7 * 86400) - 1
+                        label, unit = _chartbars.SERIES[sid][:2]
+                        series.append({"id": sid, "label": label, "unit": unit, "value": v[-1], "asof": pd.Timestamp(t[-1], unit="s").date().isoformat(),
+                                       "wow": round(v[-1] - v[i], 6) if i >= 0 else None})
+                for r in mconn.execute("""SELECT s.run_id, s.created_at FROM v2_snapshots s JOIN v2_runs r ON r.run_id = s.run_id
+                                          WHERE r.status IN ('committed', 'completed', 'completed_with_warnings') AND s.created_at >= ? AND s.created_at < ?
+                                          ORDER BY s.created_at""", ((day - timedelta(days=1)).isoformat(), (day + timedelta(days=2)).isoformat())).fetchall():
+                    if _ny_date(r["created_at"]) == day:
+                        runs.append({"run_id": r["run_id"], "created_at": r["created_at"], "summary": _run_summary(mconn, r["run_id"])})
+                calendar = [{"time": w.tz_convert(NY).strftime("%H:%M") if w is not None else "", "title": title, "kind": _event_kind(title)}
+                            for w, d, title, _ in _calendar_events(mconn, day, day)]
+            except sqlite3.OperationalError as exc:
+                if not _uninitialised(exc):
+                    raise
+        news, status = _chart_headlines(day, cconn, mconn)
+    finally:
+        for c in (cconn, mconn):
+            if c is not None:
+                c.close()
+    return jsonify({"status": "success", "date": day.isoformat(), "prices": prices, "series": series, "runs": runs, "calendar": calendar,
+                    "headlines": news, "headlines_status": status})
+
+
+def _run_summary(conn, run_id):
+    """A short line about one stored run: SPY GEX walls, VMRI, the ticket it opened. Only what is stored; missing parts are left out."""
+    parts = []
+    g = conn.execute("SELECT value_json FROM v2_observations WHERE run_id = ? AND metric_id = 'options.SPY.gex_profile'", (run_id,)).fetchone()
+    g = json.loads(g["value_json"] or "{}") if g else {}
+    if g.get("put_wall") and g.get("call_wall"):
+        parts.append(f"SPY walls {g['put_wall']:g} / {g['call_wall']:g}")
+    v = conn.execute("SELECT value_num FROM v2_observations WHERE run_id = ? AND metric_id = 'macro.vmri.score'", (run_id,)).fetchone()
+    if v and v["value_num"] is not None:
+        parts.append(f"VMRI {v['value_num']:.1f}")
+    t = conn.execute("SELECT position_type, strike FROM v2_trade_signals WHERE run_id = ?", (run_id,)).fetchone()
+    if t and t["position_type"] != "CASH" and t["strike"]:
+        parts.append(f"ticket {t['position_type']} {t['strike']:g}")
+    return " · ".join(parts)
 
 
 # ---------------------------------------------------------------- ask-in-words assistant (read-only)
