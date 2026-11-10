@@ -1,6 +1,6 @@
 # Plan: CHART tab (replaces TradingView)
 
-Status: **not started**. Written 2026-11-10. Nothing here has been built yet.
+Status: **Phase 1 built** on branch `chart-tab` (store, `bars` job, `/bars` `/catalog` `/series` `/lookup`, the tab). Phases 2 to 4 not started. Written 2026-11-10. Differences from the text below: daily `ts` is the local date, `/api/chart/lookup` was added, and `/series` already exists.
 
 Goal: a fourth terminal tab, **CHART**. It shows SPY by default and any ticker you type (NKE, anything) on
 1m to 1M timeframes, with zoom, pan and range picking. It can show several charts at once (SPY next to VMRI, SLV

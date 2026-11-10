@@ -293,6 +293,17 @@ Thirteen model cards, 1 to 11, 14 and 16 (full reference: [Forecast Lab](forecas
   recorded an error for their block, card 11 when the whole refining block failed, card 14 when the chaos block is missing or failed (it prints the reason), and card 15 likewise for `fed_ops`. If `/api/forecast` itself fails
   (for example `503` before the first run), every card shows the server's message.
 
+## Chart tab
+
+TradingView's open-source Lightweight Charts (v5, pinned from jsDelivr) over our stored bars, from `static/chart.js`. It builds on the first open and reopens as you left it (symbol, timeframe, range and added series are remembered in this browser).
+
+- **Symbol box:** type a symbol or a name; after 250 ms a list shows matches with name, kind and a short description (stored symbols first, then Yahoo's search). Enter or a click loads it. A symbol with no stored history shows `Loading <SYM> history…` while the server downloads it, asks again every 3 s and gives up after 2 minutes. Default SPY, 1D.
+- **Timeframes** 1m 5m 15m 30m 1h 4h 1D 1W 1M and **ranges** 1D 5D 1M 3M 6M YTD 1Y 5Y MAX (the window is anchored on the newest bar). Wheel zooms, drag pans. Intraday times are New York time. Volume is a histogram along the bottom.
+- **+ SERIES** lists the stored non-price series (diesel days of supply, EIA stocks, Chaos, RRP, SOFR, VMRI) with a description; add one on the left price scale or in a lower pane, remove it with the x in the info strip. All series on the left scale share its one axis.
+- **Info strip** under the toolbar: for the symbol and each series its name, a one-line description, the last value and its date. **TRACKED** at the bottom lists every symbol with stored bars; click one to load it.
+
+Routes: `/api/chart/*` ([api](api.md)). Not built yet (see [the plan](plan-chart-tab.md)): several charts, compare mode, live poll, zones, overlays, day view.
+
 ## Engine Positions
 
 Panel 15 on the Macro Direction tab. It lists the trade ticket the execution engine produced on each live run, and

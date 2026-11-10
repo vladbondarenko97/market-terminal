@@ -98,6 +98,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/forecast.py` | Forecast Lab models (cards 1–9), forecast logging and grading |
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
 | `core/fans.py` | Scenario fans: Kronos and baseline paths per series, fan forecast log rows, backtest scoring |
+| `core/bars.py` | The CHART tab's store (`chart.db`, `v2_bars`, intraday Parquet day files), Yahoo and Alpaca bar collection, the `--from-lake` import and the non-price series catalog; run by `main_pipeline.py bars` |
 | `third_party/kronos/` | Vendored Kronos model code (MIT) with its LICENSE; loaded only when torch and the weights are present |
 | `scripts/fetch_kronos.py`, `scripts/backtest_fans.py`, `requirements-kronos.txt` | Operator-run: download the weights; walk-forward backtest of the fans; the optional torch requirements |
 | `core/narrative.py` | The Briefing (analyst note): the brief built from a snapshot, the shared prompts, the validator (numbers, ids, causal and advice wording), the local and Claude Code drivers, the shapers the console reuses |
@@ -132,6 +133,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `options_whale/templates/terminal.html` | Terminal page |
 | `options_whale/static/app.js` | Macro, Time Arbitrage, War Room, Engine Positions UI |
 | `options_whale/static/forecast.js` | Forecast Lab UI |
+| `options_whale/static/chart.js` | CHART tab UI (Lightweight Charts) |
 | `options_whale/static/favicon.svg`, `favicon-32.png`, `apple-touch-icon.png` | The terminal's icon (SVG, a PNG fallback, the iPhone home-screen icon) |
 | `options_whale/static/styles.css` | Styles |
 | `ebay.py` | eBay Browse API lookup of Silver Eagle listings; run as a subprocess by `/api/silver_eagle_prices` (also appends a ledger row) |

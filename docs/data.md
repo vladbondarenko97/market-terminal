@@ -259,6 +259,19 @@ complete whatever the journal mode is. The temp file is deleted afterwards.
 `skipped`, only one set reports `failed`. It reports `uploaded` only when the receiver's JSON reply says `ok` for
 every file sent (`check_reply()`); an HTTP 200 alone is not enough.
 
+## Chart store
+
+The CHART tab keeps its prices apart from `portfolio.db`, in `CHART_STORE` (default `<data folder>/chart`; see [configuration](configuration.md)), written by `main_pipeline.py bars` ([operations](operations.md#chart-bars)).
+
+| Path | What |
+|---|---|
+| `chart.db` | Its own lake (`lake.migrate()`: `v2_payloads`, `v2_fetch_log`, ... for every chart fetch) plus `v2_bars` and `v2_chart_symbols`. Additive only: `CREATE ... IF NOT EXISTS` and `INSERT OR IGNORE`, never an update or a delete. |
+| `v2_bars` | Daily and weekly bars: `symbol, tf` (`1d` or `1wk`), `ts` (the exchange-local date, `YYYY-MM-DD`), `open, high, low, close, volume` (`NULL` when the source had none), `source` (`yahoo`, `alpaca`, `lake`), `payload_id` (in `chart.db`; for `lake` rows the id in `portfolio.db`), `fetched_at`. Primary key `(symbol, tf, ts)`: the first copy of a bar stays. An unfinished day or week is never stored. A symbol with rows here is **tracked**. |
+| `v2_chart_symbols` | One row per symbol, written when it is first added: `symbol, name, kind, exchange, description, source, added_at`. The description is the first sentences of Yahoo's business summary, else a built-in line, else `<name> · <kind>`. |
+| `bars/<SYMBOL>/<tf>/<YYYY-MM-DD>.parquet` | Intraday bars (`tf` = `1m`, `5m`, `1h`), one file per finished New York session, extended hours included, columns `ts` (bar open, UTC), `open, high, low, close` (float32), `volume` (int64); zstd. Written once, never rewritten. `^` in a symbol becomes `_` in the folder name. |
+
+15m, 30m, 4h and 1mo are not stored: the routes resample them on read from the finest stored timeframe, per New York session. The `/api/chart/series` lines are read from `portfolio.db` (EIA payloads, `chaos.score`, `fedops.*`, `macro.vmri.score`) and stored nowhere else.
+
 ## Outside CME_Data
 
 | Path | What | Notes |
