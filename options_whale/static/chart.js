@@ -267,7 +267,7 @@
         const d = rangeDays(P(cell)), end = B.t[B.t.length - 1], ts = cell.chart.timeScale();
         if (d === null) { ts.fitContent(); return; }
         const from = d === 'ytd' ? Date.UTC(new Date(end * 1000).getUTCFullYear(), 0, 1) / 1000 : end - d * DAY;
-        try { ts.setVisibleRange({ from: Math.max(from, B.t[0]), to: end }); } catch (e) { ts.fitContent(); }
+        try { ts.setVisibleRange({ from: Math.max(from, B.t[0]), to: cell.fanEnd || end }); } catch (e) { ts.fitContent(); }
     }
     function toBars(r) {
         const B = { t: [], o: [], h: [], l: [], c: [], v: [] };
@@ -448,6 +448,8 @@
         const bars = B.t.map((t, i) => ({ time: t, open: B.o[i], high: B.h[i], low: B.l[i], close: B.c[i] }));
         cell.candles.setData(bars.concat([...futT].sort((a, b) => a - b).map(time => ({ time }))));
 
+        const fe = futT.size ? Math.max(...futT) : null;
+        if (fe !== cell.fanEnd) { cell.fanEnd = fe; applyRange(cell); }
         // zones
         const zm = c.zones;
         if (zm !== 'off') {
