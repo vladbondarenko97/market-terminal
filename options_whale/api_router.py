@@ -3409,6 +3409,10 @@ def api_chart_bars():
     if tf not in _chartbars.NATIVE and tf not in _chartbars.DERIVED:
         raise ApiError("tf must be one of 1m 5m 15m 30m 1h 4h 1d 1wk 1mo", 400)
     start, end = _chart_ts("from"), _chart_ts("to")
+    with _CHART_JOBS_LOCK:
+        job = _CHART_JOBS.get(sym)
+    if job is not None and job.poll() is None:         # daily bars land first; wait for the intraday ones too
+        return jsonify({"status": "loading", "symbol": sym}), 202
     conn = _chartbars.connect_readonly()
     try:
         if conn is None or not conn.execute("SELECT 1 FROM v2_bars WHERE symbol = ? LIMIT 1", (sym,)).fetchone():
@@ -3493,7 +3497,9 @@ def api_chart_lookup():
             seen.add(sym)
             matches.append({"symbol": sym, "name": x.get("longname") or x.get("shortname") or sym,
                             "kind": x.get("quoteType") or "", "exchange": x.get("exchDisp") or x.get("exchange") or "",
-                            "description": "", "stored": False})
+                            "description": _chartbars.DESCRIPTIONS.get(sym) or " · ".join(      # kind and exchange are shown already
+                                filter(None, [x.get("sectorDisp"), x.get("industryDisp")])),
+                            "stored": False})
     return jsonify({"status": "success", "matches": matches})
 
 

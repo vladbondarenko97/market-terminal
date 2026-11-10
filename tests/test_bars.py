@@ -128,6 +128,17 @@ class Store(Base):
         self.assertLessEqual(len(row["description"]), 220)
         self.assertEqual(bars.tracked(self.conn), ["NKE"])
 
+    def test_backfill_1m_windows_stay_under_eight_days(self):
+        s = sources.SourceSession(self.conn, "bars-test")
+        with mock.patch.object(sources, "yf_history", return_value=(daily(["2026-05-28"]), 1)) as yh, mock.patch("yfinance.Ticker") as tk:
+            tk.return_value.info = {}
+            bars.collect(self.conn, s, ["SPY"], backfill=True, now=NOW)
+        wins = [(c.kwargs.get("start"), c.kwargs.get("end")) for c in yh.call_args_list if c.kwargs.get("start")]
+        self.assertEqual(len(wins), 4)
+        for a, b in wins:                          # Yahoo refuses a 1m window of 8 days or more ("Only 8 days ...")
+            self.assertEqual((pd.Timestamp(b) - pd.Timestamp(a)).days, 7)
+        self.assertEqual(max(b for _, b in wins), NOW.date().isoformat())   # today (unfinished) is left out
+
 
 class Alpaca(Base):
     def test_pagination_and_missing_keys(self):
@@ -179,6 +190,13 @@ class Routes(Base):
             self.assertEqual(self.client.get("/api/chart/bars?symbol=NKE").status_code, 404)
         self.assertEqual(self.client.get("/api/chart/bars?symbol=..%2Fx").status_code, 400)
         self.assertEqual(self.client.get("/api/chart/bars?symbol=SPY&tf=3m").status_code, 400)
+
+    def test_loading_until_the_job_ends_even_once_daily_bars_exist(self):
+        bars.ingest(self.conn, "NKE", "1d", daily(["2026-05-28"]), "yahoo", now=NOW)
+        api_router._CHART_JOBS["NKE"] = proc = mock.Mock(**{"poll.return_value": None})
+        self.assertEqual(self.client.get("/api/chart/bars?symbol=NKE&tf=15m").status_code, 202)
+        proc.poll.return_value = 0
+        self.assertEqual(self.client.get("/api/chart/bars?symbol=NKE&tf=1d").get_json()["status"], "success")
 
     def test_bars_and_catalog_from_the_store(self):
         bars.ingest(self.conn, "SPY", "1d", daily(["2026-05-27", "2026-05-28"]), "yahoo", now=NOW)

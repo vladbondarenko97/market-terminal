@@ -57,7 +57,7 @@ touches:
 | On Oracle, `CHART_STORE=/srv/market/chart/` | What | Size |
 |---|---|---|
 | `chart.db` | its own lake, same schema (`lake.migrate()`): `v2_payloads` and `v2_fetch_log` for every chart fetch, `v2_bars` (1d, 1wk), `v2_news_items` (day-view headlines), intraday fans | grows with raw captures; 106 GB free |
-| `bars/<SYMBOL>/<tf>/<YYYY-MM-DD>.parquet` | intraday bars (`1m`, `5m`, `1h`), one file per finished session, written once and never rewritten, zstd, float32 prices | 1m with pre/post ≈ 3 MB per symbol-year |
+| `bars/<SYMBOL>/<tf>/<YYYY-MM-DD>.parquet` | intraday bars (`1m`, `5m`, `1h`), one file per finished session, written once and never rewritten, zstd, float32 prices | measured 2026-11-10 (^VIX, NKE): a 1m day file ≈ 43 KB, so ≈ 11 MB per symbol-year with pre/post; a backfill adds ≈ 5.5 MB of 1h files (one small file per day for 2 years) and ≈ 0.5 MB of 5m |
 
 - **Mac:** the chart routes forward to Oracle's terminal over Tailscale when `CHART_REMOTE` is set (one passthrough
   for `/api/chart/*`, about 15 lines). The tab looks the same on either host. Without `CHART_REMOTE` (tests,
@@ -73,7 +73,7 @@ touches:
   - Both report to Gatus the way `market-sync.sh` does, so a failed backup shows red. The scripts go in
     `~/dev/infra/oracle/` next to `market-sync.sh`.
   - Restore is `hf download` into `CHART_STORE`. Check the private-storage limit shown in your HF account settings
-    before the 10-year backfill; at about 30 MB per symbol it's small either way.
+    before the 10-year backfill: about 110 MB per symbol at the measured 1m size.
 - Hard rule 4 holds: day files are only ever added, and `v2_bars` and `v2_news_items` only get `INSERT OR IGNORE`.
   `portfolio.db` is untouched.
 

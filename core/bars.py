@@ -340,10 +340,10 @@ def collect(conn, s, symbols, backfill=False, deep=False, now=None):
         symbol = norm_symbol(symbol)
         ensure_symbol(conn, s, symbol)
         plan = list(BACKFILL if backfill else NORMAL)
-        if backfill:                                  # 1m: Yahoo serves 7 days per request, about 30 days back
-            today = (now or now_ny()).date()
+        if backfill:                                  # 1m: Yahoo refuses a window of 8+ days; about 30 days back
+            today = (now or now_ny()).date()          # end is exclusive, so each window is 7 days and today is left out
             plan += [("1m", {"start": (today - timedelta(days=7 * (k + 1))).isoformat(),
-                             "end": (today - timedelta(days=7 * k) + timedelta(days=1)).isoformat()}) for k in range(4)]
+                             "end": (today - timedelta(days=7 * k)).isoformat()}) for k in range(4)]
         for tf, kw in plan:
             try:
                 added += _fetch_yahoo(conn, s, symbol, tf, kw, now)
