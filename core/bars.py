@@ -1,7 +1,8 @@
 """The CHART tab's store: price bars and non-price series, kept apart from portfolio.db in config.CHART_STORE.
 
 chart.db is its own lake (lake.migrate, so every chart fetch is captured in v2_payloads) plus v2_bars (1d and 1wk
-rows, INSERT OR IGNORE only) and v2_chart_symbols. Intraday bars (1m, 5m, 1h) are Parquet day files,
+rows, INSERT OR IGNORE only), v2_chart_symbols and v2_chart_fans (core/chartfans.py). Intraday bars (1m, 5m, 1h) are Parquet
+day files,
 bars/<SYMBOL>/<tf>/<YYYY-MM-DD>.parquet (New York date), written once per finished session and never rewritten.
 Everything else (15m, 30m, 4h, 1mo) is resampled on read. Network goes through SourceSession.fetch().
 Daily and weekly ts is the exchange-local date (YYYY-MM-DD); intraday ts is the bar open in UTC.
@@ -91,6 +92,9 @@ def connect():
             PRIMARY KEY (symbol, tf, ts)) WITHOUT ROWID""")
         conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_symbols (
             symbol TEXT PRIMARY KEY, name TEXT, kind TEXT, exchange TEXT, description TEXT, source TEXT, added_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_fans (
+            item TEXT NOT NULL, tf TEXT NOT NULL, asof TEXT NOT NULL, model TEXT NOT NULL, version TEXT, built_at TEXT,
+            json TEXT, PRIMARY KEY (item, tf, asof, model))""")
     return conn
 
 
@@ -452,6 +456,8 @@ SERIES = _series_catalog()
 def read_series(conn, sid, start=None, end=None):
     """(t, v) lists for a catalog series from the read-only portfolio.db `conn`; t is unix seconds."""
     s = SERIES[sid][4](conn)
+    if s.empty:                                  # an empty series has no date index to compare with
+        return [], []
     if start is not None:
         s = s[s.index >= pd.Timestamp(start).tz_localize(None)]
     if end is not None:
