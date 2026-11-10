@@ -112,7 +112,10 @@ def catalog(conn, symbols, series):
     have = {x["symbol"]: x for x in symbols} | {x["id"]: x for x in series}
     out = []
     for f in all_formulas(conn):
-        ops = [have.get(o) for o in parse(f["expr"])[1]]
+        try:
+            ops = [have.get(o) for o in parse(f["expr"])[1]]
+        except ValueError:                     # stored earlier, no longer parses (e.g. a renamed series): listed, no dates
+            ops = [None]
         ok = all(o and o["first"] and o["last"] for o in ops)
         out.append({"id": f["id"], "name": f["name"], "expr": f["expr"], "description": describe(f),
                     "first": max(o["first"] for o in ops) if ok else None, "last": min(o["last"] for o in ops) if ok else None})
@@ -172,8 +175,9 @@ def compute(conn, main, expr, tf, start=None, end=None, limit=20000):
         return None, "no time has a bar of every symbol in the formula"
     cols = {}
     with np.errstate(all="ignore"):
+        filled = {o: bars.asof(idx, sers[o], FILL_DAYS) for o in ops if o not in frames}      # once, not per column
         for c in ("open", "high", "low", "close"):
-            env = {f"v{i}": frames[o][c].reindex(idx) if o in frames else bars.asof(idx, sers[o], FILL_DAYS) for i, o in enumerate(ops)}
+            env = {f"v{i}": frames[o][c].reindex(idx) if o in frames else filled[o] for i, o in enumerate(ops)}
             cols[c] = _ev(tree, env)
     out = pd.DataFrame(cols, index=idx).replace([np.inf, -np.inf], np.nan)
     out["high"] = out[["open", "high", "close"]].max(axis=1, skipna=False)

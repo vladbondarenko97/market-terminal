@@ -285,12 +285,13 @@ class Routes(Base):
         sr = pd.Series([1e9, 1.1e9, 2e9], index=pd.DatetimeIndex(["2026-05-20 09:00", "2026-05-20 16:00", "2026-05-27"], tz="UTC"))
         with mock.patch("yfinance.Ticker") as tk:
             tk.return_value.get_shares_full.return_value = sr
+            tk.return_value.splits = pd.Series(dtype=float)
             for sym, kind in (("NKE", "EQUITY"), ("SPY", "ETF"), ("GC=F", "FUTURE")):
                 self.kind(sym, kind)
                 self.assertEqual(bars.collect_shares(self.conn, sources.SourceSession(self.conn, "a-" + sym), sym), 2 if sym == "NKE" else 0)
-            self.assertEqual(tk.call_count, 1)                                       # the ETF and the future never asked
+            self.assertEqual(tk.call_count, 2)                                       # NKE's splits and shares; the ETF and the future never asked
             self.assertEqual(bars.collect_shares(self.conn, sources.SourceSession(self.conn, "b"), "NKE"), 0)
-            self.assertEqual(tk.call_count, 1)                                       # fetched less than a week ago
+            self.assertEqual(tk.call_count, 2)                                       # tried less than a week ago
         self.assertEqual(self.conn.execute("SELECT d, shares FROM v2_chart_shares ORDER BY d").fetchall()[0][:], ("2026-05-20", 1.1e9))
 
     def test_mcap_is_close_times_the_shares_as_of_each_bar(self):
@@ -301,8 +302,18 @@ class Routes(Base):
         self.assertEqual((j["status"], j["value"], j["unit"]), ("success", "mcap", "USD billions"))
         self.assertEqual(j["v"], [200.0, 200.0])                                     # 05-26 is before the first shares date: left out
         self.assertNotIn("o", j)
-        c = self.client.get("/api/chart/bars?symbol=NKE&value=mcap&tf=1wk").get_json()    # no weekly bars stored: still a line, no zeros
-        self.assertEqual(c["status"], "success")
+        c = self.client.get("/api/chart/bars?symbol=NKE&value=mcap&tf=1wk").get_json()    # the week (from the daily bars) starts before the shares
+        self.assertEqual(c["status"], "missing")
+        self.assertIn("start on 2026-05-27", c["reason"])
+
+    def test_mcap_puts_shares_reported_before_a_split_on_todays_basis(self):
+        self.kind("NVDA", "EQUITY")
+        bars.ingest(self.conn, "NVDA", "1d", priced(["2026-05-26", "2026-05-28"], [10.0, 10.0]), "yahoo", now=NOW)
+        self.shares("NVDA", [("2026-05-26", 1e9), ("2026-05-28", 1e10)])
+        with self.conn:
+            self.conn.execute("INSERT INTO v2_chart_splits VALUES ('NVDA', '2026-05-27', 10.0, 'test')")
+        j = self.client.get("/api/chart/bars?symbol=NVDA&value=mcap").get_json()
+        self.assertEqual(j["v"], [100.0, 100.0])                                     # no false 10x jump at the split
 
     def test_mcap_is_missing_for_an_etf_or_before_shares_are_fetched_and_volume_is_the_v_column(self):
         bars.ingest(self.conn, "SPY", "1d", priced(["2026-05-27", "2026-05-28"], [100.0, 101.0]), "yahoo", now=NOW)

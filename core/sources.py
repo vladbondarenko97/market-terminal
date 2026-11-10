@@ -155,6 +155,14 @@ def yf_shares(s, symbol):
     return sr, pid
 
 
+def yf_splits(s, symbol):
+    """Stock splits of one stock (a Series of ratios by date; empty when it never split)."""
+    import yfinance as yf
+    sr, _ = s.fetch("yahoo", {"fn": "splits", "symbol": symbol}, lambda: yf.Ticker(symbol).splits, kind="splits", fmt="csv",
+                    capture=lambda r: _frame_capture(r.to_frame("ratio")))
+    return sr
+
+
 def alpaca_bars(s, key, secret, symbol, start, end):
     """1-minute bars (all-market SIP feed, split/dividend adjusted) for one US symbol, start..end (YYYY-MM-DD), every page.
     Market data only: the keys are never used to trade."""

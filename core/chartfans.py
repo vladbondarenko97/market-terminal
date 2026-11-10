@@ -83,7 +83,10 @@ def build_all(conn, main=None):
             df = fans._clean_ohlcv(bars.read_bars(conn, sym, "1d", limit=fans.LOOKBACK + 1))
             added += _daily(conn, sym, df, predictor, kinfo, True)
     for f in formulas.all_formulas(conn):
-        added += _formula(conn, main, f, predictor, kinfo)
+        try:                                   # one formula that no longer computes must not stop the other fans
+            added += _formula(conn, main, f, predictor, kinfo)
+        except Exception as exc:
+            print(f"fans: formula {f['id']} skipped: {exc}")
     for sid in bars.SERIES if main is not None else ():
         if sid in NO_FAN or (sid in SNAPSHOT_ITEMS and sid not in KRONOS_SERIES):
             continue

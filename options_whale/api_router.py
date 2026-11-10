@@ -3510,7 +3510,7 @@ def api_chart_bars():
                     return jsonify({"status": "missing", "reason": why})
                 return jsonify({"status": "success", "symbol": sym, "tf": tf, "value": value,
                                 "unit": "USD billions" if value == "mcap" else "shares", "t": [int(x.timestamp()) for x in line.index],
-                                "v": [round(float(v), 4 if value == "mcap" else 0) for v in line]})
+                                "v": [None if pd.isna(v) else round(float(v), 4 if value == "mcap" else 0) for v in line]})
     finally:
         for c in (conn, mconn):
             if c is not None:
