@@ -10,7 +10,9 @@ Daily and weekly ts is the exchange-local date (YYYY-MM-DD); intraday ts is the 
 import fcntl
 import io
 import json
+import os
 import re
+import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -24,6 +26,7 @@ NY = ZoneInfo("America/New_York")
 SYMBOL_RE = re.compile(r"^[A-Z0-9.^=\-]{1,15}$")
 NATIVE = ("1m", "5m", "1h", "1d", "1wk")
 INTRADAY = ("1m", "5m", "1h")
+INTRADAY_RE = re.compile(r"^\d+[mh]$")
 # derived tf -> (rule, stored timeframes to build it from, finest first)
 DERIVED = {"15m": ("15min", ("5m", "1m")), "30m": ("30min", ("5m", "1m")), "4h": ("4h", ("1h",)), "1mo": ("MS", ("1d",))}
 TF_MINUTES = {"1m": 1, "5m": 5, "1h": 60, "15m": 15, "30m": 30, "4h": 240}
@@ -99,6 +102,12 @@ def connect():
         conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_fans (
             item TEXT NOT NULL, tf TEXT NOT NULL, asof TEXT NOT NULL, model TEXT NOT NULL, version TEXT, built_at TEXT,
             json TEXT, PRIMARY KEY (item, tf, asof, model))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_shares (
+            symbol TEXT NOT NULL, d TEXT NOT NULL, shares REAL, source TEXT, payload_id INTEGER, PRIMARY KEY (symbol, d))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_splits (
+            symbol TEXT NOT NULL, d TEXT NOT NULL, ratio REAL NOT NULL, source TEXT, PRIMARY KEY (symbol, d))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_formulas (
+            id TEXT PRIMARY KEY, name TEXT, expr TEXT NOT NULL, added_at TEXT)""")
     return conn
 
 
@@ -178,11 +187,14 @@ def write_days(symbol, tf, df, now=None):
         if path.exists() or not finished(day, now, symbol):
             continue
         out.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")          # per process: two jobs on one symbol never share it
         g = pd.DataFrame({"ts": g.index.tz_convert("UTC").tz_localize(None),
                           **{c: g[c].astype("float32") for c in ("open", "high", "low", "close")},
                           "volume": g["volume"].fillna(0).astype("int64")})
         g.to_parquet(tmp, compression="zstd", index=False)
+        if path.exists():                                      # another job wrote it meanwhile: keep the first
+            tmp.unlink()
+            continue
         tmp.replace(path)
         n += 1
     return n
@@ -243,6 +255,13 @@ def _resample(df, rule):
     return out.dropna(subset=["open"])
 
 
+AGG = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+
+
+def _coarser(daily, tf):
+    return daily.resample("W-MON" if tf == "1wk" else "MS", label="left", closed="left").agg(AGG).dropna(subset=["open"])
+
+
 def _utc(x):
     if x is None:
         return None
@@ -269,17 +288,23 @@ def read_bars(conn, symbol, tf, start=None, end=None, limit=20000):
             break
     if rule and not df.empty:
         df = _resample(df, rule)
-    if df.empty and tf in ("1d", "1wk", "1mo"):            # no daily history stored: build it from the intraday files
+    if df.empty and tf in ("1wk", "1mo"):                  # no weekly rows stored: resample the stored daily history
+        df = _read_daily(conn, symbol, "1d", start, end)
+        if not df.empty:
+            df = _coarser(df, tf)
+    if df.empty and tf in ("1d", "1wk", "1mo"):            # no daily history at all: build it from the intraday files
         for src in ("1h", "5m"):
             df = _read_files(symbol, src, start, end, 10 ** 9)
             if not df.empty:
                 break
         if not df.empty:
-            df = _resample(df, "1D")
-            df.index = pd.DatetimeIndex(df.index.tz_convert(NY).date).tz_localize("UTC")   # like stored daily bars
+            loc = df.tz_convert(NY)
+            if AROUND_THE_CLOCK.search(symbol):            # the session that opens at 18:00 ET belongs to the next date
+                loc.index = loc.index + pd.Timedelta(hours=6)
+            df = loc.groupby(loc.index.date).agg(AGG)
+            df.index = pd.DatetimeIndex(df.index).tz_localize("UTC")                        # like stored daily bars
             if tf != "1d":
-                df = df.resample("W-MON" if tf == "1wk" else "MS", label="left", closed="left").agg(
-                    {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["open"])
+                df = _coarser(df, tf)
     if start is not None:
         df = df[df.index >= start]
     if end is not None:
@@ -332,6 +357,83 @@ def catalog_symbols(conn):
     return out
 
 
+# ---------------------------------------------------------------- shares outstanding (market cap = close x shares)
+def kind_of(conn, symbol):
+    r = conn.execute("SELECT kind FROM v2_chart_symbols WHERE symbol = ?", (symbol,)).fetchone()
+    return (r[0] or "") if r else ""
+
+
+def collect_shares(conn, s, symbol, now=None, every_days=7):
+    """Stocks only (kind EQUITY): store Yahoo's shares-outstanding history, one row per date (the last value of the date,
+    INSERT OR IGNORE), at most once a week per symbol (the fetch log says when). Returns rows added; raises SourceUnavailable."""
+    if kind_of(conn, symbol) != "EQUITY":
+        return 0
+    # any attempt counts, so a stock Yahoo has no shares for is not asked again every run
+    # ponytail: a LIKE scan of chart.db's own (small) fetch log; a per-symbol "last tried" column if it grows large
+    last = conn.execute("""SELECT MAX(started_at) FROM v2_fetch_log WHERE source = 'yahoo'
+                           AND request_json LIKE ? AND request_json LIKE ?""",
+                        ('%"fn": "shares"%', f'%"symbol": "{symbol}"%')).fetchone()[0]
+    if last and pd.Timestamp(last) > pd.Timestamp(now or now_ny()) - pd.Timedelta(days=every_days):
+        return 0
+    splits = sources.yf_splits(s, symbol)                  # the prices are split-adjusted, the reported shares are not
+    with conn:
+        conn.executemany("INSERT OR IGNORE INTO v2_chart_splits VALUES (?,?,?,?)",
+                         [(symbol, str(d)[:10], float(r), "yahoo") for d, r in splits.items() if r and r > 0])
+    sr, pid = sources.yf_shares(s, symbol)
+    sr = pd.to_numeric(sr, errors="coerce").dropna()
+    sr = sr[sr > 0]
+    days = pd.Series(sr.values, index=[str(x)[:10] for x in sr.index]).groupby(level=0).last()   # reported order: last of a date
+    with conn:
+        before = conn.total_changes
+        conn.executemany("INSERT OR IGNORE INTO v2_chart_shares VALUES (?,?,?,?,?)",
+                         [(symbol, d, float(v), "yahoo", pid) for d, v in days.items()])
+        return conn.total_changes - before
+
+
+def read_shares(conn, symbol):
+    """Shares outstanding by date (UTC midnight index), oldest first; empty when none are stored."""
+    try:
+        rows = conn.execute("SELECT d, shares FROM v2_chart_shares WHERE symbol = ? ORDER BY d", (symbol,)).fetchall()
+    except sqlite3.OperationalError:               # a chart.db from before shares
+        rows = []
+    sh = pd.Series([r[1] for r in rows], index=pd.DatetimeIndex([pd.Timestamp(r[0]) for r in rows]).tz_localize("UTC"), dtype=float)
+    try:   # on today's split basis, like the prices: a count reported before a 10:1 split counts 10 times
+        for d, ratio in conn.execute("SELECT d, ratio FROM v2_chart_splits WHERE symbol = ?", (symbol,)):
+            sh[sh.index < pd.Timestamp(d, tz="UTC")] *= ratio
+    except sqlite3.OperationalError:
+        pass
+    return sh
+
+
+def asof(left_index, s, days=None):
+    """`s` (a Series with a UTC DatetimeIndex) as of each time of `left_index` (last value on or before it, at most `days` old);
+    NaN where there is none."""
+    if s.empty:
+        return pd.Series(float("nan"), index=left_index)
+    left = pd.DataFrame({"t": left_index})
+    right = pd.DataFrame({"t": s.index, "x": s.values})
+    out = pd.merge_asof(left, right, on="t", direction="backward", tolerance=None if days is None else pd.Timedelta(days=days))
+    return pd.Series(out["x"].values, index=left_index)
+
+
+def value_frame(conn, symbol, df, value):
+    """('mcap'|'volume') -> (Series, None) of the line to draw for the bars `df`, or (None, reason). mcap is close x the shares
+    outstanding as of each bar, in USD billions; bars before the first shares date are left out."""
+    if value == "volume" or df.empty:
+        return df["volume"], None
+    sh = asof(df.index, read_shares(conn, symbol))
+    if sh.notna().any():
+        return (df["close"] * sh / 1e9).dropna(), None
+    kind, stored = kind_of(conn, symbol), read_shares(conn, symbol)
+    if not kind:
+        return None, f"no company info stored for {symbol} (Yahoo's lookup failed), so its shares were not fetched"
+    if kind != "EQUITY":
+        return None, f"market cap needs shares outstanding, which only stocks have ({symbol} is {kind})"
+    if len(stored):
+        return None, f"shares outstanding for {symbol} start on {stored.index[0].date()}; this range is earlier"
+    return None, f"no shares outstanding stored for {symbol} yet: `main_pipeline.py bars --symbol {symbol}` fetches them"
+
+
 # ---------------------------------------------------------------- fetching (Yahoo, Alpaca)
 NORMAL = (("1d", {"period": "7d"}), ("1wk", {"period": "1mo"}), ("1m", {"period": "7d"}), ("5m", {"period": "7d"}), ("1h", {"period": "7d"}))
 BACKFILL = (("1d", {"period": "max"}), ("1wk", {"period": "max"}), ("1h", {"period": "730d"}), ("5m", {"period": "60d"}))
@@ -381,6 +483,10 @@ def collect(conn, s, symbols, backfill=False, deep=False, now=None):
                 added += _fetch_yahoo(conn, s, symbol, tf, kw, now)
             except sources.SourceUnavailable as exc:
                 errors.append(f"yahoo {symbol} {tf}: {exc}")
+        try:
+            added += collect_shares(conn, s, symbol, now)
+        except sources.SourceUnavailable as exc:
+            errors.append(f"yahoo {symbol} shares: {exc}")
         if deep:
             n, errs = _deep(conn, s, symbol, now)
             added, errors = added + n, errors + errs

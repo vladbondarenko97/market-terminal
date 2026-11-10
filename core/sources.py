@@ -141,6 +141,28 @@ def yf_history(s, symbol, period="7d", interval="1d", *, start=None, end=None, p
     return df, pid
 
 
+def yf_shares(s, symbol):
+    """Shares outstanding history (a Series indexed by report time, since 2000) of one stock."""
+    import yfinance as yf
+
+    def call():
+        sr = yf.Ticker(symbol).get_shares_full(start="2000-01-01")
+        if sr is None or len(sr) == 0:
+            raise SourceUnavailable("yahoo", "empty", f"{symbol} shares")
+        return sr
+    sr, pid = s.fetch("yahoo", {"fn": "shares", "symbol": symbol}, call, kind="shares", fmt="csv",
+                      capture=lambda r: _frame_capture(r.to_frame("shares")))
+    return sr, pid
+
+
+def yf_splits(s, symbol):
+    """Stock splits of one stock (a Series of ratios by date; empty when it never split)."""
+    import yfinance as yf
+    sr, _ = s.fetch("yahoo", {"fn": "splits", "symbol": symbol}, lambda: yf.Ticker(symbol).splits, kind="splits", fmt="csv",
+                    capture=lambda r: _frame_capture(r.to_frame("ratio")))
+    return sr
+
+
 def alpaca_bars(s, key, secret, symbol, start, end):
     """1-minute bars (all-market SIP feed, split/dividend adjusted) for one US symbol, start..end (YYYY-MM-DD), every page.
     Market data only: the keys are never used to trade."""

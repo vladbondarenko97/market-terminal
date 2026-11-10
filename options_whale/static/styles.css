@@ -798,6 +798,9 @@ div.fans-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(1
 .ch-chip { font-size: 11px; color: #a1a1aa; border: 1px solid #27272a; border-radius: 4px; padding: 2px 7px; background: transparent; cursor: pointer; max-width: 100%; text-align: left; }
 .ch-chip:hover { color: #fff; border-color: #52525b; }
 .ch-chip span { color: #71717a; }
+.ch-chip-wrap { display: inline-flex; max-width: 100%; }
+.ch-chip-wrap .ch-chip:first-child { border-right: 0; border-radius: 4px 0 0 4px; }
+.ch-chip-wrap .ch-chip-x { border-radius: 0 4px 4px 0; padding: 2px 5px; }
 @media (max-width: 767px) { .ch-bar { padding: 8px 10px 4px; } .ch-input { width: 130px; } .ch-info, .ch-status, .ch-tracked { padding-left: 10px; padding-right: 10px; } .ch-grid { margin: 4px 10px; } }
 
 .ch-bar2 { padding-top: 2px; }

@@ -11,7 +11,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-from core import bars, fans, lake, market_calendar
+from core import bars, fans, formulas, lake, market_calendar
 
 NY = bars.NY
 Q = (5, 10, 25, 50, 75, 90, 95)
@@ -82,6 +82,11 @@ def build_all(conn, main=None):
         if sym not in SNAPSHOT_ITEMS:
             df = fans._clean_ohlcv(bars.read_bars(conn, sym, "1d", limit=fans.LOOKBACK + 1))
             added += _daily(conn, sym, df, predictor, kinfo, True)
+    for f in formulas.all_formulas(conn):
+        try:                                   # one formula that no longer computes must not stop the other fans
+            added += _formula(conn, main, f, predictor, kinfo)
+        except Exception as exc:
+            print(f"fans: formula {f['id']} skipped: {exc}")
     for sid in bars.SERIES if main is not None else ():
         if sid in NO_FAN or (sid in SNAPSHOT_ITEMS and sid not in KRONOS_SERIES):
             continue
@@ -110,6 +115,22 @@ def _daily(conn, item, df, predictor, kinfo, widen):
     dates = fans.trading_dates(df.index[-1].date(), fans.DAILY_STEPS)
     return build_one(conn, item, "1d", df, df.index[-1].date().isoformat(), dates, [d.isoformat() for d in dates],
                      predictor, kinfo, None, widen)
+
+
+def _formula(conn, main, f, predictor, kinfo):
+    """Daily fans of a saved formula, built from its computed daily candles like any item (close only). Return-based fans need
+    positive values: a formula at or below zero anywhere in the window is recorded as missing with that reason."""
+    df, _ = formulas.compute(conn, main, f["expr"], "1d", limit=fans.LOOKBACK + 1)
+    if df is None or len(df) < 60:
+        return 0
+    s = df["close"]
+    if (s <= 0).any():
+        why = fans._missing(f"the formula is {'zero' if (s == 0).any() else 'negative'} on {s[s <= 0].index[-1].date()}: return-based fans need positive values")
+        dates = fans.trading_dates(s.index[-1].date(), fans.DAILY_STEPS)
+        return _store(conn, f["id"], "1d", s.index[-1].date().isoformat(), s.iloc[-1], [d.isoformat() for d in dates],
+                      {"kronos": why, "baseline": why}, fans.FAN_MODELS)
+    d = fans._clean_ohlcv(pd.DataFrame({"open": s, "high": s, "low": s, "close": s, "volume": 0.0}))
+    return _daily(conn, f["id"], d, predictor, kinfo, True)
 
 
 def _weekly(conn, item, df, predictor, kinfo):
