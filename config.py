@@ -21,7 +21,7 @@ SECRET_NAMES = (
     "DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOLD_API_KEY", "EBAY_APP_ID", "EBAY_CERT_ID",
     "CME_LOGIN_USERNAME", "CME_LOGIN_PASSWORD", "EMAIL_PASSWORD", "UPLOAD_TOKEN", "NTFY_URL", "ASSISTANT_LOCAL_API_KEY", "ANTHROPIC_API_KEY",
     "SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY", "MCP_MARKET_TOKEN", "MCP_BROKERAGE_TOKEN",
-    "ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY",
+    "ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY", "HF_TOKEN",
 )
 
 
@@ -166,6 +166,8 @@ NEWS_FEEDS_FILE = optional_env("NEWS_FEEDS_FILE", default="")   # empty: the bun
 GOLD_API_KEY = optional_env("GOLD_API_KEY", default="")
 ALPACA_API_KEY_ID = optional_env("ALPACA_API_KEY_ID", default="")           # market data only (core/bars.py --deep); never trades
 ALPACA_API_SECRET_KEY = optional_env("ALPACA_API_SECRET_KEY", default="")
+HF_TOKEN = optional_env("HF_TOKEN", default="")       # scripts/backup_chart_hf.py: write token for HF_REPO only
+HF_REPO = optional_env("HF_REPO", default="")         # private dataset for the chart store backup, e.g. you/market-chart-store
 EBAY_APP_ID = optional_env("EBAY_APP_ID", default="")
 EBAY_CERT_ID = optional_env("EBAY_CERT_ID", default="")
 EMAIL_SENDER = optional_env("EMAIL_SENDER", default="")
