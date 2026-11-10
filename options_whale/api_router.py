@@ -3586,6 +3586,7 @@ def api_chart_fan():
                         cconn.close()
                 if got and got[3].get("kronos", {}).get("paths") and got[2] == s["dates"]:
                     models["kronos"] = got[3]["kronos"]
+                    out["verdict"] = "Kronos on the weekly days-of-supply ratio is not backtested yet; the daily Kronos fan loses to the baseline out of sample"
             return jsonify({**out, "source": "snapshot", "asof": s["asof"], "last": s["last"], "dates": s["dates"], "models": models})
     cconn = _chartbars.connect_readonly()
     try:

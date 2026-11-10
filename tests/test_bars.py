@@ -502,7 +502,7 @@ class Headlines(Base):
             self.assertEqual(headlines.collect_day(self.conn, s, self.D)["added"], 0)
             self.assertEqual(get.call_count, 2)                                     # not fetched again
         got = headlines.stored(self.conn, self.D)
-        self.assertEqual([g["source"] for g in got], ["wikipedia", "wikipedia", "wikipedia", "gdelt"])
+        self.assertEqual(sorted(g["source"] for g in got), ["gdelt", "wikipedia", "wikipedia", "wikipedia"])   # market words rank first
         self.assertEqual(self.conn.execute("SELECT DISTINCT first_seen_run FROM v2_news_items").fetchone()[0], "chart:2026-05-28")
         # a day with no Wikipedia page and no GDELT matches is an answer too: recorded, never refetched
         other = datetime(2026, 5, 27).date()

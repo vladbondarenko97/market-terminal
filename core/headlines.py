@@ -8,6 +8,7 @@ v2_fetch_log, which is how a date is known to be done and is never fetched again
 import copy
 import hashlib
 import json
+import re
 import time
 from datetime import date, timedelta
 
@@ -21,6 +22,8 @@ GDELT_FROM = date(2017, 1, 1)
 GDELT_PAUSE = 5.0                      # GDELT asks for one request per 5 seconds
 GDELT_QUERY = "(economy OR markets OR stocks OR fed) sourcelang:english"
 UA = {"User-Agent": "market-terminal/1.0 (personal research; contact via GitHub)"}
+MARKET_WORDS = re.compile(r"market|stock|share|index|tariff|trade|fed\b|federal reserve|rate|inflation|econom|oil|opec|"
+                          r"bank|bond|treasur|dollar|gold|silver|recession|gdp|jobs|earnings|crash|rall", re.I)
 FIRST_CATEGORY = "Business and economy"       # Wikipedia's own heading; its items come first
 
 
@@ -146,4 +149,5 @@ def stored(conn, day, limit=50):
                                ORDER BY source = 'wikipedia' DESC, rowid LIMIT ?""", (day.isoformat(), limit)).fetchall()
     except Exception:                                      # no such table: nothing stored
         return []
-    return [dict(r) for r in rows]
+    # ponytail: a keyword rank puts market news above world news; a classifier if this proves too blunt
+    return sorted((dict(r) for r in rows), key=lambda r: not MARKET_WORDS.search(r["title"]))
