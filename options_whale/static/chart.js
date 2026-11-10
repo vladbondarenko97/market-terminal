@@ -106,7 +106,10 @@
     const COLORS = ['#f59e0b', '#22d3ee', '#d946ef', '#3ddc84', '#f472b6', '#a78bfa'];
     const MODELS = { kronos: ['Kronos', '217,70,239'], baseline: ['Baseline', '34,211,238'] };
     const DAY = 86400;
-    const SYM_RE = /^[A-Z0-9.^=\-]{1,15}$/;
+    const SYM_RE = /^[A-Z0-9.^=\-]{1,15}$/, FID = /^f\.[0-9a-f]{8}$/;     // a symbol, or a saved formula's id
+    const isSym = s => SYM_RE.test(s) || FID.test(s);
+    const normSym = s => { s = String(s || '').trim(); return FID.test(s.toLowerCase()) ? s.toLowerCase() : s.toUpperCase(); };
+    const VALS = [['price', 'PRICE'], ['mcap', 'MCAP'], ['volume', 'VOL']];
     const SRC = ['close', 'hl2'];
     // indicator catalogue: pane 0 = drawn on the price pane, 1 = its own pane. params: [key, default] (number, a source name or a colour)
     const IND = {
@@ -123,19 +126,22 @@
         obv: { name: 'OBV', pane: 1, params: [['color', '#a78bfa']] },
     };
 
-    const newCell = o => Object.assign({ symbol: 'SPY', tf: '1d', range: '1Y', series: [], compare: [], ind: [{ id: 'vol', type: 'vol', p: {} }], fan: {}, pct: false, zones: 'off', k: 1.5, levels: false, events: false, blocks: false }, o || {});
+    const newCell = o => Object.assign({ symbol: 'SPY', tf: '1d', range: '1Y', series: [], compare: [], ind: [{ id: 'vol', type: 'vol', p: {} }], fan: {}, val: 'price', cval: {}, pct: false, zones: 'off', k: 1.5, levels: false, events: false, blocks: false }, o || {});
     let st = { layout: '1', active: 0, sync: false, cells: [] };
     try { Object.assign(st, JSON.parse(localStorage.getItem(LS) || '{}')); } catch (e) { /* no storage: defaults */ }
     if (!LAYOUTS[st.layout]) st.layout = '1';
     if (!Array.isArray(st.cells)) st.cells = [];
+    if (!Array.isArray(st.hiddenF)) st.hiddenF = [];
     while (st.cells.length < 6) st.cells.push(null);
     st.cells = st.cells.slice(0, 6).map(c => {
         c = newCell(c && typeof c === 'object' ? c : null);
         if (!TFS.some(x => x[0] === c.tf)) c.tf = '1d';
         if (!RANGES.some(x => x[0] === c.range)) c.range = DEFAULT_RANGE[c.tf];
-        if (!SYM_RE.test(String(c.symbol))) c.symbol = 'SPY';
+        if (!isSym(String(c.symbol))) c.symbol = 'SPY';
+        if (!VALS.some(x => x[0] === c.val)) c.val = 'price';
+        if (!c.cval || typeof c.cval !== 'object') c.cval = {};
         c.series = Array.isArray(c.series) ? c.series.filter(s => s && typeof s.id === 'string') : [];
-        c.compare = Array.isArray(c.compare) ? c.compare.filter(s => SYM_RE.test(String(s))) : [];
+        c.compare = Array.isArray(c.compare) ? c.compare.filter(s => isSym(String(s))) : [];
         c.ind = Array.isArray(c.ind) ? c.ind.filter(i => i && IND[i.type]).map(i => ({ id: String(i.id || i.type), type: i.type, p: i.p && typeof i.p === 'object' ? i.p : {} })) : [];
         if (!c.fan || typeof c.fan !== 'object') c.fan = {};
         if (!['off', 'classic', 'ours', 'both'].includes(c.zones)) c.zones = 'off';
@@ -273,6 +279,7 @@
         try { ts.setVisibleRange({ from: Math.max(from, B.t[0]), to: cell.fanEnd || end }); } catch (e) { ts.fitContent(); }
     }
     function toBars(r) {
+        if (r.value) r = { t: r.t, o: r.v, h: r.v, l: r.v, c: r.v, v: r.t.map(() => 0) };      // mcap / volume: one line
         const B = { t: [], o: [], h: [], l: [], c: [], v: [] };
         r.t.forEach((t, i) => {
             if (r.o[i] == null || r.h[i] == null || r.l[i] == null || r.c[i] == null) return;
@@ -284,7 +291,7 @@
         const c = P(cell), my = ++cell.seq;
         clearTimeout(cell.retryT);
         const from = fetchFrom(c);
-        const r = await chartJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(c.symbol)}&tf=${c.tf}` + (from ? `&from=${from}` : ''));
+        const r = await chartJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(c.symbol)}&tf=${c.tf}&value=${c.val}` + (from ? `&from=${from}` : ''));
         if (my !== cell.seq) return;
         const say = (m, bad) => { if (cell.i === st.active) status(m, bad); };
         if (r.status === 'loading') {
@@ -295,8 +302,9 @@
             return;
         }
         cell.retryStart = 0;
-        if (r.status !== 'success') { say(r.message || 'chart data unavailable', true); return; }
-        say('');
+        if (r.status === 'missing' && c.val !== 'price') { c.val = 'price'; cell.note = r.reason; save(); renderInfo(); loadBars(cell); return; }   // e.g. no market cap for an ETF
+        if (r.status !== 'success') { say(r.message || r.reason || 'chart data unavailable', true); return; }
+        say(cell.note || '', !!cell.note); cell.note = '';
         cell.last = r; cell.B = toBars(r);
         cell.chart.applyOptions(chartOptions(c.tf));
         if (!cell.B.t.length) say(`No ${c.tf} bars stored for ${c.symbol} yet.`);
@@ -319,10 +327,10 @@
         if (cell.cmp[sym] && !cell.cmp[sym].retry) return;
         cell.cmp[sym] = { retry: true };
         const c = P(cell), from = fetchFrom(c);
-        const r = await chartJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(sym)}&tf=${c.tf}` + (from ? `&from=${from}` : ''));
+        const r = await chartJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(sym)}&tf=${c.tf}&value=${c.cval[sym] || 'price'}` + (from ? `&from=${from}` : ''));
         if (!P(cell).compare.includes(sym)) { delete cell.cmp[sym]; return; }
         if (r.status === 'loading' && n < 40) { status(`Loading ${sym} history…`); setTimeout(() => ensureCmp(cell, sym, n + 1), 3000); return; }
-        if (r.status !== 'success') { cell.cmp[sym] = { err: r.message || 'unavailable' }; status(`${sym}: ${cell.cmp[sym].err}`, true); render(cell); return; }
+        if (r.status !== 'success') { cell.cmp[sym] = { err: r.message || r.reason || 'unavailable' }; status(`${sym}: ${cell.cmp[sym].err}`, true); render(cell); return; }
         status('');
         cell.cmp[sym] = { B: toBars(r) };
         render(cell);
@@ -362,10 +370,12 @@
         const srcOf = p => p.src === 'hl2' ? B.h.map((x, i) => (x + B.l[i]) / 2) : B.c;
         const num = (p, k, d) => { const v = Number(p[k]); return v >= 1 ? Math.floor(v) : d; };
         const line = (data, color, pane, extra) => { const s = add('LineSeries', { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, ...extra }, pane); s.setData(data); return s; };
-        const hasVol = c.ind.some(i => i.type === 'vol');
+        const mv = c.val !== 'price';                                          // main item drawn as market cap or volume: a line, not candles
+        const hasVol = !mv && c.ind.some(i => i.type === 'vol');
+        cell.candles.applyOptions({ visible: !mv, priceFormat: FID.test(c.symbol) ? { type: 'price', precision: 4, minMove: 0.0001 } : { type: 'price', precision: 2, minMove: 0.01 } });
 
         // fans: the items the fan toggles refer to
-        const items = [{ key: 'sym:' + c.symbol, item: c.symbol, label: c.symbol, api: cell.candles, anchor: B.t[B.t.length - 1] }];
+        const items = mv ? [] : [{ key: 'sym:' + c.symbol, item: c.symbol, label: c.symbol, api: cell.candles, anchor: B.t[B.t.length - 1] }];
         const futT = new Set();
 
         // candles + volume
@@ -375,6 +385,7 @@
         c.ind.forEach(ind => {
             const p = ind.p, col = p.color || '#f59e0b';
             if (ind.type === 'vol') {
+                if (mv) return;
                 const s = add('HistogramSeries', { priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false });
                 s.setData(B.t.map((t, i) => B.v[i] ? { time: t, value: B.v[i], color: B.c[i] >= B.o[i] ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)' } : null).filter(Boolean));
                 ch.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
@@ -382,7 +393,7 @@
                 const n = num(p, 'len', 20);
                 line(ser(CI[ind.type](srcOf(p), n)), col, 0, { lineWidth: 2, title: `${IND[ind.type].name} ${n}` });
             } else if (ind.type === 'vwap') {
-                if (!isIntra(c.tf)) return;
+                if (!isIntra(c.tf) || mv) return;
                 const day = B.t.map(t => new Date(t * 1000).toLocaleDateString('en-CA', { timeZone: 'America/New_York' }));
                 line(ser(CI.vwap(B.h, B.l, B.c, B.v, day)), col, 0, { lineWidth: 2, title: 'VWAP' });
             } else if (ind.type === 'bb') {
@@ -408,6 +419,11 @@
             }
         });
 
+        if (mv) {
+            const unit = cell.last && cell.last.unit, title = `${c.symbol} ${c.val === 'mcap' ? 'market cap' : 'volume'}${c.val === 'mcap' && unit ? ' (' + unit + ')' : ''}`;
+            if (c.val === 'volume') add('HistogramSeries', { color: 'rgba(34,211,238,.7)', priceFormat: { type: 'volume' }, priceLineVisible: false, title }).setData(B.t.map((t, i) => ({ time: t, value: B.c[i] })));
+            else line(ser(B.c), '#22c55e', 0, { lineWidth: 2, lastValueVisible: true, title });
+        }
         // compare symbols: own left scale, or on the right scale in % mode
         c.compare.forEach((sym, k) => {
             const d = cell.cmp[sym];
@@ -415,9 +431,9 @@
             if (!d.B) return;
             const color = COLORS[(k + 1) % COLORS.length];
             if (!c.pct) left = true;
-            const s = add('LineSeries', { color, lineWidth: 2, priceScaleId: c.pct ? 'right' : 'left', title: sym }, 0);
+            const s = add('LineSeries', { color, lineWidth: 2, priceScaleId: c.pct ? 'right' : 'left', title: sym + (c.cval[sym] && c.cval[sym] !== 'price' ? ' ' + c.cval[sym] : '') }, 0);
             s.setData(d.B.t.map((t, i) => ({ time: t, value: d.B.c[i] })));
-            items.push({ key: 'sym:' + sym, item: sym, label: sym, api: s, anchor: d.B.t[d.B.t.length - 1], color });
+            if (!c.cval[sym] || c.cval[sym] === 'price') items.push({ key: 'sym:' + sym, item: sym, label: sym, api: s, anchor: d.B.t[d.B.t.length - 1], color });
         });
         // added series: left scale or its own lower pane
         c.series.forEach((sd, k) => {
@@ -454,7 +470,7 @@
         const fe = futT.size ? Math.max(...futT) : null;
         if (fe !== cell.fanEnd) { cell.fanEnd = fe; applyRange(cell); }
         // zones
-        const zm = c.zones;
+        const zm = mv ? 'off' : c.zones;
         if (zm !== 'off') {
             const zs = [];
             const lastT = B.t[B.t.length - 1];
@@ -479,7 +495,7 @@
             cell.candles.attachPrimitive(p); cell.cprims.push(p);
         }
         // levels, events, blocks from /api/chart/overlays
-        const wantOv = c.levels || c.events || c.blocks || zm === 'ours' || zm === 'both';
+        const wantOv = !mv && (c.levels || c.events || c.blocks || zm === 'ours' || zm === 'both');
         if (wantOv) ensureOv(cell);
         const ov = wantOv && cell.ov && !cell.ov.pending && !cell.ov.err ? cell.ov : null;
         if (ov && (c.levels || zm === 'ours' || zm === 'both')) (ov.levels || []).forEach(l => cell.pl.push(cell.candles.createPriceLine({ price: l.price, color: '#f59e0b', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: l.label || l.kind || '' })));
@@ -490,7 +506,7 @@
         mk.sort((a, b) => a.time - b.time);
         if (!cell.markers) cell.markers = LW.createSeriesMarkers(cell.candles, mk); else cell.markers.setMarkers(mk);
         // trend lines and horizontal lines
-        const dr = drawings[c.symbol] || [];
+        const dr = mv ? [] : drawings[c.symbol] || [];
         dr.forEach(d => { if (d.type === 'h') cell.pl.push(cell.candles.createPriceLine({ price: d.price, color: '#e4e4e7', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: '' })); });
         const trends = dr.filter(d => d.type === 't');
         if (trends.length) {
@@ -617,11 +633,18 @@
         box.replaceChildren();
         if (!cell) return;
         const c = P(cell), info = symInfo[c.symbol] || {};
-        const row = (title, desc, val, key, onX, color) => {
+        const row = (title, desc, val, key, onX, color, mode) => {
             const d = h('div', 'ch-info-row');
             if (color) d.style.borderLeftColor = color;
             d.append(h('b', null, title), h('span', 'ch-desc', desc || ''), h('span', 'ch-val', val));
-            if (key) {
+            if (mode) {                                                       // PRICE | MCAP | VOL
+                const s = h('select', 'ch-sel');
+                VALS.forEach(([v, l]) => { const o = h('option', null, l); o.value = v; s.append(o); });
+                s.value = mode.cur; s.title = 'Draw the price, the market cap (stocks only) or the volume';
+                s.onchange = () => mode.set(s.value);
+                d.append(s);
+            }
+            if (key && !(mode && mode.cur !== 'price')) {          // a fan is of the price
                 const k = h('button', 'ch-k' + (fanOn(c, key) ? ' on' : ''), 'K');
                 k.title = 'Kronos scenario fan for this item (the KRONOS box in the header turns it on for all)';
                 k.onclick = () => { c.fan[key] = !fanOn(c, key); save(); render(cell); renderInfo(); renderExplore(); };
@@ -631,8 +654,10 @@
             box.append(d);
         };
         const B = cell.B;
-        row(c.symbol + (info.name ? ' · ' + info.name : ''), info.description, B && B.t.length ? `${fmtNum(B.c[B.c.length - 1])} · ${fmtDate(B.t[B.t.length - 1], c.tf)}` : '', 'sym:' + c.symbol, null, '#22c55e');
-        c.compare.forEach((s, k) => row(s, symInfo[s] && (symInfo[s].name || symInfo[s].description), cell.cmp[s] && cell.cmp[s].err ? cell.cmp[s].err : '', 'sym:' + s, () => { c.compare = c.compare.filter(x => x !== s); delete cell.cmp[s]; save(); render(cell); renderInfo(); renderExplore(); }, COLORS[(k + 1) % COLORS.length]));
+        row(c.symbol + (info.name ? ' · ' + info.name : ''), info.description, B && B.t.length ? `${fmtNum(B.c[B.c.length - 1])}${c.val === 'mcap' && cell.last && cell.last.unit ? ' ' + cell.last.unit : ''} · ${fmtDate(B.t[B.t.length - 1], c.tf)}` : '', 'sym:' + c.symbol, null, '#22c55e',
+            FID.test(c.symbol) ? null : { cur: c.val, set: v => { c.val = v; save(); loadBars(cell); renderInfo(); renderExplore(); } });
+        c.compare.forEach((s, k) => row(s, symInfo[s] && (symInfo[s].name || symInfo[s].description), cell.cmp[s] && cell.cmp[s].err ? cell.cmp[s].err : '', 'sym:' + s, () => { c.compare = c.compare.filter(x => x !== s); delete cell.cmp[s]; delete c.cval[s]; save(); render(cell); renderInfo(); renderExplore(); }, COLORS[(k + 1) % COLORS.length],
+            FID.test(s) ? null : { cur: c.cval[s] || 'price', set: v => { c.cval[s] = v; delete cell.cmp[s]; save(); render(cell); renderInfo(); renderExplore(); } }));
         c.series.forEach((sd, k) => {
             const l = cell.lines[sd.id], m = l && l.meta, n = m ? m.t.length : 0;
             row(m ? m.label : sd.id, m && m.description, m ? (n ? `${fmtNum(m.v[n - 1])} ${m.unit} · ${new Date(m.t[n - 1] * 1000).toISOString().slice(0, 10)}` : 'no data') : 'loading…', 'ser:' + sd.id, () => { c.series = c.series.filter(s => s.id !== sd.id); delete cell.lines[sd.id]; save(); render(cell); renderInfo(); renderExplore(); }, COLORS[(k + 3) % COLORS.length]);
@@ -650,13 +675,24 @@
             b.onclick = () => pick(s.symbol);
             box.append(b);
         });
+        (catalog.formulas || []).forEach(f => {                         // saved formulas: the name (or id) and the expression
+            symInfo[f.id] = { name: f.name || f.id, kind: 'FORMULA', description: f.description };
+            if (st.hiddenF.includes(f.id)) return;
+            const w = h('span', 'ch-chip-wrap'), b = h('button', 'ch-chip'), x = h('button', 'ch-chip ch-chip-x', '×');
+            b.append(h('b', null, f.name || f.id), h('span', null, ' ' + f.expr));
+            b.title = `${f.id}: ${f.description}`;
+            b.onclick = () => pick(f.id);
+            x.title = 'Hide this formula in this browser (formulas cannot be deleted)';
+            x.onclick = () => { st.hiddenF.push(f.id); save(); loadCatalog(); };
+            w.append(b, x); box.append(w);
+        });
         return catalog;
     }
 
     // ---- symbol box and pickers
     function pick(sym) {
-        sym = String(sym || '').trim().toUpperCase();
-        if (!SYM_RE.test(sym)) { status('That is not a valid symbol.', true); return; }
+        sym = normSym(sym);
+        if (!isSym(sym)) { status('That is not a valid symbol.', true); return; }
         const cell = A(), c = P(cell);
         delete c.fan['sym:' + c.symbol]; c.symbol = sym;
         cell.ovSym = null; cell.ov = null; pendingPt = null;
@@ -710,6 +746,44 @@
             row.append(act);
             return row;
         }));
+    }
+
+    // ---- formulas: saved on the server (POST /api/chart/formulas), computed there from the stored bars and series
+    async function loadSymbol(sym, msg) {                           // first use of a symbol starts its download; wait for the daily bars
+        for (let n = 0; n < 40; n++) {
+            const r = await chartJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(sym)}&tf=1d`);
+            if (r.status === 'success') return true;
+            if (r.status !== 'loading') { msg.textContent = `${sym}: ${r.message || r.reason || 'no history'}`; return false; }
+            msg.textContent = `Loading ${sym} history…`;
+            await new Promise(res => setTimeout(res, 3000));
+        }
+        msg.textContent = `${sym}: still no history after 2 minutes.`;
+        return false;
+    }
+    async function saveFormula(expr, name, msg, offer) {
+        msg.className = 'ch-desc'; msg.textContent = 'Saving…'; offer.replaceChildren();
+        const r = await fetchJson(`${API_BASE}/api/chart/formulas`, { method: 'POST', headers: { 'X-Chart-Request': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ expr, name }) });
+        if (r.status === 'success') { msg.textContent = ''; catalog = null; $('chFormDrop').classList.add('hidden'); await loadCatalog(); pick(r.id); return; }
+        msg.className = 'ch-bad'; msg.textContent = r.message || 'could not save the formula';
+        (r.unknown || []).filter(s => SYM_RE.test(s)).forEach(sym => {
+            const b = h('button', 'ch-btn', `ADD ${sym}`);
+            b.title = 'Download this symbol first, then save the formula';
+            b.onclick = async () => { b.disabled = true; msg.className = 'ch-desc'; if (await loadSymbol(sym, msg)) saveFormula(expr, name, msg, offer); else { msg.className = 'ch-bad'; b.disabled = false; } };
+            offer.append(b);
+        });
+    }
+    function openFormula() {
+        const box = $('chFormDrop');
+        if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+        const expr = h('input', 'ch-input'), name = h('input', 'ch-input'), msg = h('div', 'ch-desc'), offer = h('div', 'ch-act');
+        expr.placeholder = 'GC=F / SI=F'; expr.setAttribute('aria-label', 'Formula'); expr.spellcheck = false; expr.maxLength = 200;
+        name.placeholder = 'Name (optional)'; name.setAttribute('aria-label', 'Formula name'); name.maxLength = 60;
+        [expr, name].forEach(i => { i.style.cssText = 'width:100%;display:block;margin:4px 0;text-transform:none'; });
+        const go = () => saveFormula(expr.value, name.value, msg, offer);
+        [expr, name].forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') go(); }));
+        const save_ = h('button', 'ch-btn', 'SAVE'); save_.onclick = go;
+        box.replaceChildren(h('div', 'ch-desc', 'Symbols and series ids with + - * / ( ) and numbers, e.g. GC=F / SI=F, (HO=F * 42) - CL=F, SPY / ^VIX, eia.days.distillate / eia.days.gasoline. Put spaces around a minus. High and low of the candles are approximate.'), expr, name, save_, msg, offer);
+        box.classList.remove('hidden'); expr.focus();
     }
 
     // ---- indicators
@@ -778,7 +852,7 @@
     async function openDay(cell, date, tries = 0) {
         const c = P(cell), panel = $('chDay');
         if (tries === 0) { dayDate = date; panel.classList.remove('hidden'); }
-        const syms = [c.symbol].concat(c.compare), ids = c.series.map(s => s.id);
+        const syms = [c.symbol].concat(c.compare).filter(s => !FID.test(s)), ids = c.series.map(s => s.id);
         const r = await chartJson(`${API_BASE}/api/chart/day?date=${date}&symbols=${encodeURIComponent(syms.join(','))}&series=${encodeURIComponent(ids.join(','))}`);
         if (dayDate !== date) return;
         panel.replaceChildren();
@@ -875,8 +949,8 @@
         const cmp = $('chCmp');
         $('chCmpBtn').onclick = () => { $('chCmpWrap').classList.toggle('open'); cmp.focus(); };
         const addCmp = sym => {
-            sym = String(sym || '').trim().toUpperCase();
-            if (!SYM_RE.test(sym)) { status('That is not a valid symbol.', true); return; }
+            sym = normSym(sym);
+            if (!isSym(sym)) { status('That is not a valid symbol.', true); return; }
             const cell = A(), c = P(cell);
             if (sym !== c.symbol && !c.compare.includes(sym)) c.compare.push(sym);
             cmp.value = ''; $('chCmpLookup').classList.add('hidden'); $('chCmpWrap').classList.remove('open');
@@ -888,6 +962,7 @@
         $('chPct').onclick = () => toggle('pct');
         $('chSync').onclick = () => { st.sync = !st.sync; save(); syncUI(); };
         $('chAdd').onclick = openSeriesPicker;
+        $('chForm').onclick = openFormula;
         $('chInd').onclick = () => { const b = $('chIndDrop'); b.classList.toggle('hidden'); if (!b.classList.contains('hidden')) renderInd(); };
         $('chZones').onchange = e => { const c = P(A()); c.zones = e.target.value; save(); render(A()); };
         $('chK').onchange = e => { const c = P(A()); c.k = Number(e.target.value) > 0 ? Number(e.target.value) : 1.5; save(); render(A()); };
@@ -897,6 +972,7 @@
         document.addEventListener('click', e => {
             if (!e.target.closest('#chAddWrap')) $('chSeriesPick').classList.add('hidden');
             if (!e.target.closest('#chIndWrap')) $('chIndDrop').classList.add('hidden');
+            if (!e.target.closest('#chFormWrap')) $('chFormDrop').classList.add('hidden');
         });
         document.addEventListener('keydown', e => { if (e.key === 'Escape') { tool = null; pendingPt = null; syncUI(); closeDay(); } });
         window.addEventListener('fans:toggle', () => { cells.forEach(render); renderInfo(); renderExplore(); });
