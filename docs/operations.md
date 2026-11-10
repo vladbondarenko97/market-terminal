@@ -835,7 +835,16 @@ It is a separate job from `run`: it does not take the run lock and writes nothin
 - `bars --from-lake`: free, no network. Newest capture wins where captures overlap.
 - `bars --symbol NKE`: adds NKE (name and description from Yahoo) and backfills it. The terminal starts this itself the first time the CHART tab asks for a symbol with no bars; its output goes to `CHART_STORE/bars_job.log`.
 - `bars --backfill`, `bars --backfill --deep --symbol SPY`: re-run the backfill for tracked symbols or named ones. `--deep` saves a day file per session as it goes and skips a 31-day piece that already has 15 or more day files, so a killed run resumes.
-- `bars` alone: the 7-day top-up for every tracked symbol. Schedule it (three times a day on the machine that owns `CHART_STORE`); nothing here schedules it yet.
+- `bars` alone: the 7-day top-up for every tracked symbol.
+- **Where it runs: Oracle.** The store is `/srv/market/chart` there, mounted writable into `market-web` (infra repo
+  `oracle/compose.yaml`). `market-bars.timer` runs `bars --scheduled` in that container at 09:10, 12:40, 16:50 and
+  20:30 ET on weekdays (the run after the close also builds the fans). `market-hf.timer` runs
+  `scripts/backup_chart_hf.py` at 21:30 ET (`--weekly` on Sundays): the bars day files every day, a gzipped
+  `chart.db` once a week, to the private Hugging Face dataset `HF_REPO`. Until `HF_TOKEN` and `HF_REPO` are in
+  Oracle's `market.env` it prints "not configured" and uploads nothing. A Mac terminal shows the same data by setting
+  `CHART_REMOTE` to Oracle's terminal.
+- One-off on Oracle: `cd /etc/vlad-frontdoor && sudo docker compose exec -T market-web python main_pipeline.py bars --from-lake`
+  (then `--backfill`, `--backfill --deep --symbol SPY ...`, `--fans`, `headlines --backfill 2015-01-01`).
 
 Intraday day files are written only for finished sessions (a New York date before today, or today after 20:00 ET) and never rewritten. Yahoo serves 1m only for about 30 days, so older minutes come from `--deep` or from the first backfill onward.
 
