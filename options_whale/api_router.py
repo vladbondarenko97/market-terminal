@@ -3559,9 +3559,11 @@ def api_chart_fan():
     """Scenario fans for a chart item. 1d fans of items the snapshot forecasts come from the snapshot; everything else
     (other symbols, intraday) from chart.db v2_chart_fans, built by `bars --fans`."""
     item, tf = (request.args.get("item") or "").strip(), request.args.get("tf") or "1d"
-    if tf not in ("1d", "1h", "5m") or not re.match(r"^[A-Za-z0-9.^=:\-]{1,40}$", item):
+    if tf not in ("1d", "1h", "5m") or not re.match(r"^[A-Za-z0-9.^=:_\-]{1,40}$", item):
         raise ApiError("item must be a symbol or series id and tf one of 1d 1h 5m", 400)
     item = item if item in _chartbars.SERIES else item.upper()
+    if item in _chartfans.NO_FAN:
+        return jsonify({"status": "missing", "reason": _chartfans.NO_FAN[item]})
     out = {"status": "success", "item": item, "tf": tf, "verdict": _chartfans.INTRADAY_VERDICT if tf != "1d" else KRONOS_VERDICT}
     sid = _chartfans.SNAPSHOT_ITEMS.get(item) if tf == "1d" else None
     mconn = _open_readonly() if sid else None
@@ -3574,8 +3576,17 @@ def api_chart_fan():
             mconn.close()
         s = ((hit or {}).get("fans") or {}).get("series", {}).get(sid) or {}
         if s.get("asof") and s.get("models"):
-            return jsonify({**out, "source": "snapshot", "asof": s["asof"], "last": s["last"], "dates": s["dates"],
-                            "models": {k: _chartfans.pack(m) for k, m in s["models"].items()}})
+            models = {k: _chartfans.pack(m) for k, m in s["models"].items()}
+            if item in _chartfans.KRONOS_SERIES and models.get("kronos", {}).get("status") == "missing":
+                cconn = _chartbars.connect_readonly()          # Kronos run straight on the ratio (bars --fans)
+                try:
+                    got = _chartfans.read(cconn, item, tf)
+                finally:
+                    if cconn is not None:
+                        cconn.close()
+                if got and got[3].get("kronos", {}).get("paths") and got[2] == s["dates"]:
+                    models["kronos"] = got[3]["kronos"]
+            return jsonify({**out, "source": "snapshot", "asof": s["asof"], "last": s["last"], "dates": s["dates"], "models": models})
     cconn = _chartbars.connect_readonly()
     try:
         got = _chartfans.read(cconn, item, tf)

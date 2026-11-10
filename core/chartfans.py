@@ -18,6 +18,12 @@ Q = (5, 10, 25, 50, 75, 90, 95)
 # chart item -> snapshot fan id, for the items the snapshot already forecasts (those get no chart-store fan)
 SNAPSHOT_ITEMS = {sym: sid for sid, (_, _, _, sym) in fans.DAILY.items()}
 SNAPSHOT_ITEMS |= {f"eia.{k}": k for k in fans.DAYS} | {k: k for k in fans.WEEKLY}
+# Kronos straight on the weekly days-of-supply ratio: the snapshot leaves it missing (it needs jointly sampled legs)
+KRONOS_SERIES = {f"eia.{k}" for k in fans.DAYS}
+# Bounded scores and a balance that sits near zero: return-based fans explode on them, so none is built
+NO_FAN = {"chaos.score": "a bounded 0-100 score: return-based fans do not apply",
+          "macro.vmri.score": "a bounded score: return-based fans do not apply",
+          "fedops.repo_day:rrp": "the balance sits near zero, where return-based fans explode"}
 INTRADAY_ITEMS = ("SPY", "SLV")
 INTRADAY = (("1h", 60, 24), ("5m", 5, 48))              # tf, minutes per bar, steps
 INTRADAY_VERSIONS = {"kronos": "kronos_fan_intraday_v1", "baseline": "baseline_fan_intraday_v1"}
@@ -77,7 +83,7 @@ def build_all(conn, main=None):
             df = fans._clean_ohlcv(bars.read_bars(conn, sym, "1d", limit=fans.LOOKBACK + 1))
             added += _daily(conn, sym, df, predictor, kinfo, True)
     for sid in bars.SERIES if main is not None else ():
-        if sid in SNAPSHOT_ITEMS:
+        if sid in NO_FAN or (sid in SNAPSHOT_ITEMS and sid not in KRONOS_SERIES):
             continue
         try:
             s = bars.SERIES[sid][4](main)
@@ -85,7 +91,7 @@ def build_all(conn, main=None):
             continue
         s = s[s > 0]
         df = fans._clean_ohlcv(pd.DataFrame({"open": s, "high": s, "low": s, "close": s, "volume": 0.0}))
-        added += _daily(conn, sid, df, predictor, kinfo, False)
+        added += _weekly(conn, sid, df, predictor, kinfo) if sid in KRONOS_SERIES else _daily(conn, sid, df, predictor, kinfo, False)
     for sym in INTRADAY_ITEMS:
         for tf, minutes, steps in INTRADAY:
             df = bars.read_bars(conn, sym, tf, limit=fans.LOOKBACK + 1).dropna()
@@ -104,6 +110,15 @@ def _daily(conn, item, df, predictor, kinfo, widen):
     dates = fans.trading_dates(df.index[-1].date(), fans.DAILY_STEPS)
     return build_one(conn, item, "1d", df, df.index[-1].date().isoformat(), dates, [d.isoformat() for d in dates],
                      predictor, kinfo, None, widen)
+
+
+def _weekly(conn, item, df, predictor, kinfo):
+    """Weekly steps like the snapshot's EIA fans (fans.WEEKLY_STEPS, not widened)."""
+    if df is None or len(df) < 60:
+        return 0
+    dates = [df.index[-1] + timedelta(weeks=k) for k in range(1, fans.WEEKLY_STEPS + 1)]
+    return build_one(conn, item, "1d", df, df.index[-1].date().isoformat(), dates, [d.date().isoformat() for d in dates],
+                     predictor, kinfo, None, False)
 
 
 def built_today(conn, now=None):

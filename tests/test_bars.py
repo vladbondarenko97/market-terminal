@@ -371,6 +371,22 @@ class Phase234(Base):
         for item in ("eia.days.distillate", "eia.WDISTUS1"):
             self.assertEqual(self.client.get(f"/api/chart/fan?item={item}").get_json()["source"], "snapshot")
 
+    def test_diesel_kronos_comes_from_the_chart_store_when_the_snapshot_has_none(self):
+        self.snapshot({"fans": {"series": {"days.distillate": SNAP_FAN}}})          # its kronos is missing
+        paths = [[1.0, 2.0], [3.0, 4.0]]
+        with self.conn:
+            self.conn.execute("INSERT INTO v2_chart_fans VALUES (?,?,?,?,?,?,?)", ("eia.days.distillate", "1d", "2026-05-29", "kronos", "v", "t",
+                              json.dumps({"last": 5.0, "dates": SNAP_FAN["dates"], "model": chartfans.pack({"status": "fresh", "paths": paths})})))
+        j = self.client.get("/api/chart/fan?item=eia.days.distillate").get_json()
+        self.assertEqual((j["source"], j["models"]["kronos"]["paths"]), ("snapshot", paths))
+        self.assertEqual(j["models"]["baseline"]["q"]["p50"], [3.0, 4.0])
+
+    def test_bounded_series_get_a_reason_not_a_fan(self):
+        for item in ("chaos.score", "fedops.repo_day:rrp"):          # also: an id with "_" passes validation
+            j = self.client.get(f"/api/chart/fan?item={item}").get_json()
+            self.assertEqual(j["status"], "missing")
+            self.assertIn("return-based fans", j["reason"])
+
     def test_fan_from_the_chart_store_and_missing(self):
         bars.ingest(self.conn, "NKE", "1d", walk(120), "yahoo", now=NOW)
         with mock.patch.object(fans, "load_kronos", return_value=KRONOS_OFF):
