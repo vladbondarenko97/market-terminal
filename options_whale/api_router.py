@@ -3476,7 +3476,7 @@ def api_chart_bars():
         return jsonify({"status": "loading", "symbol": sym}), 202
     conn = _chartbars.connect_readonly()
     try:
-        if conn is None or not conn.execute("SELECT 1 FROM v2_bars WHERE symbol = ? LIMIT 1", (sym,)).fetchone():
+        if conn is None or not _chartbars.has(conn, sym):
             return _chart_start_job(sym)
         df = _chartbars.read_bars(conn, sym, tf, start, end)
     finally:
