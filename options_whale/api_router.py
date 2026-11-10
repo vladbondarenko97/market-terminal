@@ -3384,11 +3384,28 @@ def chart_forward():
     if not (config.CHART_REMOTE and request.path.startswith("/api/chart/")):
         return None
     try:
-        r = requests.get(config.CHART_REMOTE + request.full_path.rstrip("?"), timeout=20)
+        r = requests.get(config.CHART_REMOTE + request.full_path.rstrip("?"), timeout=20,
+                         headers={k: v for k, v in request.headers.items() if k == "X-Chart-Request"})
     except requests.RequestException as exc:
         app.logger.error("chart host unreachable: %s", exc)
         return json_error("chart host unreachable", 502)
     return Response(r.content, r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+
+
+_PER_RUN = {}                     # name -> (latest run_id, value): recomputed once per pipeline run
+
+
+def _per_run(conn, name, build):
+    """`build()` once per latest committed run (stored data only changes when a run commits)."""
+    try:
+        row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    rid = row[0] if row else None
+    hit = _PER_RUN.get(name)
+    if hit is None or hit[0] != rid or rid is None:
+        hit = _PER_RUN[name] = (rid, build())
+    return hit[1]
 
 
 def _chart_ts(name):
@@ -3410,7 +3427,13 @@ def _chart_symbol():
 
 def _chart_spawn(key, *args):
     """Start `main_pipeline.py <args>` detached (log: CHART_STORE/bars_job.log), remember it under `key` and reap it when it
-    ends. Returns an error response, or None. The caller holds _CHART_JOBS_LOCK."""
+    ends. Returns an error response, or None. The caller holds _CHART_JOBS_LOCK.
+    These start from GET routes, which reject_cross_site_writes does not check, so they need the CHART tab's own header
+    (another site cannot send it: a custom header needs a CORS preflight, never granted here) and at most 4 run at once."""
+    if request.headers.get("X-Chart-Request") != "1":
+        return json_error("starting a download needs the CHART tab (X-Chart-Request header)", 403)
+    if sum(1 for p in _CHART_JOBS.values() if p.poll() is None) >= 4:
+        return jsonify({"status": "busy", "message": "4 downloads are already running; try again shortly"}), 429
     try:
         config.CHART_STORE.mkdir(parents=True, exist_ok=True)
         with open(config.CHART_STORE / "bars_job.log", "ab") as log:
@@ -3495,7 +3518,7 @@ def api_chart_catalog():
     cconn, mconn = _chartbars.connect_readonly(), _open_readonly()
     try:
         symbols = _chartbars.catalog_symbols(cconn) if cconn is not None else []
-        series = _chartbars.catalog_series(mconn)
+        series = _per_run(mconn, "catalog", lambda: _chartbars.catalog_series(mconn)) if mconn is not None else _chartbars.catalog_series(None)
     finally:
         for c in (cconn, mconn):
             if c is not None:
@@ -3669,8 +3692,9 @@ def api_chart_overlays():
                 levels.append({"label": f"{name} entry", "price": round(t["underlying_price"], 2), "kind": "entry"})
             if t["strike"]:
                 levels.append({"label": f"{name} target strike", "price": round(t["strike"], 2), "kind": "target"})
-        markers = [{"t": int((w or pd.Timestamp(d, tz="UTC")).timestamp()), "label": title, "kind": _event_kind(title)}
-                   for w, d, title, impact in _calendar_events(conn, date(2000, 1, 1), date(2100, 1, 1)) if impact == "High"]
+        markers = _per_run(conn, "markers", lambda: [
+            {"t": int((w or pd.Timestamp(d, tz="UTC")).timestamp()), "label": title, "kind": _event_kind(title)}
+            for w, d, title, impact in _calendar_events(conn, date(2000, 1, 1), date(2100, 1, 1)) if impact == "High"])
         blocks = []
         for r in conn.execute("""SELECT observed_at, value_json FROM v2_observations WHERE metric_id = 'trade.block' AND entity = ?
                                  ORDER BY observed_at DESC LIMIT 500""", (sym,)):

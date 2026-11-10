@@ -127,9 +127,10 @@ def built_today(conn, now=None):
 
 
 def due(now=None):
-    """After 16:30 New York on a trading day (the scheduled job's cue for building fans)."""
+    """After 20:15 New York on a trading day: today's bars are stored only once the session is finished (20:00, see
+    bars.finished), so the 20:30 scheduled run is the one that builds the fans."""
     now = now or bars.now_ny()
-    return market_calendar.is_trading_day(now.date()) and (now.hour, now.minute) >= (16, 30)
+    return market_calendar.is_trading_day(now.date()) and (now.hour, now.minute) >= (20, 15)
 
 
 def read(conn, item, tf):

@@ -12,7 +12,7 @@ import io
 import json
 import re
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -66,10 +66,14 @@ def _day_dir(symbol, tf):
     return config.CHART_STORE / "bars" / _folder(norm_symbol(symbol)) / tf
 
 
-def finished(day, now=None):
-    """True when the New York session of `day` is over: an earlier date, or today after 20:00 (end of extended hours)."""
+AROUND_THE_CLOCK = re.compile(r"(=F|=X|-USD)$|^DX-Y")      # futures, FX and crypto trade past 20:00 ET
+
+
+def finished(day, now=None, symbol=""):
+    """True when the New York session of `day` is over: an earlier date, or today after 20:00 (end of extended hours).
+    Futures, FX and crypto keep trading into the night, so their `day` is over only once the New York date has turned."""
     now = now or now_ny()
-    return day < now.date() or (day == now.date() and now.hour >= 20)
+    return day < now.date() or (day == now.date() and now.hour >= 20 and not AROUND_THE_CLOCK.search(symbol))
 
 
 @contextmanager
@@ -143,7 +147,7 @@ def store_daily(conn, symbol, tf, df, source, payload_id=None, now=None):
     rows, stamp = [], lake.utc_now_iso()
     for ts, r in df.iterrows():
         d = ts.date()
-        if (tf == "1d" and not finished(d, now)) or (tf == "1wk" and d + timedelta(days=4) >= today):
+        if (tf == "1d" and not finished(d, now, symbol)) or (tf == "1wk" and d + timedelta(days=4) >= today):
             continue
         rows.append((symbol, tf, d.isoformat(), *[None if pd.isna(r[c]) else float(r[c]) for c in COLS], source,
                      payload_id, stamp))
@@ -160,7 +164,7 @@ def write_days(symbol, tf, df, now=None):
     n = 0
     for day, g in df.groupby(df.index.tz_convert(NY).date):
         path = out / f"{day.isoformat()}.parquet"
-        if path.exists() or not finished(day, now):
+        if path.exists() or not finished(day, now, symbol):
             continue
         out.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -307,7 +311,7 @@ def catalog_symbols(conn):
 
 
 # ---------------------------------------------------------------- fetching (Yahoo, Alpaca)
-NORMAL = (("1d", {"period": "7d"}), ("1m", {"period": "7d"}), ("5m", {"period": "7d"}), ("1h", {"period": "7d"}))
+NORMAL = (("1d", {"period": "7d"}), ("1wk", {"period": "1mo"}), ("1m", {"period": "7d"}), ("5m", {"period": "7d"}), ("1h", {"period": "7d"}))
 BACKFILL = (("1d", {"period": "max"}), ("1wk", {"period": "max"}), ("1h", {"period": "730d"}), ("5m", {"period": "60d"}))
 
 
@@ -326,8 +330,10 @@ def _deep(conn, s, symbol, now=None):
         e = min(d + timedelta(days=30), last)
         if sum(1 for k in range((e - d).days + 1) if (d + timedelta(days=k)).isoformat() in have) < 15:
             try:
+                # New York midnights, not bare dates (Alpaca reads those as 00:00 UTC and cuts the last evening off)
                 df, _ = sources.alpaca_bars(s, config.ALPACA_API_KEY_ID, config.ALPACA_API_SECRET_KEY, symbol,
-                                            d.isoformat(), (e + timedelta(days=1)).isoformat())
+                                            datetime.combine(d, time(), NY).isoformat(),
+                                            datetime.combine(e + timedelta(days=1), time(), NY).isoformat())
                 got += ingest(conn, symbol, "1m", df, "alpaca", None, now)
             except sources.SourceUnavailable as exc:
                 errors.append(f"alpaca {symbol} {d}: {exc}")
@@ -372,16 +378,22 @@ def from_lake(conn, main_db=None, cache_dir=None, now=None):
     if main_db.exists():
         src = lake.connect_readonly(main_db)
         try:
-            for r in src.execute("SELECT payload_id, request_json FROM v2_payloads WHERE kind = 'ohlcv' ORDER BY payload_id DESC").fetchall():
+            for r in src.execute("""SELECT payload_id, request_json, fetched_at FROM v2_payloads WHERE kind = 'ohlcv'
+                                    ORDER BY payload_id DESC""").fetchall():
                 req = json.loads(r["request_json"] or "{}")
+                # daily only: the pipeline's intraday captures are regular-hours and Yahoo's backfill has longer ones with
+                # pre/post market; a capture's own day counts as finished only if it was fetched after the session
                 tf = _LAKE_TF.get(req.get("interval", ""))
+                tf = tf if tf in ("1d", "1wk") else None
+                at = pd.Timestamp(r["fetched_at"]) if r["fetched_at"] else None
+                at = None if at is None else (at.tz_localize("UTC") if at.tzinfo is None else at).tz_convert(NY)
                 try:
                     sym = norm_symbol(req.get("symbol"))
                     _, content = lake.load_payload(src, r["payload_id"])
                     if tf is None or not content:
                         raise ValueError("unusable")
                     df = pd.read_csv(io.BytesIO(content), index_col=0)
-                    res["added"] += ingest(conn, sym, tf, df, "lake", r["payload_id"], now)
+                    res["added"] += ingest(conn, sym, tf, df, "lake", r["payload_id"], min(now or at, at) if at is not None else now)
                     res["payloads"] += 1
                 except (ValueError, KeyError, pd.errors.ParserError):
                     res["skipped"] += 1
@@ -420,6 +432,8 @@ def _eia(conn, sid):
     if not row:
         return pd.Series(dtype=float)
     if row["payload_id"] not in _EIA_CACHE:       # parsing the .xls history is slow; payloads never change
+        if len(_EIA_CACHE) > 40:                  # superseded weekly payloads would pile up for the life of the server
+            _EIA_CACHE.clear()
         content = lake.load_payload(conn, row["payload_id"])[1]
         _EIA_CACHE[row["payload_id"]] = sources._eia_parse(content) if content else pd.Series(dtype=float)
     return _EIA_CACHE[row["payload_id"]]

@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -25,6 +25,7 @@ sys.path.insert(0, str(support.ROOT / "options_whale"))
 import api_router  # noqa: E402
 
 NY = bars.NY
+CH = {"X-Chart-Request": "1"}                         # the CHART tab's header (starting a download needs it)
 NOW = datetime(2026, 6, 1, 15, 0, tzinfo=NY)          # Monday 15:00: 2026-06-01 is still in session
 LATER = datetime(2026, 6, 1, 20, 30, tzinfo=NY)
 
@@ -62,12 +63,13 @@ class Store(Base):
             lake.store_payload(m, source="yahoo", kind="ohlcv", content=buf.getvalue(), fmt="csv",
                                request={"fn": "history", "symbol": "SPY", "period": "7d", "interval": iv})
         m.close()
+        with lake.connect(main) as m:      # fetched mid-session on 2026-05-28: that day is not finished in the capture
+            m.execute("UPDATE v2_payloads SET fetched_at = '2026-05-28T16:40:00+00:00'")
         res = bars.from_lake(self.conn, main_db=main, cache_dir=self.tmp / "none", now=NOW)
-        self.assertEqual(res["payloads"], 2)
-        self.assertEqual([r[0] for r in self.conn.execute("SELECT ts FROM v2_bars ORDER BY ts")], ["2026-05-27", "2026-05-28"])
+        self.assertEqual((res["payloads"], res["skipped"]), (1, 1))           # intraday captures are not imported
+        self.assertEqual([r[0] for r in self.conn.execute("SELECT ts FROM v2_bars ORDER BY ts")], ["2026-05-27"])
         self.assertEqual(bars.tracked(self.conn), ["SPY"])
-        self.assertTrue((config.CHART_STORE / "bars/SPY/1m/2026-05-28.parquet").exists())
-        self.assertEqual(len(bars.read_bars(self.conn, "SPY", "1m")), 3)
+        self.assertFalse((config.CHART_STORE / "bars/SPY/1m").exists())
 
     def test_insert_or_ignore_keeps_the_first_copy(self):
         bars.ingest(self.conn, "SPY", "1d", daily(["2026-05-28"], close=100.0), "yahoo", now=NOW)
@@ -112,7 +114,7 @@ class Store(Base):
         s = sources.SourceSession(self.conn, "bars-test", offline=True)
         res = bars.collect(self.conn, s, ["SPY"])
         self.assertEqual(res["added"], 0)
-        self.assertEqual(len(res["errors"]), 4)
+        self.assertEqual(len(res["errors"]), 5)          # 1d, 1wk, 1m, 5m, 1h
         self.assertIn("S&P 500", self.conn.execute("SELECT description FROM v2_chart_symbols").fetchone()[0])
 
     def test_collect_stores_what_yahoo_returns(self):
@@ -123,7 +125,7 @@ class Store(Base):
                                     "longBusinessSummary": "Nike designs shoes. It sells them worldwide. " + "x" * 400}
             res = bars.collect(self.conn, s, ["nke"], now=NOW)
         self.assertEqual(res["errors"], [])
-        self.assertEqual(yh.call_count, 4)
+        self.assertEqual(yh.call_count, 5)
         row = self.conn.execute("SELECT name, kind, description FROM v2_chart_symbols WHERE symbol = 'NKE'").fetchone()
         self.assertEqual((row["name"], row["kind"]), ("Nike, Inc.", "EQUITY"))
         self.assertTrue(row["description"].startswith("Nike designs shoes. It sells them worldwide."))
@@ -166,6 +168,7 @@ class Routes(Base):
         super().setUp()
         self.client = api_router.app.test_client()
         api_router._CHART_JOBS.clear()
+        api_router._PER_RUN.clear()
         api_router._LOOKUP_CACHE.clear()
         self.main = self.tmp / "portfolio.db"
         m = lake.connect(self.main)
@@ -183,15 +186,32 @@ class Routes(Base):
     def test_unknown_symbol_starts_one_background_job(self):
         proc = mock.Mock(**{"poll.return_value": None})
         with mock.patch.object(api_router.subprocess, "Popen", return_value=proc) as popen:
-            r = self.client.get("/api/chart/bars?symbol=nke&tf=1d")
+            r = self.client.get("/api/chart/bars?symbol=nke&tf=1d", headers=CH)
             self.assertEqual((r.status_code, r.get_json()["status"]), (202, "loading"))
-            self.assertEqual(self.client.get("/api/chart/bars?symbol=NKE").status_code, 202)
+            self.assertEqual(self.client.get("/api/chart/bars?symbol=NKE", headers=CH).status_code, 202)
             self.assertEqual(popen.call_count, 1)                                  # still running: no second process
             self.assertEqual(popen.call_args.args[0][-3:], ["bars", "--symbol", "NKE"])
             proc.poll.return_value = 1                                              # it ended and left no bars
-            self.assertEqual(self.client.get("/api/chart/bars?symbol=NKE").status_code, 404)
+            self.assertEqual(self.client.get("/api/chart/bars?symbol=NKE", headers=CH).status_code, 404)
         self.assertEqual(self.client.get("/api/chart/bars?symbol=..%2Fx").status_code, 400)
         self.assertEqual(self.client.get("/api/chart/bars?symbol=SPY&tf=3m").status_code, 400)
+
+    def test_a_download_needs_the_chart_header_and_at_most_4_run(self):
+        with mock.patch.object(api_router.subprocess, "Popen") as popen:
+            r = self.client.get("/api/chart/bars?symbol=AAAA")                  # e.g. an <img> on another site
+            self.assertEqual(r.status_code, 403)
+            self.assertEqual(self.client.get("/api/chart/day?date=2026-05-20").get_json()["headlines_status"], "none")
+            popen.assert_not_called()
+            for s in "ABCD":
+                api_router._CHART_JOBS[s] = mock.Mock(**{"poll.return_value": None})
+            self.assertEqual(self.client.get("/api/chart/bars?symbol=EEEE", headers=CH).status_code, 429)
+            popen.assert_not_called()
+
+    def test_futures_days_end_only_when_the_new_york_date_turns(self):
+        late = datetime(2026, 6, 1, 20, 30, tzinfo=NY)
+        self.assertTrue(bars.finished(date(2026, 6, 1), late, "SPY"))
+        self.assertFalse(bars.finished(date(2026, 6, 1), late, "SI=F"))
+        self.assertTrue(bars.finished(date(2026, 6, 1), datetime(2026, 6, 2, 0, 5, tzinfo=NY), "BTC-USD"))
 
     def test_loading_until_the_job_ends_even_once_daily_bars_exist(self):
         bars.ingest(self.conn, "NKE", "1d", daily(["2026-05-28"]), "yahoo", now=NOW)
@@ -315,8 +335,8 @@ class ChartFans(Base):
             with mock.patch.object(chartfans, "due", return_value=True):
                 main_pipeline.bars_command([], scheduled=True, offline=True)
                 self.assertTrue(chartfans.built_today(self.conn))
-        self.assertTrue(chartfans.due(datetime(2026, 6, 1, 16, 30, tzinfo=NY)))
-        self.assertFalse(chartfans.due(datetime(2026, 6, 1, 16, 29, tzinfo=NY)))
+        self.assertTrue(chartfans.due(datetime(2026, 6, 1, 20, 15, tzinfo=NY)))
+        self.assertFalse(chartfans.due(datetime(2026, 6, 1, 20, 14, tzinfo=NY)))
         self.assertFalse(chartfans.due(datetime(2026, 5, 30, 17, 0, tzinfo=NY)))        # a Saturday
 
 
@@ -330,6 +350,7 @@ class Phase234(Base):
         super().setUp()
         self.client = api_router.app.test_client()
         api_router._CHART_JOBS.clear()
+        api_router._PER_RUN.clear()
         self.main = self.tmp / "portfolio.db"
         self.m = lake.connect(self.main)
         lake.migrate(self.m)
@@ -430,7 +451,7 @@ class Phase234(Base):
         self.observe("calendar.event", "2026-05-28T12:30:00+00:00", entity="USD", dims={"title": "GDP q/q", "impact": "High"})
         headlines._insert(self.conn, datetime(2026, 5, 28).date(), "wikipedia", [("Oil rises", "https://x.test/a", "Business and economy")])
         with mock.patch.object(api_router.subprocess, "Popen") as popen:
-            j = self.client.get("/api/chart/day?date=2026-05-28&symbols=SPY,NKE&series=eia.WDISTUS1").get_json()
+            j = self.client.get("/api/chart/day?date=2026-05-28&symbols=SPY,NKE&series=eia.WDISTUS1", headers=CH).get_json()
             self.assertEqual(popen.call_count, 0)                                   # stored headlines: no job
         self.assertEqual(j["status"], "success")
         self.assertEqual([(p["symbol"], p["c"], p["chg_pct"]) for p in j["prices"]], [("SPY", 110.0, 10.0)])   # NKE has no bars: left out
@@ -456,23 +477,25 @@ class Phase234(Base):
         proc = mock.Mock(**{"poll.return_value": None})
         with mock.patch.object(api_router.subprocess, "Popen", return_value=proc) as popen:
             for _ in range(2):
-                j = self.client.get("/api/chart/day?date=2026-05-20").get_json()
+                j = self.client.get("/api/chart/day?date=2026-05-20", headers=CH).get_json()
                 self.assertEqual((j["headlines_status"], j["headlines"]), ("loading", []))
             self.assertEqual(popen.call_count, 1)
             self.assertEqual(popen.call_args.args[0][-3:], ["headlines", "--date", "2026-05-20"])
             proc.poll.return_value = 0                                              # it ended and found nothing
-            self.assertEqual(self.client.get("/api/chart/day?date=2026-05-20").get_json()["headlines_status"], "none")
+            self.assertEqual(self.client.get("/api/chart/day?date=2026-05-20", headers=CH).get_json()["headlines_status"], "none")
             self.assertEqual(popen.call_count, 1)
             proc.poll.return_value = 1                                              # a failed job is forgotten: the next request retries
-            self.client.get("/api/chart/day?date=2026-05-20")
-            self.client.get("/api/chart/day?date=2026-05-20")
+            self.client.get("/api/chart/day?date=2026-05-20", headers=CH)
+            self.client.get("/api/chart/day?date=2026-05-20", headers=CH)
             self.assertEqual(popen.call_count, 2)
 
 
-WIKI_HTML = """<div class="current-events-content"><ul>
-<li><a href="/wiki/Armed_conflict">Armed conflicts</a><ul><li>A town is shelled. <a href="/wiki/Town">Town</a></li></ul></li>
-<li><b>Business and economy</b><ul><li>Oil rises 3%. <a class="external text" href="https://news.test/oil">(Reuters)</a>
-<ul><li>Nested detail <a class="external text" href="https://news.test/nested">(AP)</a></li></ul></li></ul></li></ul></div>"""
+# the real page's shape: a <p> category heading, then a <ul> of stand-alone events and topics whose leaves are events
+WIKI_HTML = """<div class="current-events-content"><p><b>Armed conflicts and attacks</b></p><ul>
+<li><a href="/wiki/War">Some war</a><ul><li>A town is shelled. <a href="/wiki/Town">Town</a></li></ul></li></ul>
+<p><b>Business and economy</b></p><ul>
+<li>Oil rises 3%. <a class="external text" href="https://news.test/oil">(Reuters)</a></li>
+<li><a href="/wiki/Markets">Markets</a><ul><li>Nested detail <a class="external text" href="https://news.test/nested">(AP)</a></li></ul></li></ul></div>"""
 GDELT = {"articles": [{"url": "https://a.test/1", "title": " Fed holds rates ", "domain": "a.test"}, {"url": "", "title": "no link"},
                       {"url": "https://a.test/2", "title": "", "domain": "a.test"}]}
 
@@ -485,7 +508,7 @@ class Headlines(Base):
         self.assertEqual([(t, u.split("#")[0], c) for t, u, c in items], [
             ("Oil rises 3%. (Reuters)", "https://news.test/oil", "Business and economy"),
             ("Nested detail (AP)", "https://news.test/nested", "Business and economy"),
-            ("A town is shelled. Town", "https://en.wikipedia.org/wiki/Portal:Current_events/2026_May_28", "Armed conflicts")])
+            ("A town is shelled. Town", "https://en.wikipedia.org/wiki/Portal:Current_events/2026_May_28", "Armed conflicts and attacks")])
         self.assertEqual(headlines.parse_gdelt(GDELT), [("Fed holds rates", "https://a.test/1", "a.test")])
         self.assertEqual(headlines.parse_gdelt({}), [])
 

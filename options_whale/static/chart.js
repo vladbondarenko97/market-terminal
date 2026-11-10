@@ -1,6 +1,9 @@
 // CHART tab: TradingView's Lightweight Charts (v5) over our stored bars and series. Routes: /api/chart/* (docs/api.md).
 // Names, descriptions and headlines come from Yahoo, our catalog and news feeds: they are only ever put in with textContent.
 (function (root) {
+    // The header marks a request as the CHART tab's own: a page on another site cannot set it without a CORS preflight,
+    // which this server never grants, so only this page can start a download (bars --symbol, headlines --date).
+    const chartJson = url => fetchJson(url, { headers: { 'X-Chart-Request': '1' } });
     // ---- pure math (also exported for tests/chart_math.test.mjs). Arrays are aligned with the bars; no value yet = null.
     const nn = x => x != null && isFinite(x);
     const CI = {
@@ -160,7 +163,7 @@
     async function getJ(url, ttl = 60000) {
         const c = jcache.get(url);
         if (c && Date.now() - c.t < ttl) return c.r;
-        const r = await fetchJson(API_BASE + url);
+        const r = await chartJson(API_BASE + url);
         if (r.status === 'success') jcache.set(url, { t: Date.now(), r });
         return r;
     }
@@ -281,7 +284,7 @@
         const c = P(cell), my = ++cell.seq;
         clearTimeout(cell.retryT);
         const from = fetchFrom(c);
-        const r = await fetchJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(c.symbol)}&tf=${c.tf}` + (from ? `&from=${from}` : ''));
+        const r = await chartJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(c.symbol)}&tf=${c.tf}` + (from ? `&from=${from}` : ''));
         if (my !== cell.seq) return;
         const say = (m, bad) => { if (cell.i === st.active) status(m, bad); };
         if (r.status === 'loading') {
@@ -316,7 +319,7 @@
         if (cell.cmp[sym] && !cell.cmp[sym].retry) return;
         cell.cmp[sym] = { retry: true };
         const c = P(cell), from = fetchFrom(c);
-        const r = await fetchJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(sym)}&tf=${c.tf}` + (from ? `&from=${from}` : ''));
+        const r = await chartJson(`${API_BASE}/api/chart/bars?symbol=${encodeURIComponent(sym)}&tf=${c.tf}` + (from ? `&from=${from}` : ''));
         if (!P(cell).compare.includes(sym)) { delete cell.cmp[sym]; return; }
         if (r.status === 'loading' && n < 40) { status(`Loading ${sym} history…`); setTimeout(() => ensureCmp(cell, sym, n + 1), 3000); return; }
         if (r.status !== 'success') { cell.cmp[sym] = { err: r.message || 'unavailable' }; status(`${sym}: ${cell.cmp[sym].err}`, true); render(cell); return; }
@@ -329,7 +332,7 @@
         const key = item + '|' + fanTf(P(cell).tf);
         if (cell.fans[key]) return;
         cell.fans[key] = { pending: true };
-        const r = await fetchJson(`${API_BASE}/api/chart/fan?item=${encodeURIComponent(item)}&tf=${fanTf(P(cell).tf)}`);
+        const r = await chartJson(`${API_BASE}/api/chart/fan?item=${encodeURIComponent(item)}&tf=${fanTf(P(cell).tf)}`);
         cell.fans[key] = r.status === 'success' && r.models ? { d: r } : { err: r.reason || r.message || `no fan (${r.status})` };
         if (cells.includes(cell)) { render(cell); if (cell.i === st.active) renderExplore(); }
     }
@@ -636,7 +639,7 @@
         });
     }
     async function loadCatalog() {
-        if (!catalog) catalog = await fetchJson(`${API_BASE}/api/chart/catalog`);
+        if (!catalog) catalog = await chartJson(`${API_BASE}/api/chart/catalog`);
         if (catalog.status !== 'success') return catalog;
         catalog.symbols.forEach(s => { symInfo[s.symbol] = s; });
         const box = $('chTracked');
@@ -673,7 +676,7 @@
         if (!q) { box.classList.add('hidden'); return; }
         lookupT = setTimeout(async () => {
             const my = ++lookupSeq;
-            const r = await fetchJson(`${API_BASE}/api/chart/lookup?q=${encodeURIComponent(q)}`);
+            const r = await chartJson(`${API_BASE}/api/chart/lookup?q=${encodeURIComponent(q)}`);
             if (my !== lookupSeq || r.status !== 'success') return;
             dropdown(box, r.matches.map(m => {
                 symInfo[m.symbol] = symInfo[m.symbol] || m;
@@ -776,7 +779,7 @@
         const c = P(cell), panel = $('chDay');
         if (tries === 0) { dayDate = date; panel.classList.remove('hidden'); }
         const syms = [c.symbol].concat(c.compare), ids = c.series.map(s => s.id);
-        const r = await fetchJson(`${API_BASE}/api/chart/day?date=${date}&symbols=${encodeURIComponent(syms.join(','))}&series=${encodeURIComponent(ids.join(','))}`);
+        const r = await chartJson(`${API_BASE}/api/chart/day?date=${date}&symbols=${encodeURIComponent(syms.join(','))}&series=${encodeURIComponent(ids.join(','))}`);
         if (dayDate !== date) return;
         panel.replaceChildren();
         const head = h('div', 'ch-day-head'), x = h('button', 'ch-x', '×'); x.title = 'Close'; x.onclick = closeDay;

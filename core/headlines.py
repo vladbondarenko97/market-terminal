@@ -68,15 +68,19 @@ def _own(li):
 
 
 def parse_wikipedia(html, day):
-    """[(title, url, category)] for every bullet under a top-level heading of a Current events page: its own text and first
-    external link (else the page itself, with a per-item anchor so the url stays unique). 'Business and economy' comes first."""
+    """[(title, url, category)] from a Current events day: each category is a <p> heading followed by a <ul>; its events
+    are the leaf bullets (a bullet with sub-bullets is a topic name, not an event). Title = the event's text, url = its
+    first external link (else the page, with a per-item anchor so the url stays unique). 'Business and economy' first."""
     page = f"https://en.wikipedia.org/wiki/{_page(day)}"
-    items = []
-    for top in BeautifulSoup(html or "", "html.parser").select("ul > li"):
-        if top.find_parent("li"):
-            continue                                      # nested: reached through its top-level bullet
-        cat = _own(top)[0] or None
-        for li in top.find_all("li"):
+    soup = BeautifulSoup(html or "", "html.parser")
+    items, cat = [], None
+    for el in (soup.select_one(".current-events-content") or soup).find_all(["p", "ul"], recursive=False):
+        if el.name == "p":
+            cat = el.get_text(" ", strip=True) or cat
+            continue
+        for li in el.find_all("li"):
+            if li.find(["ul", "ol"]):
+                continue                                  # a topic: its events are its leaf bullets
             title, url = _own(li)
             if title:
                 items.append((title[:300], url or f"{page}#{hashlib.sha1(title.encode()).hexdigest()[:8]}", cat))
