@@ -1806,17 +1806,22 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/chart/catalog" format="json" source="stored">
-      <description>CHART tab: tracked symbols (those with stored bars: symbol, name, kind, exchange, description, first and last date) and the non-price series (id, label, unit, freq, description, first, last).</description>
+      <description>CHART tab: tracked symbols (those with stored bars: symbol, name, kind, exchange, description, first and last date), the non-price series (id, label, unit, freq, description, first, last) and the saved formulas (id, name, expr, description, first, last).</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/chart/bars" format="json" source="stored">
-      <description>CHART tab: columnar OHLCV {t (unix seconds), o, h, l, c, v}, the newest 20,000 bars in the range. A symbol with no stored bars starts its download in the background and answers 202 {"status": "loading"}; poll again. A download that found nothing answers 404 once.</description>
+      <description>CHART tab: columnar OHLCV {t (unix seconds), o, h, l, c, v}, the newest 20,000 bars in the range. With value=mcap or volume one line {status, value, unit, t, v} instead (market cap = close x shares outstanding as of each bar, USD billions; stocks only; status missing with a reason when there are no shares). A saved formula (symbol f.xxxxxxxx) is computed from its operands: o and c are the formula of the opens and closes, h and l the formula of the highs and lows widened to include them (approximate), v null; a time with an operand missing or a zero divisor has no candle. A symbol with no stored bars starts its download in the background and answers 202 {"status": "loading"}; poll again. A download that found nothing answers 404 once.</description>
       <parameters>
         <param name="symbol" type="string" default="SPY" description="letters, digits, . ^ = -, up to 15; upper-cased; anything else is a 400" />
         <param name="tf" type="string" default="1d" description="1m 5m 15m 30m 1h 4h 1d 1wk 1mo; others are a 400" />
         <param name="from" type="string" default="" description="first date, YYYY-MM-DD" />
         <param name="to" type="string" default="" description="last date, YYYY-MM-DD (through the end of that day)" />
+        <param name="value" type="string" default="price" description="price, mcap or volume; others are a 400" />
       </parameters>
+    </endpoint>
+    <endpoint method="POST" path="/api/chart/formulas" format="json" source="stored">
+      <description>CHART tab: save a formula over tracked symbols and catalog series, JSON body {expr, name}, e.g. "GC=F / SI=F". Only + - * / parentheses and numbers; at most 8 operands; put spaces around a binary minus. Answers {id, name, expr, description}; the same expression is the same id (the first name stays). An unknown operand is a 400 with "unknown": [...]. Needs the X-Chart-Request header (403 without) and passes the cross-site check.</description>
+      <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/chart/series" format="json" source="stored">
       <description>CHART tab: one non-price series as {t, v, label, unit, description}: EIA stocks and days of supply, Chaos, RRP, SOFR, VMRI. Ids are listed by /api/chart/catalog; an unknown id is a 404.</description>
@@ -1835,7 +1840,7 @@ def api_help():
     <endpoint method="GET" path="/api/chart/fan" format="json" source="stored">
       <description>CHART tab scenario fans of one item: the future dates, the last value and, per model (kronos, baseline), status, reason, 100 paths and p05 to p95 per step. The 1d fans of items the latest snapshot forecasts (SPY, SLV, ^VIX, SI=F, GC=F, HG=F, CL=F, HO=F, RB=F, NG=F, DX-Y.NYB, ^TNX, EIA stocks and days of supply) are the snapshot's (source snapshot); everything else and all intraday fans come from chart.db, built by `bars --fans` (source chart). status missing (HTTP 200) when none is stored.</description>
       <parameters>
-        <param name="item" type="string" default="" description="a symbol or a series id from /api/chart/catalog" />
+        <param name="item" type="string" default="" description="a symbol, a series id or a formula id (f.xxxxxxxx) from /api/chart/catalog" />
         <param name="tf" type="string" default="1d" description="1d, 1h or 5m (1h and 5m exist for SPY and SLV)" />
       </parameters>
     </endpoint>
@@ -3371,7 +3376,7 @@ def api_eia_history():
 
 
 # ---------------------------------------------------------------- CHART tab (core/bars.py; stored data, one live lookup)
-from core import bars as _chartbars
+from core import bars as _chartbars, formulas as _formulas
 
 _CHART_JOBS = {}                  # symbol -> Popen of the `main_pipeline.py bars --symbol` job started for it
 _CHART_JOBS_LOCK = threading.Lock()
@@ -3384,8 +3389,10 @@ def chart_forward():
     if not (config.CHART_REMOTE and request.path.startswith("/api/chart/")):
         return None
     try:
-        r = requests.get(config.CHART_REMOTE + request.full_path.rstrip("?"), timeout=20,
-                         headers={k: v for k, v in request.headers.items() if k == "X-Chart-Request"})
+        post = request.method == "POST"          # saving a formula: the host that holds the store writes it
+        r = (requests.post if post else requests.get)(
+            config.CHART_REMOTE + request.full_path.rstrip("?"), timeout=20, **({"data": request.get_data()} if post else {}),
+            headers={k: v for k, v in request.headers.items() if k in ("X-Chart-Request", "Content-Type")})
     except requests.RequestException as exc:
         app.logger.error("chart host unreachable: %s", exc)
         return json_error("chart host unreachable", 502)
@@ -3419,8 +3426,11 @@ def _chart_ts(name):
 
 
 def _chart_symbol():
+    raw = (request.args.get("symbol") or "SPY").strip().lower()
+    if _formulas.ID_RE.match(raw):                  # a saved formula (core/formulas.py), not a symbol
+        return raw
     try:
-        return _chartbars.norm_symbol(request.args.get("symbol") or "SPY")
+        return _chartbars.norm_symbol(raw)
     except ValueError:
         raise ApiError("symbol is not valid", 400)
 
@@ -3465,27 +3475,70 @@ def _chart_start_job(sym):
 @app.route('/api/chart/bars', methods=['GET'])
 @guarded("Chart bars")
 def api_chart_bars():
-    """Columnar OHLCV from the chart store. A symbol with no bars starts its download in the background (202)."""
-    sym, tf = _chart_symbol(), (request.args.get("tf") or "1d")
+    """Columnar OHLCV from the chart store, or with value=mcap|volume one line {value, t, v}; a saved formula (f.xxxxxxxx) is
+    computed from its operands. A symbol with no bars starts its download in the background (202)."""
+    sym, tf, value = _chart_symbol(), (request.args.get("tf") or "1d"), (request.args.get("value") or "price")
     if tf not in _chartbars.NATIVE and tf not in _chartbars.DERIVED:
         raise ApiError("tf must be one of 1m 5m 15m 30m 1h 4h 1d 1wk 1mo", 400)
+    if value not in ("price", "mcap", "volume"):
+        raise ApiError("value must be price, mcap or volume", 400)
     start, end = _chart_ts("from"), _chart_ts("to")
     with _CHART_JOBS_LOCK:
         job = _CHART_JOBS.get(sym)
     if job is not None and job.poll() is None:         # daily bars land first; wait for the intraday ones too
         return jsonify({"status": "loading", "symbol": sym}), 202
     conn = _chartbars.connect_readonly()
+    mconn = _open_readonly() if _formulas.ID_RE.match(sym) else None
     try:
-        if conn is None or not _chartbars.has(conn, sym):
-            return _chart_start_job(sym)
-        df = _chartbars.read_bars(conn, sym, tf, start, end)
+        if _formulas.ID_RE.match(sym):
+            f = _formulas.get(conn, sym) if conn is not None else None
+            if f is None:
+                raise ApiError("unknown formula (see /api/chart/catalog)", 404)
+            if value != "price":
+                return jsonify({"status": "missing", "reason": f"a formula has no {'market cap' if value == 'mcap' else 'volume'}"})
+            df, why = _formulas.compute(conn, mconn, f["expr"], tf, start, end)
+            if df is None:
+                return jsonify({"status": "missing", "reason": why})
+            df["volume"] = float("nan")                   # candles are approximate and have no volume
+        else:
+            if conn is None or not _chartbars.has(conn, sym):
+                return _chart_start_job(sym)
+            df = _chartbars.read_bars(conn, sym, tf, start, end)
+            if value != "price":
+                line, why = _chartbars.value_frame(conn, sym, df, value)
+                if line is None:
+                    return jsonify({"status": "missing", "reason": why})
+                return jsonify({"status": "success", "symbol": sym, "tf": tf, "value": value,
+                                "unit": "USD billions" if value == "mcap" else "shares", "t": [int(x.timestamp()) for x in line.index],
+                                "v": [round(float(v), 4 if value == "mcap" else 0) for v in line]})
     finally:
-        if conn is not None:
-            conn.close()
+        for c in (conn, mconn):
+            if c is not None:
+                c.close()
     col = lambda c, nd=4: [None if pd.isna(v) else round(float(v), nd) for v in df[c]]
     return jsonify({"status": "success", "symbol": sym, "tf": tf,
                     "t": [int(x.timestamp()) for x in df.index], "o": col("open"), "h": col("high"), "l": col("low"),
                     "c": col("close"), "v": col("volume", 0)})
+
+
+@app.route('/api/chart/formulas', methods=['POST'])
+@guarded("Chart formulas")
+def api_chart_formulas_save():
+    """Save a formula {expr, name}: validated (core/formulas.py), every operand a tracked symbol or catalog series. Idempotent:
+    the same expression is the same id. It writes, so it needs the CHART tab's header as well as the cross-site check."""
+    if request.headers.get("X-Chart-Request") != "1":
+        return json_error("saving a formula needs the CHART tab (X-Chart-Request header)", 403)
+    body = request.get_json(silent=True) or {}
+    conn = _chartbars.connect()
+    try:
+        f = _formulas.save(conn, body.get("expr"), body.get("name"))
+    except _formulas.UnknownOperand as exc:
+        return jsonify({"status": "error", "message": str(exc), "unknown": exc.names}), 400
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    finally:
+        conn.close()
+    return jsonify({"status": "success", **f, "description": _formulas.describe(f)})
 
 
 @app.route('/api/chart/series', methods=['GET'])
@@ -3519,11 +3572,12 @@ def api_chart_catalog():
     try:
         symbols = _chartbars.catalog_symbols(cconn) if cconn is not None else []
         series = _per_run(mconn, "catalog", lambda: _chartbars.catalog_series(mconn)) if mconn is not None else _chartbars.catalog_series(None)
+        formulas = _formulas.catalog(cconn, symbols, series) if cconn is not None else []
     finally:
         for c in (cconn, mconn):
             if c is not None:
                 c.close()
-    return jsonify({"status": "success", "symbols": symbols, "series": series})
+    return jsonify({"status": "success", "symbols": symbols, "series": series, "formulas": formulas})
 
 
 @app.route('/api/chart/lookup', methods=['GET'])
@@ -3536,6 +3590,8 @@ def api_chart_lookup():
     cconn = _chartbars.connect_readonly()
     try:
         have = _chartbars.catalog_symbols(cconn) if cconn is not None else []
+        have += [{"symbol": f["id"], "name": _formulas.describe(f), "kind": "FORMULA", "exchange": "", "description": _formulas.describe(f)}
+                 for f in (_formulas.all_formulas(cconn) if cconn is not None else [])]
     finally:
         if cconn is not None:
             cconn.close()
@@ -3584,7 +3640,7 @@ def api_chart_fan():
     item, tf = (request.args.get("item") or "").strip(), request.args.get("tf") or "1d"
     if tf not in ("1d", "1h", "5m") or not re.match(r"^[A-Za-z0-9.^=:_\-]{1,40}$", item):
         raise ApiError("item must be a symbol or series id and tf one of 1d 1h 5m", 400)
-    item = item if item in _chartbars.SERIES else item.upper()
+    item = item if item in _chartbars.SERIES or _formulas.ID_RE.match(item) else item.upper()
     if item in _chartfans.NO_FAN:
         return jsonify({"status": "missing", "reason": _chartfans.NO_FAN[item]})
     out = {"status": "success", "item": item, "tf": tf, "verdict": _chartfans.INTRADAY_VERDICT if tf != "1d" else KRONOS_VERDICT}

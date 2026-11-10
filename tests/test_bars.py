@@ -18,7 +18,7 @@ import support  # noqa: F401,E402  (temporary CME_Data, no credentials; must com
 import pandas as pd  # noqa: E402
 
 import config  # noqa: E402
-from core import bars, chartfans, fans, headlines, lake, sources  # noqa: E402
+from core import bars, chartfans, fans, formulas, headlines, lake, sources  # noqa: E402
 import main_pipeline  # noqa: E402
 
 sys.path.insert(0, str(support.ROOT / "options_whale"))
@@ -38,6 +38,14 @@ def intraday(day, start, n, freq="min", base=100.0):
 def daily(days, close=100.0):
     idx = pd.DatetimeIndex([pd.Timestamp(d, tz=NY) for d in days], name="Date")
     return pd.DataFrame({"Open": 99.0, "High": 101.0, "Low": 98.0, "Close": close, "Volume": 1000, "Dividends": 0.0}, index=idx)
+
+
+def priced(days, closes):
+    """daily bars whose close (and open) follow `closes`, high and low one either side."""
+    df = daily(days)
+    df["Open"], df["Close"] = closes, closes
+    df["High"], df["Low"] = [c + 1 for c in closes], [c - 1 for c in closes]
+    return df
 
 
 class Base(unittest.TestCase):
@@ -128,6 +136,7 @@ class Store(Base):
     def test_collect_stores_what_yahoo_returns(self):
         s = sources.SourceSession(self.conn, "bars-test")
         with mock.patch.object(sources, "yf_history", return_value=(daily(["2026-05-28"]), 1)) as yh, \
+                mock.patch.object(sources, "yf_shares", return_value=(pd.Series([1.5e9], index=pd.DatetimeIndex(["2026-05-20"])), 1)), \
                 mock.patch("yfinance.Ticker") as tk:
             tk.return_value.info = {"longName": "Nike, Inc.", "quoteType": "EQUITY", "fullExchangeName": "NYSE",
                                     "longBusinessSummary": "Nike designs shoes. It sells them worldwide. " + "x" * 400}
@@ -139,6 +148,7 @@ class Store(Base):
         self.assertTrue(row["description"].startswith("Nike designs shoes. It sells them worldwide."))
         self.assertLessEqual(len(row["description"]), 220)
         self.assertEqual(bars.tracked(self.conn), ["NKE"])
+        self.assertEqual(self.conn.execute("SELECT d, shares FROM v2_chart_shares").fetchall()[0][:], ("2026-05-20", 1.5e9))
 
     def test_backfill_1m_windows_stay_under_eight_days(self):
         s = sources.SourceSession(self.conn, "bars-test")
@@ -262,6 +272,122 @@ class Routes(Base):
             m = self.client.get("/api/chart/lookup?q=spy").get_json()
         self.assertEqual([x["symbol"] for x in m["matches"]], ["SPY"])
 
+    # ---- value modes (mcap, volume) and formulas
+    def kind(self, symbol, kind):
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO v2_chart_symbols VALUES (?,?,?,?,?,?,?)", (symbol, symbol, kind, "", "", "test", "2026-01-01"))
+
+    def shares(self, symbol, rows):
+        with self.conn:
+            self.conn.executemany("INSERT INTO v2_chart_shares VALUES (?,?,?,?,?)", [(symbol, d, v, "test", None) for d, v in rows])
+
+    def test_shares_are_stored_once_a_date_weekly_and_only_for_stocks(self):
+        sr = pd.Series([1e9, 1.1e9, 2e9], index=pd.DatetimeIndex(["2026-05-20 09:00", "2026-05-20 16:00", "2026-05-27"], tz="UTC"))
+        with mock.patch("yfinance.Ticker") as tk:
+            tk.return_value.get_shares_full.return_value = sr
+            for sym, kind in (("NKE", "EQUITY"), ("SPY", "ETF"), ("GC=F", "FUTURE")):
+                self.kind(sym, kind)
+                self.assertEqual(bars.collect_shares(self.conn, sources.SourceSession(self.conn, "a-" + sym), sym), 2 if sym == "NKE" else 0)
+            self.assertEqual(tk.call_count, 1)                                       # the ETF and the future never asked
+            self.assertEqual(bars.collect_shares(self.conn, sources.SourceSession(self.conn, "b"), "NKE"), 0)
+            self.assertEqual(tk.call_count, 1)                                       # fetched less than a week ago
+        self.assertEqual(self.conn.execute("SELECT d, shares FROM v2_chart_shares ORDER BY d").fetchall()[0][:], ("2026-05-20", 1.1e9))
+
+    def test_mcap_is_close_times_the_shares_as_of_each_bar(self):
+        self.kind("NKE", "EQUITY")
+        bars.ingest(self.conn, "NKE", "1d", priced(["2026-05-26", "2026-05-27", "2026-05-28"], [100.0, 100.0, 50.0]), "yahoo", now=NOW)
+        self.shares("NKE", [("2026-05-27", 2e9), ("2026-05-28", 4e9)])
+        j = self.client.get("/api/chart/bars?symbol=NKE&value=mcap").get_json()
+        self.assertEqual((j["status"], j["value"], j["unit"]), ("success", "mcap", "USD billions"))
+        self.assertEqual(j["v"], [200.0, 200.0])                                     # 05-26 is before the first shares date: left out
+        self.assertNotIn("o", j)
+        c = self.client.get("/api/chart/bars?symbol=NKE&value=mcap&tf=1wk").get_json()    # no weekly bars stored: still a line, no zeros
+        self.assertEqual(c["status"], "success")
+
+    def test_mcap_is_missing_for_an_etf_or_before_shares_are_fetched_and_volume_is_the_v_column(self):
+        bars.ingest(self.conn, "SPY", "1d", priced(["2026-05-27", "2026-05-28"], [100.0, 101.0]), "yahoo", now=NOW)
+        self.kind("SPY", "ETF")
+        r = self.client.get("/api/chart/bars?symbol=SPY&value=mcap")
+        self.assertEqual((r.status_code, r.get_json()["status"]), (200, "missing"))
+        self.assertIn("only stocks", r.get_json()["reason"])
+        self.kind("SPY", "EQUITY")
+        self.assertIn("bars --symbol SPY", self.client.get("/api/chart/bars?symbol=SPY&value=mcap").get_json()["reason"])
+        j = self.client.get("/api/chart/bars?symbol=SPY&value=volume").get_json()
+        self.assertEqual((j["status"], j["value"], j["v"]), ("success", "volume", [1000, 1000]))
+        self.assertEqual(self.client.get("/api/chart/bars?symbol=SPY&value=bogus").status_code, 400)
+        self.assertEqual(self.client.get("/api/chart/bars?symbol=SPY").get_json()["c"], [100.0, 101.0])   # price is the default
+
+    def track(self, **closes):
+        for sym, cl in closes.items():
+            bars.ingest(self.conn, sym.replace("_", "="), "1d", priced(["2026-05-26", "2026-05-27", "2026-05-28"], cl), "yahoo", now=NOW)
+
+    def save(self, expr, name="", headers=CH):
+        return self.client.post("/api/chart/formulas", json={"expr": expr, "name": name}, headers=headers)
+
+    def test_formulas_are_validated_before_they_are_saved(self):
+        self.track(GC_F=[1, 2, 3], SI_F=[1, 2, 3], HO_F=[1, 2, 3], CL_F=[1, 2, 3], SPY=[1, 2, 3])
+        self.track(**{"^VIX": [1, 2, 3]})
+        for expr in ("GC=F / SI=F", "(HO=F*42) - CL=F", "SPY / ^VIX", "eia.days.distillate / eia.days.gasoline", "-SPY + 2 * GC=F"):
+            r = self.save(expr, "x")
+            self.assertEqual((r.status_code, r.get_json()["status"]), (200, "success"), expr)
+            self.assertRegex(r.get_json()["id"], r"^f\.[0-9a-f]{8}$")
+        r = self.save("gc=f/si=f", "same")                                           # the same expression: the same id, first name stays
+        self.assertEqual(r.get_json()["id"], self.save("GC=F / SI=F").get_json()["id"])
+        self.assertEqual(len(formulas.all_formulas(self.conn)), 5)
+        for bad in ("__import__('os')", "GC=F ** 2", "GC=F // 2", "SPY(", "1 + 2", "", "GC=F; SI=F", "GC=F if 1 else SI=F"):
+            self.assertEqual(self.save(bad).status_code, 400, bad)
+        r = self.save("ZZZ / SPY")
+        self.assertEqual((r.status_code, r.get_json()["unknown"]), (400, ["ZZZ"]))
+        self.assertEqual(self.save("+".join(["SPY", "GC=F", "SI=F", "HO=F", "CL=F", "^VIX", "eia.WDISTUS1", "eia.WGTSTUS1", "chaos.score"])).status_code, 400)
+        self.assertEqual(self.save("SPY / GC=F", headers={}).status_code, 403)       # no CHART header
+        self.assertEqual(self.save("SPY / GC=F", headers={**CH, "Origin": "http://evil.example"}).status_code, 403)
+        self.assertEqual(self.client.get("/api/chart/formulas").status_code, 405)
+
+    def test_a_formula_is_computed_from_the_stored_bars_and_a_zero_divisor_has_no_bar(self):
+        self.track(GC_F=[100.0, 200.0, 300.0], SI_F=[10.0, 0.0, 30.0])
+        fid = self.save("GC=F / SI=F").get_json()["id"]
+        j = self.client.get(f"/api/chart/bars?symbol={fid}&tf=1d").get_json()
+        self.assertEqual(j["status"], "success")
+        self.assertEqual(len(j["t"]), 2)                                             # 05-27 divides by zero: no bar, not a zero
+        self.assertEqual((j["o"], j["c"], j["h"], j["l"]), ([10.0, 10.0], [10.0, 10.0], [10.0, 10.0], [10.0, 10.0]))
+        self.assertEqual(j["v"], [None, None])
+        self.assertEqual(self.client.get(f"/api/chart/bars?symbol={fid}&value=mcap").get_json()["status"], "missing")
+        self.assertEqual(self.client.get("/api/chart/bars?symbol=f.00000000").status_code, 404)
+        j = self.client.get(f"/api/chart/bars?symbol={fid}&tf=5m").get_json()           # an operand without that timeframe
+        self.assertEqual(j["status"], "missing")
+        self.assertIn("5m", j["reason"])
+
+    def test_high_and_low_of_a_formula_are_widened_to_hold_the_open_and_close(self):
+        self.track(GC_F=[100.0, 100.0, 100.0], SI_F=[10.0, 10.0, 10.0])
+        df, _ = formulas.compute(self.conn, None, "GC=F / SI=F + 1", "1d")
+        self.assertEqual(list(df.iloc[0]), [11.0, 11.0, 11.0, 11.0])                  # 101/11 = 9.2 < 11: the high stays at the close
+        df, _ = formulas.compute(self.conn, None, "SI=F - GC=F", "1d")                # f(highs) = 11 - 99 < f(lows) = 9 - 101
+        self.assertEqual(list(df.iloc[0]), [-90.0, -90.0, -90.0, -90.0])
+
+    def test_a_series_in_a_formula_is_carried_forward_at_most_ten_days(self):
+        bars.ingest(self.conn, "SPY", "1d", priced(["2024-01-08", "2024-01-12", "2024-02-12", "2024-03-01"], [100.0] * 4), "yahoo", now=NOW)
+        fid = self.save("SPY / eia.WDISTUS1").get_json()["id"]
+        conn = api_router._open_readonly()
+        try:
+            df, _ = formulas.compute(self.conn, conn, "SPY / eia.WDISTUS1", "1d")
+        finally:
+            conn.close()
+        # weekly stocks 100, 110, ... on Fridays from 2024-01-05: 01-08 sees 100, 01-12 sees 110, 02-12 sees 02-09's 150, 03-01 is 3 weeks on
+        self.assertEqual([round(x, 4) for x in df["close"]], [1.0, round(100 / 110, 4), round(100 / 150, 4)])
+        self.assertEqual(self.client.get(f"/api/chart/bars?symbol={fid}&tf=1d").get_json()["status"], "success")
+
+    def test_the_catalog_lists_formulas_with_their_expression_and_dates(self):
+        self.track(GC_F=[1.0, 2.0, 3.0], SI_F=[1.0, 2.0, 3.0])
+        bars.ingest(self.conn, "SI=F", "1d", priced(["2026-05-29"], [4.0]), "yahoo", now=LATER)
+        self.save("GC=F / SI=F", "gold per silver")
+        f = self.client.get("/api/chart/catalog").get_json()["formulas"]
+        self.assertEqual(len(f), 1)
+        self.assertEqual((f[0]["name"], f[0]["expr"], f[0]["first"], f[0]["last"]), ("gold per silver", "GC=F / SI=F", "2026-05-26", "2026-05-28"))
+        self.assertEqual(f[0]["description"], "gold per silver = GC=F / SI=F")
+        with mock.patch.object(api_router.yf, "Search", side_effect=RuntimeError("down")):
+            m = self.client.get("/api/chart/lookup?q=gold per").get_json()["matches"]
+        self.assertEqual([(x["symbol"], x["stored"]) for x in m], [(f[0]["id"], True)])
+
     def test_remote_forwards_every_chart_request(self):
         resp = mock.Mock(content=b'{"status": "success"}', status_code=200, headers={"Content-Type": "application/json"})
         with mock.patch.object(config, "CHART_REMOTE", "http://oracle:8082"), \
@@ -305,6 +431,25 @@ class ChartFans(Base):
         self.assertIsNone(chartfans.read(self.conn, "SPY", "1d"))
         v = dict(self.conn.execute("SELECT model, version FROM v2_chart_fans WHERE item = 'NKE'").fetchall())
         self.assertEqual(v, {"kronos": "kronos_fan_v2", "baseline": "baseline_fan_v1"})
+
+    def test_a_formula_gets_fans_like_any_item_and_a_negative_one_says_why(self):
+        bars.ingest(self.conn, "NKE", "1d", walk(120), "yahoo", now=NOW)
+        bars.ingest(self.conn, "AAA", "1d", walk(120, start_price=50.0), "yahoo", now=NOW)
+        ok = formulas.save(self.conn, "NKE / AAA", "ratio")["id"]
+        neg = formulas.save(self.conn, "NKE - 3 * AAA")["id"]
+        with mock.patch.object(fans, "load_kronos", return_value=KRONOS_OFF):
+            chartfans.build_all(self.conn)
+        asof, last, dates, models = chartfans.read(self.conn, ok, "1d")
+        self.assertEqual((asof, len(dates), models["baseline"]["status"], len(models["baseline"]["paths"])), ("2026-05-28", 20, "fresh", fans.N_PATHS))
+        self.assertEqual(models["kronos"], {"status": "missing", "reason": "torch not installed"})
+        _, _, _, models = chartfans.read(self.conn, neg, "1d")
+        for m in models.values():
+            self.assertEqual(m["status"], "missing")
+            self.assertIn("negative", m["reason"])
+        client = api_router.app.test_client()
+        j = client.get(f"/api/chart/fan?item={ok}").get_json()
+        self.assertEqual((j["status"], j["source"], j["models"]["baseline"]["status"]), ("success", "chart", "fresh"))
+        self.assertIn("negative", client.get(f"/api/chart/fan?item={neg}").get_json()["models"]["baseline"]["reason"])
 
     def test_intraday_fans_for_spy_use_the_intraday_models(self):
         self.build()

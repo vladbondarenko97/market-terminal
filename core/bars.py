@@ -11,6 +11,7 @@ import fcntl
 import io
 import json
 import re
+import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ NY = ZoneInfo("America/New_York")
 SYMBOL_RE = re.compile(r"^[A-Z0-9.^=\-]{1,15}$")
 NATIVE = ("1m", "5m", "1h", "1d", "1wk")
 INTRADAY = ("1m", "5m", "1h")
+INTRADAY_RE = re.compile(r"^\d+[mh]$")
 # derived tf -> (rule, stored timeframes to build it from, finest first)
 DERIVED = {"15m": ("15min", ("5m", "1m")), "30m": ("30min", ("5m", "1m")), "4h": ("4h", ("1h",)), "1mo": ("MS", ("1d",))}
 TF_MINUTES = {"1m": 1, "5m": 5, "1h": 60, "15m": 15, "30m": 30, "4h": 240}
@@ -99,6 +101,10 @@ def connect():
         conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_fans (
             item TEXT NOT NULL, tf TEXT NOT NULL, asof TEXT NOT NULL, model TEXT NOT NULL, version TEXT, built_at TEXT,
             json TEXT, PRIMARY KEY (item, tf, asof, model))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_shares (
+            symbol TEXT NOT NULL, d TEXT NOT NULL, shares REAL, source TEXT, payload_id INTEGER, PRIMARY KEY (symbol, d))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS v2_chart_formulas (
+            id TEXT PRIMARY KEY, name TEXT, expr TEXT NOT NULL, added_at TEXT)""")
     return conn
 
 
@@ -332,6 +338,66 @@ def catalog_symbols(conn):
     return out
 
 
+# ---------------------------------------------------------------- shares outstanding (market cap = close x shares)
+def kind_of(conn, symbol):
+    r = conn.execute("SELECT kind FROM v2_chart_symbols WHERE symbol = ?", (symbol,)).fetchone()
+    return (r[0] or "") if r else ""
+
+
+def collect_shares(conn, s, symbol, now=None, every_days=7):
+    """Stocks only (kind EQUITY): store Yahoo's shares-outstanding history, one row per date (the last value of the date,
+    INSERT OR IGNORE), at most once a week per symbol (the fetch log says when). Returns rows added; raises SourceUnavailable."""
+    if kind_of(conn, symbol) != "EQUITY":
+        return 0
+    last = conn.execute("""SELECT MAX(started_at) FROM v2_fetch_log WHERE source = 'yahoo' AND outcome = 'ok'
+                           AND request_json LIKE ? AND request_json LIKE ?""",
+                        ('%"fn": "shares"%', f'%"symbol": "{symbol}"%')).fetchone()[0]
+    if last and pd.Timestamp(last) > pd.Timestamp(now or now_ny()) - pd.Timedelta(days=every_days):
+        return 0
+    sr, pid = sources.yf_shares(s, symbol)
+    sr = pd.to_numeric(sr, errors="coerce").dropna()
+    sr = sr[sr > 0]
+    days = pd.Series(sr.values, index=[str(x)[:10] for x in sr.index]).groupby(level=0).last()   # reported order: last of a date
+    with conn:
+        before = conn.total_changes
+        conn.executemany("INSERT OR IGNORE INTO v2_chart_shares VALUES (?,?,?,?,?)",
+                         [(symbol, d, float(v), "yahoo", pid) for d, v in days.items()])
+        return conn.total_changes - before
+
+
+def read_shares(conn, symbol):
+    """Shares outstanding by date (UTC midnight index), oldest first; empty when none are stored."""
+    try:
+        rows = conn.execute("SELECT d, shares FROM v2_chart_shares WHERE symbol = ? ORDER BY d", (symbol,)).fetchall()
+    except sqlite3.OperationalError:               # a chart.db from before shares
+        rows = []
+    return pd.Series([r[1] for r in rows], index=pd.DatetimeIndex([pd.Timestamp(r[0]) for r in rows]).tz_localize("UTC"), dtype=float)
+
+
+def asof(left_index, s, days=None):
+    """`s` (a Series with a UTC DatetimeIndex) as of each time of `left_index` (last value on or before it, at most `days` old);
+    NaN where there is none."""
+    if s.empty:
+        return pd.Series(float("nan"), index=left_index)
+    left = pd.DataFrame({"t": left_index})
+    right = pd.DataFrame({"t": s.index, "x": s.values})
+    out = pd.merge_asof(left, right, on="t", direction="backward", tolerance=None if days is None else pd.Timedelta(days=days))
+    return pd.Series(out["x"].values, index=left_index)
+
+
+def value_frame(conn, symbol, df, value):
+    """('mcap'|'volume') -> (Series, None) of the line to draw for the bars `df`, or (None, reason). mcap is close x the shares
+    outstanding as of each bar, in USD billions; bars before the first shares date are left out."""
+    if value == "volume" or df.empty:
+        return df["volume"], None
+    sh = asof(df.index, read_shares(conn, symbol))
+    if sh.notna().any():
+        return (df["close"] * sh / 1e9).dropna(), None
+    if kind_of(conn, symbol) != "EQUITY":
+        return None, f"market cap needs shares outstanding, which only stocks have ({symbol} is {kind_of(conn, symbol) or 'not a stock'})"
+    return None, f"no shares outstanding stored for {symbol} yet: `main_pipeline.py bars --symbol {symbol}` fetches them"
+
+
 # ---------------------------------------------------------------- fetching (Yahoo, Alpaca)
 NORMAL = (("1d", {"period": "7d"}), ("1wk", {"period": "1mo"}), ("1m", {"period": "7d"}), ("5m", {"period": "7d"}), ("1h", {"period": "7d"}))
 BACKFILL = (("1d", {"period": "max"}), ("1wk", {"period": "max"}), ("1h", {"period": "730d"}), ("5m", {"period": "60d"}))
@@ -381,6 +447,10 @@ def collect(conn, s, symbols, backfill=False, deep=False, now=None):
                 added += _fetch_yahoo(conn, s, symbol, tf, kw, now)
             except sources.SourceUnavailable as exc:
                 errors.append(f"yahoo {symbol} {tf}: {exc}")
+        try:
+            added += collect_shares(conn, s, symbol, now)
+        except sources.SourceUnavailable as exc:
+            errors.append(f"yahoo {symbol} shares: {exc}")
         if deep:
             n, errs = _deep(conn, s, symbol, now)
             added, errors = added + n, errors + errs
