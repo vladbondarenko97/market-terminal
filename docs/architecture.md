@@ -98,6 +98,8 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/forecast.py` | Forecast Lab models (cards 1–9), forecast logging and grading |
 | `core/refining.py` | Diesel, refining and EIA inventory models (cards 10–11) |
 | `core/fans.py` | Scenario fans: Kronos and baseline paths per series, fan forecast log rows, backtest scoring |
+| `core/chartfans.py` | CHART tab fans for what the snapshot does not forecast (daily, any tracked symbol or chart series) and 1h/5m fans of SPY and SLV, into `chart.db` `v2_chart_fans`; run by `main_pipeline.py bars --fans` |
+| `core/headlines.py` | CHART day-view headlines (Wikipedia Current events, GDELT) into `chart.db` `v2_news_items`; run by `main_pipeline.py headlines` |
 | `core/bars.py` | The CHART tab's store (`chart.db`, `v2_bars`, intraday Parquet day files), Yahoo and Alpaca bar collection, the `--from-lake` import and the non-price series catalog; run by `main_pipeline.py bars` |
 | `third_party/kronos/` | Vendored Kronos model code (MIT) with its LICENSE; loaded only when torch and the weights are present |
 | `scripts/fetch_kronos.py`, `scripts/backtest_fans.py`, `requirements-kronos.txt` | Operator-run: download the weights; walk-forward backtest of the fans; the optional torch requirements |
