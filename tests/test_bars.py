@@ -133,6 +133,20 @@ class Store(Base):
         self.assertEqual(len(res["errors"]), 5)          # 1d, 1wk, 1m, 5m, 1h
         self.assertIn("S&P 500", self.conn.execute("SELECT description FROM v2_chart_symbols").fetchone()[0])
 
+    def test_empty_answers_are_no_data_for_minutes_and_a_5_day_retry_for_daily(self):
+        def yh(s, symbol, period=None, interval="1d", **kw):
+            if interval in ("1d", "1wk") and period not in ("5d",):
+                raise sources.SourceUnavailable("yahoo", "empty", f"{symbol} {period}/{interval}")   # 10Y=F: "must be one of: 1d, 5d"
+            if interval in bars.INTRADAY:
+                raise sources.SourceUnavailable("yahoo", "empty", f"{symbol} {interval}")           # ^SKEW: no minutes that far back
+            return daily(["2026-05-27", "2026-05-28"]), 1
+        with mock.patch.object(sources, "yf_history", side_effect=yh) as m, mock.patch("yfinance.Ticker") as tk:
+            tk.return_value.info = {}
+            res = bars.collect(self.conn, sources.SourceSession(self.conn, "t"), ["10Y=F"], backfill=True, now=NOW)
+        self.assertEqual(res["errors"], [])
+        self.assertIn(mock.call(mock.ANY, "10Y=F", interval="1d", prepost=False, period="5d"), m.call_args_list)
+        self.assertEqual([r[0] for r in self.conn.execute("SELECT ts FROM v2_bars WHERE tf = '1d' ORDER BY ts")], ["2026-05-27", "2026-05-28"])
+
     def test_collect_stores_what_yahoo_returns(self):
         s = sources.SourceSession(self.conn, "bars-test")
         with mock.patch.object(sources, "yf_history", return_value=(daily(["2026-05-28"]), 1)) as yh, \

@@ -850,6 +850,8 @@ It is a separate job from `run`: it does not take the run lock and writes nothin
 - `bars --scheduled`: what to schedule instead of plain `bars`: the top-up, then `--fans` only after 20:15 New York on a trading day and only if no fan was built yet today.
 - `headlines --date D` is started by the terminal the first time the day view asks for a date with no stored headlines (one process per date, output in `CHART_STORE/bars_job.log`). `headlines --backfill 2017-01-01` fills history; GDELT is paced at one request per 5 seconds, so a year takes about an hour.
 
+An empty Yahoo answer for minutes or hours (Yahoo keeps no 1m for ^SKEW beyond about a week, for example) is no data, not an error. An empty daily or weekly answer to a long period is asked again with `period=5d`, the only long period Yahoo accepts for some contracts (10Y=F: "must be one of: 1d, 5d"), so their daily bars build up from then on; only an empty answer to that is an error.
+
 Intraday day files are written only for finished sessions (a New York date before today, or today after 20:00 ET) and never rewritten. Yahoo serves 1m only for about 30 days, so older minutes come from `--deep` or from the first backfill onward.
 
 ## Other scripts
