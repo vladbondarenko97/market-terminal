@@ -722,7 +722,7 @@ If the plist is missing it shows "Not installed — run setup.sh".
 
 | Action | What it does |
 |---|---|
-| Start | `launchctl bootstrap` the plist (or `kickstart` if it is loaded) |
+| Start | `launchctl enable` the service (a disabled service cannot load and stays off across reboots), then `launchctl bootstrap` the plist (or `kickstart` if it is loaded). A failure shows a macOS notification with launchctl's error. |
 | Stop | `launchctl bootout`. The plist stays, so the server starts again at the next login. |
 | Restart | `launchctl kickstart -k` |
 

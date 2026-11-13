@@ -19,7 +19,12 @@ PORT="${PORT:-8080}"
 
 case "$1" in
   start)
-    launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null || launchctl kickstart "$DOMAIN/$LABEL"
+    # enable first: launchd refuses to bootstrap a disabled service, and a disabled one stays off across reboots.
+    launchctl enable "$DOMAIN/$LABEL"
+    if ! ERR=$( { launchctl bootstrap "$DOMAIN" "$PLIST" || launchctl kickstart "$DOMAIN/$LABEL"; } 2>&1 ); then
+      # terminal=false hides output, so surface the failure as a notification.
+      osascript -e 'on run {m}' -e 'display notification m with title "Options Whale: start failed"' -e 'end run' "$ERR"
+    fi
     exit 0 ;;
   stop)
     # bootout, not kill: KeepAlive would restart a killed process. The plist stays, so it starts again at next login.
