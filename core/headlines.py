@@ -20,6 +20,7 @@ from core import lake, market_calendar, sources
 PER_SOURCE = 25
 GDELT_FROM = date(2017, 1, 1)
 GDELT_PAUSE = 5.0                      # GDELT asks for one request per 5 seconds
+WIKI_PAUSE = 1.0                       # Wikipedia's API etiquette: requests in series, about one a second
 GDELT_QUERY = "(economy OR markets OR stocks OR fed) sourcelang:english"
 UA = {"User-Agent": "market-terminal/1.0 (personal research; contact via GitHub)"}
 MARKET_WORDS = re.compile(r"market|stock|share|index|tariff|trade|fed\b|federal reserve|rate|inflation|econom|oil|opec|"
@@ -36,8 +37,23 @@ def _request(provider, day):
         {"fn": "artlist", "date": day.isoformat(), "query": GDELT_QUERY}
 
 
+_HTTP = requests.Session()                # one pooled connection per host (a fresh one per day ran out of file handles)
+
+
+def _get(provider, day, url, timeout, params, tries=4):
+    """GET with backoff on HTTP 429 (Retry-After, else 30 s, 60 s, 120 s); anything else is the caller's to judge."""
+    for k in range(tries):
+        r = _HTTP.get(url, headers=UA, timeout=timeout, params=params)
+        if r.status_code != 429 or k == tries - 1:
+            return r
+        wait = r.headers.get("Retry-After", "")
+        time.sleep(float(wait) if wait.isdigit() else 30 * 2 ** k)
+    return r
+
+
 def _wikipedia(day):
-    r = requests.get("https://en.wikipedia.org/w/api.php", headers=UA, timeout=30, params={
+    time.sleep(WIKI_PAUSE)
+    r = _get("wikipedia", day, "https://en.wikipedia.org/w/api.php", 30, {
         "action": "parse", "page": _page(day), "prop": "text", "format": "json", "formatversion": 2, "redirects": 1})
     if r.status_code != 200:
         raise sources.SourceUnavailable("wikipedia", f"http_{r.status_code}", day.isoformat())
@@ -50,7 +66,7 @@ def _wikipedia(day):
 
 
 def _gdelt(day):
-    r = requests.get("https://api.gdeltproject.org/api/v2/doc/doc", headers=UA, timeout=45, params={
+    r = _get("gdelt", day, "https://api.gdeltproject.org/api/v2/doc/doc", 45, {
         "query": GDELT_QUERY, "mode": "artlist", "format": "json", "maxrecords": 50, "sort": "hybridrel",
         "startdatetime": day.strftime("%Y%m%d000000"), "enddatetime": day.strftime("%Y%m%d235959")})
     if r.status_code != 200:
