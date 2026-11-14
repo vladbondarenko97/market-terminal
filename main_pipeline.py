@@ -933,8 +933,7 @@ def backfill_positions():
 def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, fans=False, scheduled=False, offline=False):
     """CHART tab bars job: --from-lake imports stored captures (no network); otherwise Yahoo (and Alpaca with --deep) for the
     given symbols (added and backfilled) or every tracked symbol (the 7-day top-up). --fans builds the chart fans from the stored
-    bars (no network); --scheduled is the top-up, then the fans when it is after 20:15 New York on a trading day and none are
-    built yet today. Exit 0 clean, 1 on any provider error."""
+    bars (no network); --scheduled is the top-up, then the fans when it is outside 09:30-20:15 New York on trading days (fans already stored for the bar are skipped, so a stopped run is finished by the next). Exit 0 clean, 1 on any provider error."""
     from core import bars, chartfans, sources
     try:
         symbols = [bars.norm_symbol(x) for x in symbols or []]
@@ -960,7 +959,7 @@ def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, fans=F
                 for err in res["errors"]:
                     print("  ", err)
                 rc = 1 if res["errors"] else 0
-            if fans or (scheduled and chartfans.due() and not chartfans.built_today(conn)):
+            if fans or (scheduled and chartfans.due()):          # cheap when all are built: stored ones are skipped
                 main = lake.connect_readonly(config.DB_PATH) if config.DB_PATH.exists() else None
                 try:
                     res = chartfans.build_all(conn, main)
@@ -1066,7 +1065,7 @@ def main(argv=None):
     bp.add_argument("--deep", action="store_true", help="also Alpaca 1m since 2016 (needs ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)")
     bp.add_argument("--from-lake", action="store_true", help="import every stored ohlcv payload and cache/bars_*.csv (read-only, no network)")
     bp.add_argument("--fans", action="store_true", help="build the chart fans (daily for symbols and series without a snapshot fan, 1h and 5m for SPY and SLV) from the stored bars; no network")
-    bp.add_argument("--scheduled", action="store_true", help="the 7-day top-up, then --fans when it is after 20:15 New York on a trading day and none are built today")
+    bp.add_argument("--scheduled", action="store_true", help="the 7-day top-up, then --fans when it is outside 09:30-20:15 New York on trading days (fans already stored for the bar are skipped, so a stopped run is finished by the next)")
     bp.add_argument("--offline", action="store_true", help="no network; only --from-lake and --fans do anything")
     hp = sub.add_parser("headlines", help="CHART tab day-view headlines (Wikipedia Current events, GDELT) into CHART_STORE/chart.db")
     hp.add_argument("--date", help="one date, YYYY-MM-DD")

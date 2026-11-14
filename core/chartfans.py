@@ -62,7 +62,10 @@ def _store(conn, item, tf, asof, last, dates, models, versions):
 
 def build_one(conn, item, tf, df, asof, dates, out_dates, predictor, kinfo, versions, widen):
     """Both models for one item. df: OHLCV window with a naive index; dates: the future steps for Kronos;
-    out_dates: the same steps as stored strings. Returns the rows added."""
+    out_dates: the same steps as stored strings. Returns the rows added. Already stored for this bar: skipped before any
+    work (Kronos on Oracle's CPU takes hours for all items, so a run that was stopped is finished by the next one)."""
+    if conn.execute("SELECT COUNT(*) FROM v2_chart_fans WHERE item = ? AND tf = ? AND asof = ?", (item, tf, asof)).fetchone()[0] >= 2:
+        return 0
     seed = fans._seed(item, tf, asof)
     base = fans.bootstrap_paths(df["close"].values, len(dates), seed)
     models = {"kronos": fans._try_kronos(predictor, kinfo, df, dates, seed, widen),
@@ -142,16 +145,12 @@ def _weekly(conn, item, df, predictor, kinfo):
                      predictor, kinfo, None, False)
 
 
-def built_today(conn, now=None):
-    last = conn.execute("SELECT MAX(built_at) FROM v2_chart_fans").fetchone()[0]
-    return bool(last) and pd.Timestamp(last).tz_convert(NY).date() == (now or bars.now_ny()).date()
-
-
 def due(now=None):
-    """After 20:15 New York on a trading day: today's bars are stored only once the session is finished (20:00, see
-    bars.finished), so the 20:30 scheduled run is the one that builds the fans."""
+    """Outside 09:30-20:15 New York on a trading day. A day's bars are stored only once its session is finished (20:00, see
+    bars.finished), so the 20:30 run builds that day's fans; the next morning's run finishes whatever a stopped run left
+    (fans already stored for the bar are skipped)."""
     now = now or bars.now_ny()
-    return market_calendar.is_trading_day(now.date()) and (now.hour, now.minute) >= (20, 15)
+    return not (market_calendar.is_trading_day(now.date()) and (9, 30) <= (now.hour, now.minute) < (20, 15))
 
 
 def read(conn, item, tf):

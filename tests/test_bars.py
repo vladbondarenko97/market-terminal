@@ -512,10 +512,20 @@ class ChartFans(Base):
             self.assertIsNone(chartfans.read(self.conn, "NKE", "1d"))
             with mock.patch.object(chartfans, "due", return_value=True):
                 main_pipeline.bars_command([], scheduled=True, offline=True)
-                self.assertTrue(chartfans.built_today(self.conn))
+                self.assertTrue(self.conn.execute("SELECT COUNT(*) FROM v2_chart_fans").fetchone()[0])
         self.assertTrue(chartfans.due(datetime(2026, 6, 1, 20, 15, tzinfo=NY)))
         self.assertFalse(chartfans.due(datetime(2026, 6, 1, 20, 14, tzinfo=NY)))
-        self.assertFalse(chartfans.due(datetime(2026, 5, 30, 17, 0, tzinfo=NY)))        # a Saturday
+        self.assertTrue(chartfans.due(datetime(2026, 5, 30, 17, 0, tzinfo=NY)))         # a Saturday: off hours
+        self.assertTrue(chartfans.due(datetime(2026, 6, 2, 9, 10, tzinfo=NY)))          # the morning run finishes a stopped one
+        self.assertFalse(chartfans.due(datetime(2026, 6, 2, 9, 30, tzinfo=NY)))
+
+    def test_fans_already_stored_for_the_bar_are_skipped_before_any_work(self):
+        bars.ingest(self.conn, "NKE", "1d", walk(120), "yahoo", now=NOW)
+        with mock.patch.object(fans, "load_kronos", return_value=KRONOS_OFF):
+            self.assertEqual(chartfans.build_all(self.conn)["added"], 2)
+            with mock.patch.object(fans, "bootstrap_paths") as bp:
+                self.assertEqual(chartfans.build_all(self.conn)["added"], 0)
+                bp.assert_not_called()
 
 
 SNAP_FAN = {"asof": "2026-05-29", "last": 500.0, "dates": ["2026-06-01", "2026-06-02"],
@@ -681,6 +691,14 @@ GDELT = {"articles": [{"url": "https://a.test/1", "title": " Fed holds rates ", 
 class Headlines(Base):
     D = datetime(2026, 5, 28).date()
 
+    def test_a_429_waits_and_retries(self):
+        busy = mock.Mock(status_code=429, headers={"Retry-After": "7"})
+        ok = mock.Mock(status_code=200, headers={})
+        with mock.patch.object(headlines._HTTP, "get", side_effect=[busy, ok]) as get, mock.patch.object(headlines.time, "sleep") as sl:
+            self.assertIs(headlines._get("gdelt", self.D, "https://x.test", 5, {}), ok)
+        self.assertEqual(get.call_count, 2)
+        sl.assert_called_once_with(7.0)
+
     def test_parsers(self):
         items = headlines.parse_wikipedia(WIKI_HTML, self.D)
         self.assertEqual([(t, u.split("#")[0], c) for t, u, c in items], [
@@ -696,7 +714,7 @@ class Headlines(Base):
     def test_collect_day_stores_once_and_records_empty_answers(self):
         s = sources.SourceSession(self.conn, "headlines-test")
         replies = [self.reply({"parse": {"text": WIKI_HTML}}), self.reply(GDELT)]
-        with mock.patch.object(headlines.requests, "get", side_effect=replies) as get, mock.patch.object(headlines.time, "sleep"):
+        with mock.patch.object(headlines._HTTP, "get", side_effect=replies) as get, mock.patch.object(headlines.time, "sleep"):
             res = headlines.collect_day(self.conn, s, self.D)
             self.assertEqual((res["added"], res["errors"]), (4, []))
             self.assertTrue(headlines.is_done(self.conn, self.D))
@@ -708,25 +726,25 @@ class Headlines(Base):
         # a day with no Wikipedia page and no GDELT matches is an answer too: recorded, never refetched
         other = datetime(2026, 5, 27).date()
         replies = [self.reply({"error": {"code": "missingtitle"}}), self.reply(None, text="")]
-        with mock.patch.object(headlines.requests, "get", side_effect=replies), mock.patch.object(headlines.time, "sleep"):
+        with mock.patch.object(headlines._HTTP, "get", side_effect=replies), mock.patch.object(headlines.time, "sleep"):
             self.assertEqual(headlines.collect_day(self.conn, sources.SourceSession(self.conn, "t2"), other), {"added": 0, "errors": []})
         self.assertTrue(headlines.is_done(self.conn, other))
 
     def test_gdelt_is_skipped_before_2017_and_failures_are_not_marked_done(self):
         old = datetime(2010, 3, 1).date()
-        with mock.patch.object(headlines.requests, "get", return_value=self.reply({"parse": {"text": WIKI_HTML}})) as get:
+        with mock.patch.object(headlines._HTTP, "get", return_value=self.reply({"parse": {"text": WIKI_HTML}})) as get:
             headlines.collect_day(self.conn, sources.SourceSession(self.conn, "t"), old)
             self.assertEqual(get.call_count, 1)
         self.assertTrue(headlines.is_done(self.conn, old))
         bad = mock.Mock(status_code=429, text="slow down")
-        with mock.patch.object(headlines.requests, "get", side_effect=[self.reply({"parse": {"text": WIKI_HTML}}), bad]), \
+        with mock.patch.object(headlines._HTTP, "get", side_effect=[self.reply({"parse": {"text": WIKI_HTML}}), bad]), \
                 mock.patch.object(headlines.time, "sleep"):
             res = headlines.collect_day(self.conn, sources.SourceSession(self.conn, "t3"), self.D)
         self.assertEqual(len(res["errors"]), 1)
         self.assertFalse(headlines.is_done(self.conn, self.D))
 
     def test_headlines_command_offline_fetches_nothing(self):
-        with mock.patch.object(headlines.requests, "get") as get:
+        with mock.patch.object(headlines._HTTP, "get") as get:
             self.assertEqual(main_pipeline.headlines_command("2026-05-28", offline=True), 1)
             get.assert_not_called()
         self.assertEqual(main_pipeline.headlines_command(None), 2)
