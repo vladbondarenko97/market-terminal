@@ -431,7 +431,8 @@
             if (!d.B) return;
             const color = COLORS[(k + 1) % COLORS.length];
             if (!c.pct) left = true;
-            const s = add('LineSeries', { color, lineWidth: 2, priceScaleId: c.pct ? 'right' : 'left', title: sym + (c.cval[sym] && c.cval[sym] !== 'price' ? ' ' + c.cval[sym] : '') }, 0);
+            // the first on the left axis, every further one on its own (unlabelled) scale, so a ratio near 80 and one near 0.5 both read
+            const s = add('LineSeries', { color, lineWidth: 2, priceScaleId: c.pct ? 'right' : k === 0 ? 'left' : 'cmp' + k, title: (symInfo[sym] && symInfo[sym].kind === 'FORMULA' ? symInfo[sym].name : sym) + (c.cval[sym] && c.cval[sym] !== 'price' ? ' ' + c.cval[sym] : '') }, 0);
             s.setData(d.B.t.map((t, i) => ({ time: t, value: d.B.c[i] })));
             if (!c.cval[sym] || c.cval[sym] === 'price') items.push({ key: 'sym:' + sym, item: sym, label: sym, api: s, anchor: d.B.t[d.B.t.length - 1], color });
         });
@@ -682,9 +683,12 @@
             b.append(h('b', null, f.name || f.id), h('span', null, ' ' + f.expr));
             b.title = `${f.id}: ${f.description}`;
             b.onclick = () => pick(f.id);
+            const plus = h('button', 'ch-chip ch-chip-x', '+');
+            plus.title = 'Add it to the active chart, next to what it shows';
+            plus.onclick = () => addToChart(f.id);
             x.title = 'Hide this formula in this browser (formulas cannot be deleted)';
             x.onclick = () => { st.hiddenF.push(f.id); save(); loadCatalog(); };
-            w.append(b, x); box.append(w);
+            w.append(b, plus, x); box.append(w);
         });
         return catalog;
     }
@@ -706,22 +710,22 @@
     }
     function dropdown(box, rows) { box.replaceChildren(...rows); box.classList.toggle('hidden', !rows.length); }
     let lookupT = null, lookupSeq = 0;
-    function lookup(input, box, onPick) {
+    function lookup(input, box, onPick, query, extra) {            // query: search this instead of the whole input; extra: rows shown first
         clearTimeout(lookupT);
-        const q = input.value.trim();
+        const q = (query == null ? input.value : query).trim();
         if (!q) { box.classList.add('hidden'); return; }
         lookupT = setTimeout(async () => {
             const my = ++lookupSeq;
             const r = await chartJson(`${API_BASE}/api/chart/lookup?q=${encodeURIComponent(q)}`);
-            if (my !== lookupSeq || r.status !== 'success') return;
-            dropdown(box, r.matches.map(m => {
+            if (my !== lookupSeq) return;
+            dropdown(box, (extra ? extra(q) : []).concat((r.status === 'success' ? r.matches : []).map(m => {
                 symInfo[m.symbol] = symInfo[m.symbol] || m;
                 const row = h('button', 'ch-row');
                 row.append(h('b', null, m.symbol), h('span', 'ch-kind', ` ${m.kind || ''}${m.exchange ? ' · ' + m.exchange : ''}`),
                     h('div', 'ch-name', m.name || ''), h('div', 'ch-desc', m.description || (m.stored ? '' : 'not stored yet: loads its history on first use')));
-                row.onmousedown = e => { e.preventDefault(); onPick(m.symbol); };
+                row.onmousedown = e => { e.preventDefault(); onPick(m.symbol, m); };
                 return row;
-            }));
+            })));
         }, 250);
     }
     async function openSeriesPicker() {
@@ -760,15 +764,27 @@
         msg.textContent = `${sym}: still no history after 2 minutes.`;
         return false;
     }
-    async function saveFormula(expr, name, msg, offer) {
-        msg.className = 'ch-desc'; msg.textContent = 'Saving…'; offer.replaceChildren();
+    const addToChart = id => {                                      // next to what the active chart shows (compare), not instead of it
+        const cell = A(), c = P(cell);
+        if (id !== c.symbol && !c.compare.includes(id)) c.compare.push(id);
+        save(); render(cell); renderInfo();
+    };
+    let pendingLoads = [];                                          // downloads started by picking a symbol in the formula box
+    async function saveFormula(expr, name, msg, offer, show) {
+        msg.className = 'ch-desc'; offer.replaceChildren();
+        if (pendingLoads.length) { msg.textContent = 'Waiting for the picked symbols to download…'; await Promise.all(pendingLoads); pendingLoads = []; }
+        msg.textContent = 'Saving…';
         const r = await fetchJson(`${API_BASE}/api/chart/formulas`, { method: 'POST', headers: { 'X-Chart-Request': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ expr, name }) });
-        if (r.status === 'success') { msg.textContent = ''; catalog = null; $('chFormDrop').classList.add('hidden'); await loadCatalog(); pick(r.id); return; }
+        if (r.status === 'success') {
+            msg.textContent = ''; catalog = null; $('chFormDrop').classList.add('hidden'); await loadCatalog();
+            if (show) pick(r.id); else addToChart(r.id);
+            return;
+        }
         msg.className = 'ch-bad'; msg.textContent = r.message || 'could not save the formula';
         (r.unknown || []).filter(s => SYM_RE.test(s)).forEach(sym => {
             const b = h('button', 'ch-btn', `ADD ${sym}`);
             b.title = 'Download this symbol first, then save the formula';
-            b.onclick = async () => { b.disabled = true; msg.className = 'ch-desc'; if (await loadSymbol(sym, msg)) saveFormula(expr, name, msg, offer); else { msg.className = 'ch-bad'; b.disabled = false; } };
+            b.onclick = async () => { b.disabled = true; msg.className = 'ch-desc'; if (await loadSymbol(sym, msg)) saveFormula(expr, name, msg, offer, show); else { msg.className = 'ch-bad'; b.disabled = false; } };
             offer.append(b);
         });
     }
@@ -779,10 +795,55 @@
         expr.placeholder = 'GC=F / SI=F'; expr.setAttribute('aria-label', 'Formula'); expr.spellcheck = false; expr.maxLength = 200;
         name.placeholder = 'Name (optional)'; name.setAttribute('aria-label', 'Formula name'); name.maxLength = 60;
         [expr, name].forEach(i => { i.style.cssText = 'width:100%;display:block;margin:4px 0;text-transform:none'; });
-        const go = () => saveFormula(expr.value, name.value, msg, offer);
-        [expr, name].forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') go(); }));
-        const save_ = h('button', 'ch-btn', 'SAVE'); save_.onclick = go;
-        box.replaceChildren(h('div', 'ch-desc', 'Symbols and series ids with + - * / ( ) and numbers, e.g. GC=F / SI=F, (HO=F * 42) - CL=F, SPY / ^VIX, eia.days.distillate / eia.days.gasoline. Put spaces around a minus. High and low of the candles are approximate.'), expr, name, save_, msg, offer);
+        // autocomplete the word at the cursor: pick (click or Tab) puts the symbol in as a finished token, then type / * + -
+        const wrap = h('div'), sug = h('div', 'ch-drop hidden');
+        wrap.style.position = 'relative'; wrap.append(expr, sug);
+        const word = () => {
+            const v = expr.value, at = expr.selectionStart ?? v.length;
+            let a = at, b = at;
+            while (a > 0 && /[A-Za-z0-9.^=_:\-]/.test(v[a - 1])) a--;
+            while (b < v.length && /[A-Za-z0-9.^=_:\-]/.test(v[b])) b++;
+            return { a, b, q: v.slice(a, b) };
+        };
+        const put = (tok, m) => {
+            const f = FID.test(tok) && ((catalog && catalog.formulas) || []).find(x => x.id === tok);
+            if (f) tok = `(${f.expr})`;                             // a saved formula goes in as its expression
+            const { a, b } = word(), v = expr.value, tail = v.slice(b).replace(/^ +/, '');
+            expr.value = v.slice(0, a) + tok + ' ' + tail;
+            const caret = a + tok.length + 1; expr.setSelectionRange(caret, caret); expr.focus();
+            sug.classList.add('hidden');
+            if (m && m.stored === false && SYM_RE.test(tok)) {      // not stored yet: download it now, so Save can use it
+                msg.className = 'ch-desc';
+                pendingLoads.push(loadSymbol(tok, msg).then(ok => { if (ok) msg.textContent = `${tok} is ready.`; return ok; }));
+            }
+        };
+        const seriesRows = q => {                                   // catalog series match locally (the lookup route has symbols and formulas)
+            const ql = q.toLowerCase();
+            return ((catalog && catalog.series) || []).filter(s => s.id.toLowerCase().includes(ql) || s.label.toLowerCase().includes(ql)).slice(0, 4).map(s => {
+                const row = h('button', 'ch-row');
+                row.append(h('b', null, s.id), h('span', 'ch-kind', ` SERIES · ${s.unit}`), h('div', 'ch-name', s.label), h('div', 'ch-desc', s.description));
+                row.onmousedown = e => { e.preventDefault(); put(s.id); };
+                return row;
+            });
+        };
+        expr.addEventListener('input', () => {
+            const { q } = word();
+            if (!q || /^[0-9.]+$/.test(q)) { sug.classList.add('hidden'); return; }
+            loadCatalog().then(() => lookup(expr, sug, put, q, seriesRows));
+        });
+        expr.addEventListener('blur', () => setTimeout(() => sug.classList.add('hidden'), 150));
+        const go = show => saveFormula(expr.value, name.value, msg, offer, show);
+        expr.addEventListener('keydown', e => {
+            const first = sug.classList.contains('hidden') ? null : sug.querySelector('.ch-row');
+            if ((e.key === 'Tab' || e.key === 'Enter') && first) { e.preventDefault(); first.dispatchEvent(new MouseEvent('mousedown')); return; }
+            if (e.key === 'Escape') { sug.classList.add('hidden'); return; }
+            if (e.key === 'Enter') go(false);
+        });
+        name.addEventListener('keydown', e => { if (e.key === 'Enter') go(false); });
+        const add_ = h('button', 'ch-btn', 'ADD TO CHART'), show_ = h('button', 'ch-btn', 'SHOW');
+        add_.title = 'Save it and draw it next to what this chart shows (Enter)'; show_.title = 'Save it and make it the main item of this chart';
+        add_.onclick = () => go(false); show_.onclick = () => go(true);
+        box.replaceChildren(h('div', 'ch-desc', 'Type a name or ticker (silver, gold, diesel…) and pick it with Tab or a click; then / * + - ( ) and numbers, e.g. GC=F / SI=F, (HO=F * 42) - CL=F, eia.days.distillate / eia.days.gasoline. Put spaces around a minus. High and low of the candles are approximate.'), wrap, name, add_, show_, msg, offer);
         box.classList.remove('hidden'); expr.focus();
     }
 
