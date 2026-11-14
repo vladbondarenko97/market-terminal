@@ -216,6 +216,8 @@
             grid: { vertLines: { color: '#18181b' }, horzLines: { color: '#18181b' } },
             rightPriceScale: { borderColor: '#27272a' }, leftPriceScale: { borderColor: '#27272a', visible: false },
             timeScale: { borderColor: '#27272a', rightOffset: 4 }, crosshair: { mode: 0 },
+            // a vertical swipe scrolls the page (phones and iPads); a sideways drag pans, two fingers zoom
+            handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
         });
         const candles = chart.addSeries(LW.CandlestickSeries, { upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444' });
         const cell = { i, el, box, meas, chart, candles, B: null, last: null, seq: 0, retryT: null, retryStart: 0, extras: [], prims: [], cprims: [], pl: [], markers: null, lines: {}, cmp: {}, fans: {}, ov: null, ovSym: null };
@@ -677,7 +679,7 @@
             box.append(b);
         });
         (catalog.formulas || []).forEach(f => {                         // saved formulas: the name (or id) and the expression
-            symInfo[f.id] = { name: f.name || f.id, kind: 'FORMULA', description: f.description };
+            symInfo[f.id] = { name: f.name || f.expr, kind: 'FORMULA', description: f.description };
             if (st.hiddenF.includes(f.id)) return;
             const w = h('span', 'ch-chip-wrap'), b = h('button', 'ch-chip'), x = h('button', 'ch-chip ch-chip-x', '×');
             b.append(h('b', null, f.name || f.id), h('span', null, ' ' + f.expr));
@@ -792,7 +794,8 @@
         const box = $('chFormDrop');
         if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
         const expr = h('input', 'ch-input'), name = h('input', 'ch-input'), msg = h('div', 'ch-desc'), offer = h('div', 'ch-act');
-        expr.placeholder = 'GC=F / SI=F'; expr.setAttribute('aria-label', 'Formula'); expr.spellcheck = false; expr.maxLength = 200;
+        expr.placeholder = 'gold / silver'; expr.setAttribute('aria-label', 'Formula'); expr.spellcheck = false; expr.maxLength = 200;
+        expr.setAttribute('autocapitalize', 'off'); expr.setAttribute('autocorrect', 'off'); expr.enterKeyHint = 'done';
         name.placeholder = 'Name (optional)'; name.setAttribute('aria-label', 'Formula name'); name.maxLength = 60;
         [expr, name].forEach(i => { i.style.cssText = 'width:100%;display:block;margin:4px 0;text-transform:none'; });
         // autocomplete the word at the cursor: pick (click or Tab) puts the symbol in as a finished token, then type / * + -
