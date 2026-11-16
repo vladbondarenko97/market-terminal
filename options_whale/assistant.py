@@ -39,6 +39,14 @@ LOCAL_URL = optional_env("ASSISTANT_LOCAL_URL", default="http://127.0.0.1:11434/
 # Default for an Ollama setup (fastest of the Ollama models measured on an M4 Pro). A machine that runs another server,
 # such as oMLX, points ASSISTANT_LOCAL_URL / ASSISTANT_LOCAL_MODEL / ASSISTANT_LOCAL_API_KEY at it in .env.
 LOCAL_MODEL = optional_env("ASSISTANT_LOCAL_MODEL", default="qwen3.6:35b-a3b")
+
+
+def picked_local_model():
+    """The local model loaded in oMLX (agents/mcp /load 12b|9b writes its id there), else .env: one local model in RAM, never two."""
+    try:
+        return open(os.path.expanduser("~/.imessage_local_model")).read().strip() or LOCAL_MODEL
+    except OSError:
+        return LOCAL_MODEL
 LOCAL_API_KEY = optional_env("ASSISTANT_LOCAL_API_KEY", default="local")
 # auto = answer from the brief or pick sources without deliberate reasoning (fast), then reason briefly over fetched data.
 LOCAL_REASONING = optional_env("ASSISTANT_LOCAL_REASONING", default="auto")      # auto | none | low | medium | high
@@ -1444,13 +1452,13 @@ def run_claude(app, conv, question, model=CLAUDE_MODEL, reasoning=None):
 def register(app, port=None):
     @app.route("/api/assistant/status", methods=["GET"])
     def assistant_status():
-        local = {"url": LOCAL_URL, "model": LOCAL_MODEL, "ok": False, "models": []}
+        local = {"url": LOCAL_URL, "model": picked_local_model(), "ok": False, "models": []}
         try:
             r = requests.get(f"{LOCAL_URL}/models", timeout=3, headers={"Authorization": f"Bearer {LOCAL_API_KEY}"})
             names = sorted(m.get("id", "") for m in (r.json().get("data") or []))
             local["models"] = [n for n in names if n and "embed" not in n]
             local["ok"] = r.status_code == 200
-            local["model_installed"] = LOCAL_MODEL in names
+            local["model_installed"] = local["model"] in names
         except Exception as e:
             local["error"] = type(e).__name__
         threading.Thread(target=brief, args=(app,), daemon=True).start()     # the page is open: have the brief ready
@@ -1480,7 +1488,7 @@ def register(app, port=None):
         if pick_engine(body.get("engine")) == "claude":
             events = run_claude(app, conv, question)
         else:
-            events = run_local(app, conv, question, str(body.get("model") or LOCAL_MODEL)[:120], body.get("reasoning"))
+            events = run_local(app, conv, question, str(body.get("model") or picked_local_model())[:120], body.get("reasoning"))
 
         def stream():
             try:
