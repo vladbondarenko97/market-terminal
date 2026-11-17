@@ -1,4 +1,5 @@
 """Read-side history queries over the lake and legacy tables, with explicit as-of cutoffs."""
+import io
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -59,6 +60,29 @@ def inventory_series(conn, as_of=None):
                           "source": "legacy_table (download-dated)"}
             known_pairs.add(pair)
     return [reports[d] for d in sorted(reports)]
+
+
+LEDGER_TIME_COLS = {"macro_master_ledger": "Datetime", "equities_darkpool_gex_ledger": "Date",
+                    "institutional_ledger": "Date", "physical_arbitrage_ledger": "Datetime",
+                    "comex_inventory_history": "Date"}
+
+
+def ledger_frame(conn, table):
+    """A legacy ledger table the way the terminal read its CSV before the CSVs were retired: every value parsed by
+    pd.read_csv (a column can hold REAL and TEXT, e.g. "N/A"), rows in time order (stable, so rows of the same time keep
+    the order they were added; rows with no time last). Readers take the last row as the newest, and rows backfilled
+    later (scripts/retire_ledger_csvs.py) sit at the end of the table. Empty when absent."""
+    if not lake.table_columns(conn, table):
+        return pd.DataFrame()
+    df = pd.read_sql(f'SELECT * FROM "{table}" ORDER BY rowid', conn)
+    if df.empty:
+        return df
+    df = pd.read_csv(io.StringIO(df.to_csv(index=False)))
+    col = LEDGER_TIME_COLS.get(table)
+    if col in df:
+        t = pd.to_datetime(df[col].astype(str), format="mixed", errors="coerce")
+        df = df.iloc[t.reset_index(drop=True).sort_values(kind="stable", na_position="last").index].reset_index(drop=True)
+    return df
 
 
 def legacy_frame(conn, table, time_col, as_of=None, where=None, params=()):

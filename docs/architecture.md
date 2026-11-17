@@ -35,7 +35,7 @@ Both run on one Mac. Data lives in its own folder, never in git (`CME_Data/`, se
    ├─ commit    lake.commit_snapshot(): one immutable JSON document (v2_snapshots)
    │            then the snapshot is re-loaded; everything after reads only it
    │
-   ├─ export    live runs only: append legacy ledgers (CSV + SQLite),               main_pipeline.export_ledgers()
+   ├─ export    live runs only: append the legacy ledger tables,                    main_pipeline.export_ledgers()
    │            record the engine ticket, log gradable forecasts                     core/positions.py, core/forecast.py
    ├─ narrative live runs with ASSISTANT_LOCAL_URL set: the local model writes the      core/narrative.py
    │            Briefing (memo, note), a validator drops what the brief does not
@@ -45,7 +45,7 @@ Both run on one Mac. Data lives in its own folder, never in git (`CME_Data/`, se
    └─ deliver   SMTP email, ntfy push, report + database upload                     send_email.py, upload_data.py
 ```
 
-The terminal reads the snapshot (`v2_latest_snapshot`), the SQLite tables and the CSV ledgers. See
+The terminal reads the snapshot (`v2_latest_snapshot`) and the SQLite tables, the ledgers included. See
 [API](api.md) for which routes read stored data and which call providers live.
 
 OpenBB is not used. Revisit it only if the Claude Code analyst keeps asking for data the console routes lack.
@@ -164,6 +164,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `docs/methodology.md` | Index of every computed value: owner, version constant, method, link to the detail |
 | `docs/case-study-2026-10-30.md` | The Chaos / Peace stress flip of 2026-10-30, from the stored snapshots |
 | `mcp_server.py` | Standalone MCP server (GET-only proxy of the terminal's read-only sources and the brokerage card), two secret-path endpoints; see [Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli) |
+| `scripts/retire_ledger_csvs.py` | Operator-run once: moves CSV-only ledger rows into their tables, zips the ledger CSVs into `archive/` (verified) and deletes them |
 | `scripts/backup_lake_hf.py` | Copies `portfolio.db` to the private Hugging Face dataset `HF_LAKE_REPO` after every live run and keeps a run/day/week/month timeline of copies (`--check` lists them) |
 | `scripts/sync_secrets.sh` | Operator-run: Bitwarden item `market-terminal` <-> macOS Keychain <-> `.env` (see [Configuration](configuration.md#secrets-in-bitwarden-and-the-keychain)) |
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |

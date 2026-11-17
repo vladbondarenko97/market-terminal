@@ -29,7 +29,7 @@ operators setting up a Mac and for contributors adding a setting. For commands s
 
 ## Data folder
 
-The data folder (`CME_Data/`) holds `portfolio.db`, the daily output folders, the ledger CSVs and the CME
+The data folder (`CME_Data/`) holds `portfolio.db`, the daily output folders, the archived ledger CSVs and the CME
 session. `config.py` resolves it once, when it is first imported, in this order:
 
 1. **`PORTFOLIO_DATA_DIR`**, when set and not empty. The value is expanded (`~` works) and made absolute. It is

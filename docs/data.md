@@ -125,7 +125,7 @@ These tables predate v2 and keep their names and column layout. Live runs append
 existing table with `ALTER TABLE ADD COLUMN`; if a table is missing it is created from the first row
 (`lake.append_legacy_row()`).
 
-| Ledger | CSV in the data folder | Appended | Columns |
+| Ledger | Former CSV (retired 2026-11, see below) | Appended | Columns |
 |---|---|---|---|
 | `macro_master_ledger` | `macro_master_ledger.csv` | 1 row per live run | `Datetime`, `VMRI_Score`, `Threat_Tier`, `DXY`, `DXY_Change`, `10Y_Yield`, `ZN_Futures`, `High_Yield_OAS`, `VIX`, `VIX_Change`, `WTI_Crude`, `Brent_Crude`, `Gold_Price`, `Gold_Silver_Ratio`, `SHFE_Silver_USD`, `COMEX_Silver`, `SHFE_Premium`, `GEX`, `DIX`, `Reverse_Repo_BN`, `Fed_Balance_Sheet_BN`, `Retail_Silver_Cheapest`, `Retail_Silver_Avg`, `Silver_OI`, `Paper_Physical_Ratio` (25). `GEX` is SPY's net dealer gamma from the run's snapshot (`options.SPY.gex.net_gex`: gamma x open interest x 100 x spot, in USD of delta change per $1 move, dealer-long-calls convention; the same figure as `institutional_ledger.Net_Gamma`), empty when the run could not compute it. Rows before the fix hold no `GEX`. `DIX` is always empty: no data source supplies it. |
 | `equities_darkpool_gex_ledger` | `equities_darkpool_gex_ledger.csv` | 2 rows per live run (SPY, SLV) | `Date`, `Ticker`, `Spot_Price`, `DP_Sentiment`, `DP_Total_Vol`, `DP_Notional_USD`, `DP_Largest_Block`, `DP_VWAP`, `DP_Bull_Vol`, `DP_Bear_Vol`, `GEX_Call_Wall`, `GEX_Put_Wall`, `GEX_Zero_Gamma` |
@@ -133,7 +133,15 @@ existing table with `ALTER TABLE ADD COLUMN`; if a table is missing it is create
 | `physical_arbitrage_ledger` | `physical_arbitrage_ledger.csv` | 1 row per live run, only when eBay returned prices and a benchmark exists; also by `ebay.py` (below). The terminal does not read it; its benchmark is unreliable before 2026-09-29 (see [Known issues](known-issues.md)) | `Datetime`, `COMEX_Spot`, `Cheapest_Eagle`, `Average_Eagle`, `Cheapest_Premium_Dollars`, `Cheapest_Premium_Percent`, `Average_Premium_Dollars`, `Average_Premium_Percent`, `Dealers_Scanned` |
 | `comex_inventory_history` | `comex_inventory_history.csv` | Only when a new silver workbook was downloaded and its (Registered, Eligible) pair is not already stored. `Date` is the report date. Troy ounces. | `Date`, `Registered`, `Eligible`, `Total`, `Reg_Change`, `Elig_Change`, `Total_Change` |
 | `crypto_metrics_history` | **none** (SQLite only) | 1 row per live run if the date is not already present; `scripts/backfill_crypto_metals.py` adds a year of history | `Date`, `BTC_Price`, `Silver_Price`, `Gold_Price`, `Silver_BTC_Ratio`, `Gold_BTC_Ratio` |
+
 | `daily_volume`, `silver_stocks` | none | never; read-only legacy tables | no current code creates or writes them |
+
+The ledgers live only in these `portfolio.db` tables. Until 2026-11 every row was also appended to a CSV of the same
+name in the data folder, and some terminal routes read those files. Now the pipeline (`export_ledgers()`) and `ebay.py`
+write only the tables, and the terminal reads them through `history.ledger_frame()` (rows in insertion order, values
+sorted by time, values parsed as `pd.read_csv` parsed the files, so the routes answer as before). `scripts/retire_ledger_csvs.py` moved the
+last CSV-only rows into the tables and zipped the files into `archive/`. `import-history` still imports a ledger CSV
+it finds in the data folder.
 
 Rules that hold for all of them:
 
@@ -173,7 +181,7 @@ CME_Data/
 ├── backups/                          portfolio-<UTC time>.db copies made before import-history
 ├── backup_lake.log                   output of the Hugging Face lake backup after each live run
 ├── .lake_backup.lock                 lock file: one lake backup at a time
-├── macro_master_ledger.csv  ...      the five ledger CSVs
+├── archive/ledger_csvs_<date>.zip    the retired ledger CSVs (the tables in portfolio.db hold the rows)
 └── Sep-29-26/                        one folder per Chicago day (see Daily folder)
 ```
 
@@ -188,9 +196,8 @@ CME_Data/
 | `.v2_manual_run.log` | stdout and stderr of runs started by the terminal's Run button, appended | `POST /run` in `options_whale/api_router.py` |
 | `backups/portfolio-<UTC time>.db` | Consistent copy of `portfolio.db` (SQLite backup API plus an integrity check) taken before `import-history`, unless `--no-backup` | `main_pipeline.backup_database_file()` |
 | `_rejected_downloads/<kind>_<UTC time>.bin` | A download that was not a valid workbook (for example a login page), kept as evidence | `acquire_cme()` |
-| `<ledger>.csv` | The five CSV ledgers above | `main_pipeline._csv_append()`, `ebay.py` |
+| `archive/ledger_csvs_<date>.zip` | The retired ledger CSVs (the five above and the manual copy), zipped by `scripts/retire_ledger_csvs.py` after their rows were checked into the tables. Kept, never read. | `scripts/retire_ledger_csvs.py` |
 | `<Mon-DD-YY>/` | Output of the runs of one day | `main_pipeline.render_outputs()` |
-| `backup macro_master_ledger copy.csv` | A manual copy from the old setup, if present; only the importer reads it | none |
 
 Daily-folder files, the status file and archived workbooks are written to a temp file and moved into place with
 `os.replace`, so a reader never sees a half-written file. Temp names begin with `.` or end in `.tmp`. The ledger

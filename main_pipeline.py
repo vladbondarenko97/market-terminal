@@ -92,27 +92,10 @@ def mark_interrupted_runs(conn):
     return cur.rowcount
 
 
-def _csv_append(path, header_fallback, row):
-    """Append to a legacy CSV keeping its existing header layout (columns it doesn't know are dropped
-    from the CSV only; the SQLite copy keeps them)."""
-    path = Path(path)
-    exists = path.exists() and path.stat().st_size > 0
-    if exists:
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            header = next(csv.reader(f))
-    else:
-        header = header_fallback
-    with open(path, "a", newline="") as f:
-        w = csv.writer(f)
-        if not exists:
-            w.writerow(header)
-        w.writerow(["NaN" if row.get(h) is None and "macro" in path.name else
-                    ("N/A" if row.get(h) is None else row.get(h)) for h in header])
-
-
 # ============================================================ exports
 def export_ledgers(conn, ctx, run_id, stages):
-    """Legacy CSV + SQLite ledger rows. Each step is recorded so a retry never appends twice."""
+    """Legacy ledger rows into their portfolio.db tables (the CSV copies were retired). Each step is recorded so a
+    retry never appends twice."""
     done = stages.setdefault("ledgers", {})
     rows = render.ledger_rows(ctx)
     for table, recs in rows.items():
@@ -125,8 +108,6 @@ def export_ledgers(conn, ctx, run_id, stages):
                 recs = [r for r in recs if r["Date"] not in have]
             for r in recs:
                 lake.append_legacy_row(conn, table, r)
-                if table != "crypto_metrics_history":
-                    _csv_append(DATA_DIR / f"{table}.csv", list(r.keys()), r)
             done[table] = "done"
         except Exception as e:
             done[table] = f"error: {e}"
@@ -146,7 +127,6 @@ def export_ledgers(conn, ctx, run_id, stages):
             else:
                 try:
                     lake.append_legacy_row(conn, "comex_inventory_history", row)
-                    _csv_append(DATA_DIR / "comex_inventory_history.csv", list(row.keys()), row)
                     done["comex_inventory_history"] = "done"
                 except Exception as e:
                     done["comex_inventory_history"] = f"error: {e}"

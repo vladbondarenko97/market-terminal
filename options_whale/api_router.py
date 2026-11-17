@@ -34,7 +34,7 @@ import config
 from config import DATA_DIR as _DATA_DIR, DB_PATH as _V2_DB_PATH, PROJECT_ROOT as _PROJECT_ROOT
 from core.chaos import CHAOS_VERSION
 from core.fans import KRONOS_VERDICT, current_score as _fan_current_score
-from core import forecast as _v2fc, lake as _v2lake, metrics, positions as _v2pos, runlock
+from core import forecast as _v2fc, history as _v2history, lake as _v2lake, metrics, positions as _v2pos, runlock
 from quant_engine import QuantEngine
 
 
@@ -43,12 +43,13 @@ RUN_COMMAND = str(_PROJECT_ROOT / "run_dashboard.command")
 EBAY_SCRIPT_PATH = str(_PROJECT_ROOT / "ebay.py")
 
 DATA_DIR = str(_DATA_DIR)
-INVENTORY_CSV = os.path.join(DATA_DIR, "comex_inventory_history.csv")
-LEDGER_CSV = os.path.join(DATA_DIR, "macro_master_ledger.csv")
-INSTITUTIONAL_LEDGER_CSV = os.path.join(DATA_DIR, "equities_darkpool_gex_ledger.csv")
+# The legacy ledgers are tables in portfolio.db (the CSV copies were retired in 2026-11)
+INVENTORY_TABLE = "comex_inventory_history"
+LEDGER_TABLE = "macro_master_ledger"
+INSTITUTIONAL_LEDGER_TABLE = "equities_darkpool_gex_ledger"
 MANUAL_RUN_LOG = os.path.join(DATA_DIR, ".v2_manual_run.log")        # output of runs started by POST /run
 
-quant = QuantEngine(LEDGER_CSV)
+quant = QuantEngine(lambda: data_cache.get_ledger(LEDGER_TABLE))
 
 # Suppress pandas FutureWarnings for clean terminal output
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -62,21 +63,21 @@ class DataCache:
         self.cache = {}
         self.last_update = {}
 
-    def get_csv(self, file_path):
+    def get_ledger(self, table):
+        """A copy of a legacy ledger table (history.ledger_frame), cached for `ttl` seconds. Empty when the database
+        or the table is not there yet; a database that cannot be read raises (the route answers 500, not "not found")."""
         current_time = time.time()
-        if file_path in self.cache:
-            if current_time - self.last_update.get(file_path, 0) < self.ttl:
-                return self.cache[file_path]
-        if not os.path.exists(file_path):
-            return pd.DataFrame()
-        try:
-            df = pd.read_csv(file_path)
-            self.cache[file_path] = df
-            self.last_update[file_path] = current_time
-            return df
-        except Exception as e:
-            print(f"Cache load error for {file_path}: {e}")
-            return pd.DataFrame()
+        key = ("ledger", _V2_DB_PATH, table)
+        if key not in self.cache or current_time - self.last_update.get(key, 0) >= self.ttl:
+            if not os.path.exists(_V2_DB_PATH):
+                return pd.DataFrame()
+            conn = _v2lake.connect_readonly(_V2_DB_PATH)
+            try:
+                self.cache[key] = _v2history.ledger_frame(conn, table)
+            finally:
+                conn.close()
+            self.last_update[key] = current_time
+        return self.cache[key].copy()
 
     def get(self, key):
         current_time = time.time()
@@ -403,9 +404,10 @@ def _eagle_book(ebay, run_at):
 @guarded("Arbitrage history")
 def get_arbitrage_history():
     limit = int_arg('limit', 50)
-    if not os.path.exists(LEDGER_CSV):
+    df = data_cache.get_ledger(LEDGER_TABLE)
+    if df.empty:
         return json_error("Ledger file not found.", 404)
-    payload = build_arbitrage_series(data_cache.get_csv(LEDGER_CSV).copy(), limit)
+    payload = build_arbitrage_series(df, limit)
     if payload is None:
         return json_error("Ledger is empty.", 404)
 
@@ -533,10 +535,9 @@ def get_dark_pool_profile():
 def get_vmri_history():
     """Returns the time-series history of VMRI scores, math derivatives, and macro context."""
     try:
-        if not os.path.exists(LEDGER_CSV):
+        df = data_cache.get_ledger(LEDGER_TABLE)
+        if df.empty:
             return jsonify({"status": "error", "message": "Ledger not found", "error": "Ledger not found"}), 404
-            
-        df = pd.read_csv(LEDGER_CSV)
         
         # 1. THE FIX: Drop completely empty rows or rows missing a Datetime BEFORE parsing
         df = df.dropna(how='all')
@@ -562,7 +563,7 @@ def get_vmri_history():
         df['VMRI_Momentum_5'] = df['VMRI_Score'].diff(periods=5)
 
         # MMRI (Mannarino), the base_stress of every VMRI row, from the ledger's stored DXY and 10Y_Yield. The formula
-        # lives in core/metrics.py; the CSV ledger keeps its old header, so it has no MMRI column to read.
+        # lives in core/metrics.py; the ledger table keeps its old columns, so it has no MMRI column to read.
         dxy, tny = pd.to_numeric(df['DXY'], errors='coerce'), pd.to_numeric(df['10Y_Yield'], errors='coerce')
         df['MMRI'] = metrics.mmri_value(dxy, tny)
         df['MMRI_SMA_10'] = df['MMRI'].rolling(window=10).mean()
@@ -989,9 +990,9 @@ def api_war_room():
     vix_shift_pct = finite_float(data.get('vix_shift_pct', 0.0), 'vix_shift_pct')
 
     # 2. Ingest the Latest Valid Live Environment
-    if not os.path.exists(LEDGER_CSV):
+    df = data_cache.get_ledger(LEDGER_TABLE)
+    if df.empty:
         raise ApiError("macro ledger not found: run the pipeline", 503)
-    df = pd.read_csv(LEDGER_CSV)
     # CRITICAL FIX: Drop completely empty rows that might be at the end of the CSV
     df = df.dropna(how='all')
     if df.empty:
@@ -1134,13 +1135,14 @@ def api_silver_eagle_prices():
 # --- ENDPOINT 1: THE DATA PROXY ---
 @app.route('/api/inventory_data')
 def get_inventory_data():
-    """Reads the CSV and returns JSON for the JS Chart."""
+    """COMEX inventory by report date (comex_inventory_history) as JSON for the JS chart."""
     try:
-        if not os.path.exists(INVENTORY_CSV):
+        df = data_cache.get_ledger(INVENTORY_TABLE)
+        if df.empty:
             return jsonify({"status": "error", "message": "CSV not found", "error": "CSV not found"}), 404
-            
-        # Read CSV and ensure dates are sorted
-        df = pd.read_csv(INVENTORY_CSV)
+        # A report date can be stored more than once (the CSV import and the pipeline both wrote some): the last row
+        # is the one the CSV kept
+        df = df.drop_duplicates('Date', keep='last')
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.sort_values('Date')
         
@@ -1593,7 +1595,7 @@ def api_help():
   <reference>Full reference with response shapes, error behavior and known issues: docs/api.md in the repository.</reference>
   <notes>
     <note>There is no authentication. Keep the server on a private network.</note>
-    <note>source="stored" reads pipeline output (SQLite, CSV ledgers, daily files). source="live" makes network calls while the request is open.</note>
+    <note>source="stored" reads pipeline output (SQLite, the ledgers included, and daily files). source="live" makes network calls while the request is open.</note>
     <note>Failures use a real HTTP status. JSON routes answer {"status": "error", "message": ...}; XML routes answer an error element. Messages are short; details are in the server log.</note>
     <note>A value a live route cannot compute is null, with the reason in the "missing" object of the data (time_arbitrage, option_calc). It is never replaced by a stand-in number.</note>
     <note>Routes that write something or start a process are POST or DELETE. A POST or DELETE that carries an Origin or Referer for a different host is refused with 403. There is no CORS: other sites cannot read the responses.</note>
@@ -1689,7 +1691,7 @@ def api_help():
       </parameters>
     </endpoint>
     <endpoint method="GET" path="/api/institutional_history" format="json" source="stored">
-      <description>Dark pool and GEX history for one ticker from the equities_darkpool_gex_ledger.csv ledger. Five more arrays aligned with labels come from the pipeline database and are null where a row has no stored run: dp_session (the trading session the flow describes), dp_method (aggressor or vwap_heuristic), dp_unknown_vol (block volume with no provider side), dp_above_vwap_vol and dp_below_vwap_vol (the unknown-side volume at or above, and below, the block VWAP).</description>
+      <description>Dark pool and GEX history for one ticker from the equities_darkpool_gex_ledger table. Five more arrays aligned with labels come from the pipeline database and are null where a row has no stored run: dp_session (the trading session the flow describes), dp_method (aggressor or vwap_heuristic), dp_unknown_vol (block volume with no provider side), dp_above_vwap_vol and dp_below_vwap_vol (the unknown-side volume at or above, and below, the block VWAP).</description>
       <parameters>
         <param name="ticker" type="string" default="SLV" />
         <param name="limit" type="int" default="100" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
@@ -1755,13 +1757,13 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/arbitrage_history" format="json" source="stored">
-      <description>Silver Eagle premium history, paired per run from macro_master_ledger.csv (the retail prices against the silver futures price recorded by the same run), as parallel arrays. The 90-day statistics (stats), the dealer book (book) and the units-sold flow (flow) are read from the latest run's snapshot; each is null when there is no database or snapshot yet, or the snapshot predates them.</description>
+      <description>Silver Eagle premium history, paired per run from the macro_master_ledger table (the retail prices against the silver futures price recorded by the same run), as parallel arrays. The 90-day statistics (stats), the dealer book (book) and the units-sold flow (flow) are read from the latest run's snapshot; each is null when there is no database or snapshot yet, or the snapshot predates them.</description>
       <parameters>
         <param name="limit" type="int" default="50" description="Number of most recent rows; a non-integer or a value below 1 is a 400" />
       </parameters>
     </endpoint>
     <endpoint method="GET" path="/api/inventory_data" format="json" source="stored">
-      <description>COMEX registered, eligible and total silver inventory by date from comex_inventory_history.csv.</description>
+      <description>COMEX registered, eligible and total silver inventory by date from the comex_inventory_history table.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/inventory_chart" format="html" source="stored">
@@ -2380,10 +2382,9 @@ def get_institutional_history():
     limit = int_arg('limit', 100)
     
     try:
-        if not os.path.exists(INSTITUTIONAL_LEDGER_CSV):
+        df = data_cache.get_ledger(INSTITUTIONAL_LEDGER_TABLE)
+        if df.empty:
             return jsonify({"status": "error", "message": "Institutional ledger not found."}), 404
-        
-        df = data_cache.get_csv(INSTITUTIONAL_LEDGER_CSV)
         
         if df.empty:
             return jsonify({"status": "error", "message": "Ledger is empty."}), 404
@@ -2495,10 +2496,9 @@ def get_macro_ledger_full():
     limit = int_arg('limit', 200)
     
     try:
-        if not os.path.exists(LEDGER_CSV):
+        df = data_cache.get_ledger(LEDGER_TABLE)
+        if df.empty:
             return jsonify({"status": "error", "message": "Macro ledger not found."}), 404
-        
-        df = data_cache.get_csv(LEDGER_CSV)
         df = df.dropna(how='all')
         df = df.dropna(subset=['Datetime'])
         df['Datetime'] = pd.to_datetime(df['Datetime'], format='mixed')
@@ -2563,7 +2563,7 @@ def get_macro_ledger_full():
 def _ledger_gamma_inputs(ticker_symbol):
     """(spot, zero_gamma, reason) from the pipeline's latest stored GEX row for the ticker. A value that is not
     stored is None, and `reason` says why the zero-gamma level is missing."""
-    df = data_cache.get_csv(INSTITUTIONAL_LEDGER_CSV)
+    df = data_cache.get_ledger(INSTITUTIONAL_LEDGER_TABLE)
     if df.empty or 'Ticker' not in df:
         return None, None, "no stored GEX ledger yet: run the pipeline"
     rows = df[df['Ticker'].astype(str).str.upper() == ticker_symbol].tail(1)
@@ -2597,7 +2597,7 @@ def get_time_arbitrage():
     # 1. Oscillator: live VIX plus the latest GEX/DIX of the macro ledger. A component without a value is left
     # out of the composite and reported.
     current_vix = _live_spot(yf.Ticker("^VIX"))
-    df_macro = data_cache.get_csv(LEDGER_CSV)
+    df_macro = data_cache.get_ledger(LEDGER_TABLE)
     latest_macro = df_macro.iloc[-1] if not df_macro.empty else None
     oscillator = quant.calculate_z_score_oscillator({
         'vix': current_vix,
