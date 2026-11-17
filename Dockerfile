@@ -19,6 +19,11 @@ RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requir
 # A non-root user owns /data, so a fresh named volume is writable by it.
 RUN useradd --create-home --uid 1000 app && mkdir /data && chown app /data
 COPY --chown=app . .
+# The image has no .git: /api/version reports the commit it was built from.
+ARG GIT_SHA
+ARG GIT_SUBJECT
+ARG GIT_COMMITTED
+ENV GIT_SHA=$GIT_SHA GIT_SUBJECT=$GIT_SUBJECT GIT_COMMITTED=$GIT_COMMITTED
 USER app
 VOLUME /data
 
