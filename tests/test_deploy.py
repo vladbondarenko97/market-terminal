@@ -1,4 +1,6 @@
-"""scripts/deploy.sh against throwaway git repos, with stub gh / launchctl / curl / sleep (no network, no real services)."""
+"""scripts/deploy.sh against throwaway git repos, with stub gh / launchctl / curl / sleep / pgrep / dig / ssh (no network,
+no real services)."""
+import json
 import os
 import shutil
 import subprocess
@@ -9,9 +11,14 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "deploy.sh"
 STUBS = {
     "gh": 'echo "$CI_RESULT"',
-    "launchctl": 'echo "$@" >> "$STUB_LOG"',
-    "curl": '[ -f "$HEALTH_FILE" ]',
+    # print = "is the job loaded" (a job named in $OFF_JOBS is switched off); kickstart = a restart, logged
+    "launchctl": 'case "$1" in print) case " $OFF_JOBS " in *" ${2##*/} "*) exit 1;; esac;; *) echo "$@" >> "$STUB_LOG";; esac',
+    # /api/version answers $VERSION (none: older code); every other URL is up while $HEALTH_FILE exists
+    "curl": 'case "$*" in *api/version*) [ -n "$VERSION" ] && echo "{\\"commit\\": \\"$VERSION\\"}"; exit 0;; esac; [ -f "$HEALTH_FILE" ]',
     "sleep": "true",
+    "pgrep": '[ -n "$BUSY" ]',
+    "dig": 'echo "$PLACEMENT"',
+    "ssh": '[ -n "$ORACLE" ] && echo "{\\"commit\\": \\"$ORACLE\\"}"; true',
 }
 
 
@@ -34,7 +41,8 @@ class Deploy(unittest.TestCase):
             (bins / name).write_text("#!/bin/sh\n" + body + "\n")
             (bins / name).chmod(0o755)
         self.env = {**os.environ, "PATH": f"{bins}:{os.environ['PATH']}", "CI_RESULT": "completed/success",
-                    "STUB_LOG": str(self.tmp / "launchctl.log"), "HEALTH_FILE": str(self.tmp / "healthy")}
+                    "STUB_LOG": str(self.tmp / "launchctl.log"), "HEALTH_FILE": str(self.tmp / "healthy"),
+                    "OFF_JOBS": "", "VERSION": "", "BUSY": "", "PLACEMENT": '"market=mac"', "ORACLE": "", "HOME": str(self.tmp), "DEPLOY_PEER_SSH": "standby"}
         (self.tmp / "healthy").write_text("")
 
     def git(self, cwd, *args):
@@ -125,6 +133,71 @@ class Deploy(unittest.TestCase):
         (self.live / ".git" / "deployed-sha").write_text("0" * 40)  # rewritten history
         code, out = self.deploy()
         self.assertEqual((code, self.restarts()), (0, 2), out)
+
+    def upstream(self):
+        return self.git(self.dev, "rev-parse", "HEAD")
+
+    def test_waits_while_a_pipeline_job_runs(self):
+        self.merge_upstream()
+        before = self.head()
+        code, out = self.deploy(BUSY="1")
+        self.assertEqual((code, self.head(), self.restarts()), (1, before, 0), out)
+        self.assertIn("main_pipeline.py job is running", out)
+        self.assertEqual(self.deploy()[0], 0)
+
+    def test_auto_waits_for_oracle_when_the_mac_serves_and_holds_if_it_never_takes_it(self):
+        self.merge_upstream()
+        before, new = self.head(), self.upstream()
+        code, out = self.deploy("--auto", ORACLE=before)                # Oracle (the standby) still on the old commit
+        self.assertEqual((code, self.head()), (1, before), out)
+        self.assertIn("waiting for the standby", out)
+        code, out = self.deploy("--auto", ORACLE=before, DEPLOY_WAIT_CANARY="0")
+        self.assertIn("deploy held", out)
+        code, out = self.deploy("--auto", ORACLE=new)
+        self.assertEqual((code, self.head()), (0, new), out)
+
+    def test_auto_goes_ahead_when_oracle_is_silent_or_serves(self):
+        self.merge_upstream()
+        self.assertEqual(self.deploy("--auto", ORACLE="")[0], 0)        # Oracle does not answer: the Mac's own checks
+        self.merge_upstream("3")
+        code, out = self.deploy("--auto", PLACEMENT='"market=oracle"', ORACLE="0" * 40)   # Oracle serves: the Mac is the canary
+        self.assertEqual((code, self.head()), (0, self.upstream()), out)
+
+    def test_a_terminal_still_on_the_old_commit_rolls_back(self):
+        self.deploy()
+        good = self.head()
+        self.git(self.dev, "pull", "-q")
+        (self.dev / "options_whale").mkdir()
+        self.commit(self.dev, "options_whale/api_router.py", "@app.route('/api/version')\n")   # a commit with the route
+        self.git(self.dev, "push", "-q", "origin", "main")
+        code, out = self.deploy(VERSION=good)
+        self.assertEqual((code, self.head()), (1, good), out)
+        self.assertIn(f"not {self.upstream()[:7]}", out)
+        self.merge_upstream("3")
+        code, out = self.deploy(VERSION="")                             # a route that does not answer is a failure too
+        self.assertEqual((code, self.head()), (1, good), out)
+        self.merge_upstream("4")
+        code, out = self.deploy(VERSION=self.upstream())
+        self.assertEqual((code, self.head()), (0, self.upstream()), out)
+
+    def test_a_cancelled_ci_run_waits_without_saying_failed(self):
+        self.merge_upstream()
+        code, out = self.deploy(CI_RESULT="completed/cancelled")
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("CI failed", out)
+
+    def test_dropping_the_copy_marker_never_deletes_the_script(self):
+        self.merge_upstream()
+        self.deploy(_DEPLOY_REPO=str(self.live))
+        self.assertTrue((self.live / "scripts" / "deploy.sh").exists())
+
+    def test_a_job_switched_off_stays_off(self):
+        self.merge_upstream()
+        code, out = self.deploy(OFF_JOBS="com.vlad.optionswhale com.vlad.mcpserver")
+        self.assertEqual((code, self.restarts(), self.head()), (0, 0, self.upstream()), out)
+        self.merge_upstream("3")
+        code, out = self.deploy(OFF_JOBS="com.vlad.mcpserver")
+        self.assertEqual((code, self.restarts()), (0, 1), out)
 
     def test_check_changes_nothing(self):
         self.merge_upstream()
