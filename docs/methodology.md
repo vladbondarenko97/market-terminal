@@ -9,7 +9,7 @@ All models run in the pipeline and write into the run's snapshot. Each one retur
 ([status contract](forecast-lab.md#status-contract)). When a value changes meaning, its version is bumped and the
 change is logged in [value-changes](value-changes.md).
 
-## Forecast Lab (`core/forecast.py`, `VERSION = "forecast_v2"`)
+## Forecast Lab (`core/forecast.py`, `VERSION = "forecast_v3"`)
 
 | Card | Value | Method | Detail |
 |---|---|---|---|
