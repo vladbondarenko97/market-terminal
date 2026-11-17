@@ -457,7 +457,9 @@ def push_lines(result):
 def local_settings():
     """(url, model, key); url is None when ASSISTANT_LOCAL_URL is unset or blank (the pipeline stage then skips)."""
     url = config.optional_env("ASSISTANT_LOCAL_URL", default="")
-    return (url.rstrip("/") or None, config.optional_env("ASSISTANT_LOCAL_MODEL", default="qwen3.6:35b-a3b"),
+    try: picked = Path("~/.imessage_local_model").expanduser().read_text().strip()   # the model loaded in oMLX (assistant.picked_local_model):
+    except OSError: picked = ""                                                       # asking for another loaded a 2nd model beside it (Nov 17)
+    return (url.rstrip("/") or None, picked or config.optional_env("ASSISTANT_LOCAL_MODEL", default="qwen3.6:35b-a3b"),
             config.optional_env("ASSISTANT_LOCAL_API_KEY", default="local"))
 
 
