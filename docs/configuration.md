@@ -91,6 +91,9 @@ means `main_pipeline.py`; "terminal" means `options_whale/api_router.py`.
 | `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` | `""` | `core/sources.py alpaca_bars()`, run by `main_pipeline.py bars --deep` | Market-data keys only (never used to trade). Unset: `--deep` reports `not_configured` for Alpaca and nothing is fetched. Both are secrets (Bitwarden/Keychain names). |
 | `CHART_STORE` | `<data folder>/chart` | `config.CHART_STORE`; `core/bars.py`, the `/api/chart/*` routes | Folder for the CHART tab's own `chart.db` and `bars/` day files (see [data.md](data.md)). Not a key. |
 | `CHART_REMOTE` | `""` | `options_whale/api_router.py` | Not a key. A terminal's base URL (`http://host:port`): every `/api/chart/*` request is forwarded to it (20 s timeout) and its answer returned, so this machine stores no chart data. Blank: the routes read the local `CHART_STORE`. |
+| `MARKET_SERVER` | `""` | `config.py`; `/api/version` | Name shown in the footer as "Served by". Blank: `Oracle` when `/.dockerenv` exists, else `Mac mini`. |
+| `MARKET_PEER` | `""` | `config.py`; `/api/version` | Base URL of the other copy's terminal; the footer compares commits with it (a background fetch every 60 s, 3 s timeout). Blank: `CHART_REMOTE` is used, and without either there is no comparison. |
+| `GIT_SHA`, `GIT_SUBJECT`, `GIT_COMMITTED` | `""` | `config.py`; `/api/version` | The commit a Docker image was built from (build args set by `.github/workflows/image.yml`); used only when there is no `.git`. Unix seconds for `GIT_COMMITTED`. |
 
 **Databento key.** Fill `DATABENTO_API_KEY`. `DB_API_KEY` is the name an older version used; it still works. Every
 reader (the pipeline, the terminal, AlphaFlow, `setup.sh`) goes through `config.DATABENTO_API_KEY`, which takes the

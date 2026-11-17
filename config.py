@@ -211,6 +211,12 @@ KRONOS_DEVICE = optional_env("KRONOS_DEVICE", default="").strip()      # blank: 
 # CHART tab (core/bars.py): its own folder (chart.db + bars/ day files). CHART_REMOTE forwards /api/chart/* to another terminal.
 CHART_STORE = Path(optional_env("CHART_STORE", default="") or DATA_DIR / "chart").expanduser()
 CHART_REMOTE = (optional_env("CHART_REMOTE", default="") or "").strip().rstrip("/")
+# The footer (/api/version): this copy's name, the other copy's base URL (blank: CHART_REMOTE), and the commit a Docker image was built from.
+MARKET_SERVER = (optional_env("MARKET_SERVER", default="") or "").strip()
+MARKET_PEER = (optional_env("MARKET_PEER", default="") or "").strip().rstrip("/")
+GIT_SHA = (optional_env("GIT_SHA", default="") or "").strip()
+GIT_SUBJECT = (optional_env("GIT_SUBJECT", default="") or "").strip()
+GIT_COMMITTED = (optional_env("GIT_COMMITTED", default="") or "").strip()
 
 # Source limits
 MAX_PROVIDER_CONCURRENCY = 3

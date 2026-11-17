@@ -116,6 +116,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/watch.py` | Day Scanner: the dip-in-an-uptrend rule on live quotes, the saved watchlist, paper positions (`v2_watch_positions`) |
 | `core/edges.py` | Edge Lab: published edges tested on one ticker's own history (the insider cluster edge reads stored Form 4 filings), tracked list |
 | `core/backfill.py` | Shared frame of the `scripts/backfill_*.py` loaders: run lock, a `mode='backfill'` run row, a SourceSession |
+| `options_whale/static/footer.js` | The page footer: server, version, peer comparison, last run (from `/api/version`) |
 | `options_whale/assistant.py`, `options_whale/static/assistant.js` | Console engine v3: brief, read-only data sources, local model, console UI |
 | `core/market_calendar.py` | NYSE holidays and early closes, the scheduled-run gate (`scheduled_run_skip_reason()`), and the local fire times `setup.sh --schedule` installs (`launchd_intervals()`) |
 | `core/runlock.py` | `RunLock`, the exclusive run lock (`DATA_DIR/.v2_run.lock`), and `lock_is_held()`, a non-blocking probe that never keeps the lock |
