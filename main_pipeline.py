@@ -287,6 +287,21 @@ def run(*, offline=False, deliver=True, upload=True, trigger="manual", use_brows
                            skip_cme=skip_cme, max_volume_files=max_volume_files, login_wait_seconds=login_wait_seconds)
     finally:
         lock.release()
+        if not offline:
+            _start_lake_backup()
+
+
+def _start_lake_backup():
+    """After every live run, finished or failed: a copy of portfolio.db to Hugging Face in the background
+    (scripts/backup_lake_hf.py, log <data>/backup_lake.log). Nothing happens until HF_TOKEN and HF_LAKE_REPO are set."""
+    if not (config.HF_TOKEN and config.HF_LAKE_REPO):
+        return
+    try:
+        with open(DATA_DIR / "backup_lake.log", "a") as log:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "scripts" / "backup_lake_hf.py")],
+                             stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+    except OSError as exc:
+        print(f"⚠️  lake backup not started: {exc}")
 
 
 def _run_locked(*, offline, deliver, upload, trigger, use_browser, skip_cme, max_volume_files, login_wait_seconds):

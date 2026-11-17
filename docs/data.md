@@ -171,6 +171,8 @@ CME_Data/
 ├── analyst_notes/                    <date>_<HHMM>_<engine>_<run id>.md: the Briefing of each run, one file per note (never in git)
 ├── analyst_sandbox/                  empty working folder of the Claude Code analyst (`narrative --engine claude`)
 ├── backups/                          portfolio-<UTC time>.db copies made before import-history
+├── backup_lake.log                   output of the Hugging Face lake backup after each live run
+├── .lake_backup.lock                 lock file: one lake backup at a time
 ├── macro_master_ledger.csv  ...      the five ledger CSVs
 └── Sep-29-26/                        one folder per Chicago day (see Daily folder)
 ```

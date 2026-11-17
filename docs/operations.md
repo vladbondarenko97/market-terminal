@@ -789,6 +789,25 @@ This repository contains only the current (v2) code; its history starts at v2, s
 launcher to go back to. The data folder is additive: v2 adds `v2_*` tables and views to `portfolio.db` and new files
 to `CME_Data`, and keeps the legacy ledger tables and CSV headers unchanged. See [Data](data.md).
 
+- **Every live run backs `portfolio.db` up to Hugging Face** when `HF_TOKEN` and `HF_LAKE_REPO` are set. When a live
+  run ends, finished or failed, `main_pipeline.run()` starts `scripts/backup_lake_hf.py` in the background (log
+  `<data>/backup_lake.log`); offline runs never do. It copies the database with the SQLite backup API, checks the copy
+  with `quick_check` (a damaged copy is not uploaded and nothing is deleted), and uploads it uncompressed as
+  `db/<UTC time>.db`. Hugging Face sends only the chunks that changed, so an upload takes seconds, but it counts every
+  copy at full size. So after each upload the copies off the timeline are deleted and the history squashed:
+
+  | Tier | Keeps |
+  |---|---|
+  | run | the last 3 runs (about one trading day) |
+  | day | the newest copy of each of the last 7 days that had a run |
+  | week | the newest copy of each of the last 4 weeks |
+  | month | the newest copy of each of the last 6 months |
+
+  The tiers overlap, so it holds at most about 17 copies. `scripts/backup_lake_hf.py --check` lists the copies and
+  which tier keeps each, and changes nothing. To restore one, download it (`huggingface_hub.hf_hub_download(repo,
+  "db/<time>.db", repo_type="dataset")`), run `PRAGMA integrity_check` on it, stop the terminal and the schedule, and
+  put it in place of `portfolio.db`. Only the database is copied: not the ledger CSVs, `state.json` (CME cookies,
+  sensitive) or the day folders (`replay` re-renders a run from its snapshot).
 - **`import-history` backs the database up for you.** Before it imports it copies `portfolio.db` to
   `backups/portfolio-<UTC time>.db` with the SQLite backup API and checks the copy (`lake.backup_database()`). If the
   backup fails nothing is imported and the command exits 1; `--no-backup` skips the copy. Backups are never pruned or

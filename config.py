@@ -168,6 +168,7 @@ ALPACA_API_KEY_ID = optional_env("ALPACA_API_KEY_ID", default="")           # ma
 ALPACA_API_SECRET_KEY = optional_env("ALPACA_API_SECRET_KEY", default="")
 HF_TOKEN = optional_env("HF_TOKEN", default="")       # scripts/backup_chart_hf.py: write token for HF_REPO only
 HF_REPO = optional_env("HF_REPO", default="")         # private dataset for the chart store backup, e.g. you/market-chart-store
+HF_LAKE_REPO = optional_env("HF_LAKE_REPO", default="")   # private dataset for portfolio.db copies (scripts/backup_lake_hf.py)
 EBAY_APP_ID = optional_env("EBAY_APP_ID", default="")
 EBAY_CERT_ID = optional_env("EBAY_CERT_ID", default="")
 EMAIL_SENDER = optional_env("EMAIL_SENDER", default="")
