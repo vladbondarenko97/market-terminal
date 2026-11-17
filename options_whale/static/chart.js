@@ -465,8 +465,10 @@
             const f = cell.fans[it.item + '|' + ftf];
             if (!f) { ensureFan(cell, it.item); return; }
             if (!f.d) return;
-            const d = f.d, tt = [it.anchor].concat((d.dates || []).map(isoT));
-            tt.slice(1).forEach(t => { if (t > B.t[B.t.length - 1]) futT.add(t); });
+            // the fan starts at its own run (d.last is that day's price), which can be after the last stored bar
+            const d = f.d, ta = d.asof && ftf === c.tf ? isoT(d.asof) : NaN;
+            const tt = [Number.isFinite(ta) ? Math.max(it.anchor, ta) : it.anchor].concat((d.dates || []).map(isoT));
+            tt.forEach(t => { if (t > B.t[B.t.length - 1]) futT.add(t); });
             const p = prim((ctx, size, ts, sr) => drawFan(ctx, ts, sr, it, d, tt), 'normal');
             // a few weeks of fan on years of history is a sliver: the explorer's item is also drawn magnified, over everything
             const pi = prim((ctx, size, ts) => {
@@ -542,13 +544,27 @@
     const shownModels = d => Object.keys(MODELS).filter(name => (ex.model === 'both' || ex.model === name) && modelOk(d.models[name]));
     function drawFan(ctx, ts, sr, it, d, tt) {
         paintFan(ctx, d, it, (vals, j) => { const x = ts.timeToCoordinate(tt[j]), y = vals[j] == null ? null : sr.priceToCoordinate(vals[j]); return x == null || y == null ? null : [x, y]; });
+        // the run is newer than the last stored bar (the session's candle is stored in the evening): a dotted bridge
+        // from the last close to the run's price, so the gap reads as today's move
+        if (tt[0] > it.anchor && d.last != null) {
+            const data = it.api.data();
+            let v = null; for (let i = data.length - 1; i >= 0 && v == null; i--) if (data[i].time <= it.anchor) v = data[i].close != null ? data[i].close : data[i].value;
+            const x0 = ts.timeToCoordinate(it.anchor), y0 = v == null ? null : sr.priceToCoordinate(v), x1 = ts.timeToCoordinate(tt[0]), y1 = sr.priceToCoordinate(d.last);
+            if (x0 == null || y0 == null || x1 == null || y1 == null) return;
+            ctx.save(); ctx.strokeStyle = '#a1a1aa'; ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+            ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.setLineDash([]);
+            ctx.fillStyle = '#e4e4e7'; ctx.beginPath(); ctx.arc(x1, y1, 3, 0, 2 * Math.PI); ctx.fill();
+            ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+            ctx.fillText(`${fmtNum(d.last)} at the ${d.asof} run (candle stored tonight)`, x1 - 6, y1 + (y1 > y0 ? 14 : -8));
+            ctx.restore();
+        }
     }
     // x is time, so a daily fan on a weekly or monthly chart keeps its true length; history covers twice the fan's span
     function fanInset(ctx, size, it, d, tt) {
-        const t1 = tt[tt.length - 1], tFrom = it.anchor - 2 * (t1 - it.anchor), data = it.api.data(), hist = [];
+        const t1 = tt[tt.length - 1], tFrom = tt[0] - 2 * (t1 - tt[0]), data = it.api.data(), hist = [];
         for (let i = data.length - 1; i >= 0 && (data[i].time > tFrom || hist.length < 2); i--) {
             const b = data[i], v = b.close != null ? b.close : b.value;
-            if (b.time <= it.anchor && v != null) hist.unshift([b.time, v]);
+            if (b.time <= tt[0] && v != null) hist.unshift([b.time, v]);
         }
         if (hist.length < 2) return;
         const W = Math.min(320, size.width * 0.4), H = Math.min(180, size.height * 0.4), X = 12, Y = 12, pad = 10;   // top-left: the real fan is at the right
@@ -564,7 +580,7 @@
         ctx.fillStyle = 'rgba(9,9,11,.92)'; ctx.fillRect(X, Y, W, H);
         ctx.strokeStyle = '#3f3f46'; ctx.lineWidth = 1; ctx.strokeRect(X, Y, W, H);
         ctx.beginPath(); ctx.rect(X, Y, W, H); ctx.clip();
-        const a = xOf(it.anchor);
+        const a = xOf(tt[0]);
         ctx.strokeStyle = '#3f3f46'; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(a, Y); ctx.lineTo(a, Y + H); ctx.stroke(); ctx.setLineDash([]);
         ctx.strokeStyle = '#a1a1aa'; ctx.lineWidth = 1.5; ctx.beginPath(); hist.forEach(([t, v], i) => i ? ctx.lineTo(xOf(t), yOf(v)) : ctx.moveTo(xOf(t), yOf(v))); ctx.stroke();
         paintFan(ctx, d, it, (vals, j) => vals[j] == null ? null : [xOf(tt[j]), yOf(vals[j])]);
@@ -675,10 +691,11 @@
         box.replaceChildren();
         if (!cell) return;
         const c = P(cell), info = symInfo[c.symbol] || {};
-        const row = (title, desc, val, key, onX, color, mode) => {
-            const d = h('div', 'ch-info-row');
+        const row = (title, desc, val, key, onX, color, mode, onTitle) => {
+            const d = h('div', 'ch-info-row'), b = h('b', null, title);
             if (color) d.style.borderLeftColor = color;
-            d.append(h('b', null, title), h('span', 'ch-desc', desc || ''), h('span', 'ch-val', val));
+            if (onTitle) { b.style.cursor = 'pointer'; b.title = 'Make this the main symbol (the current one stays as a compare)'; b.onclick = onTitle; }
+            d.append(b, h('span', 'ch-desc', desc || ''), h('span', 'ch-val', val));
             if (mode) {                                                       // PRICE | MCAP | VOL
                 const s = h('select', 'ch-sel');
                 VALS.forEach(([v, l]) => { const o = h('option', null, l); o.value = v; s.append(o); });
@@ -694,12 +711,13 @@
             }
             if (onX) { const x = h('button', 'ch-x', '×'); x.title = 'Remove'; x.onclick = onX; d.append(x); }
             box.append(d);
+            return d;
         };
         const B = cell.B;
-        row(c.symbol + (info.name ? ' · ' + info.name : ''), info.description, B && B.t.length ? `${fmtNum(B.c[B.c.length - 1])}${c.val === 'mcap' && cell.last && cell.last.unit ? ' ' + cell.last.unit : ''} · ${fmtDate(B.t[B.t.length - 1], c.tf)}` : '', 'sym:' + c.symbol, null, '#22c55e',
+        row(c.symbol + (info.name ? ' · ' + info.name : ''), info.description, B && B.t.length ? `${fmtNum(B.c[B.c.length - 1])}${c.val === 'mcap' && cell.last && cell.last.unit ? ' ' + cell.last.unit : ''} · ${fmtDate(B.t[B.t.length - 1], c.tf)}` : '', 'sym:' + c.symbol, c.compare.length ? () => dropMain(cell) : null, '#22c55e',
             FID.test(c.symbol) ? null : { cur: c.val, set: v => { c.val = v; save(); loadBars(cell); renderInfo(); renderExplore(); } });
         c.compare.forEach((s, k) => row(s, symInfo[s] && (symInfo[s].name || symInfo[s].description), cell.cmp[s] && cell.cmp[s].err ? cell.cmp[s].err : '', 'sym:' + s, () => { c.compare = c.compare.filter(x => x !== s); delete cell.cmp[s]; delete c.cval[s]; save(); render(cell); renderInfo(); renderExplore(); }, COLORS[(k + 1) % COLORS.length],
-            FID.test(s) ? null : { cur: c.cval[s] || 'price', set: v => { c.cval[s] = v; delete cell.cmp[s]; save(); render(cell); renderInfo(); renderExplore(); } }));
+            FID.test(s) ? null : { cur: c.cval[s] || 'price', set: v => { c.cval[s] = v; delete cell.cmp[s]; save(); render(cell); renderInfo(); renderExplore(); } }, () => pick(s, true)));   // loadBars redraws once the new bars are in
         c.series.forEach((sd, k) => {
             const l = cell.lines[sd.id], m = l && l.meta, n = m ? m.t.length : 0;
             row(m ? m.label : sd.id, m && m.description, m ? (n ? `${fmtNum(m.v[n - 1])} ${m.unit} · ${new Date(m.t[n - 1] * 1000).toISOString().slice(0, 10)}` : 'no data') : 'loading…', 'ser:' + sd.id, () => { c.series = c.series.filter(s => s.id !== sd.id); delete cell.lines[sd.id]; save(); render(cell); renderInfo(); renderExplore(); }, COLORS[(k + 3) % COLORS.length]);
@@ -735,11 +753,24 @@
     }
 
     // ---- symbol box and pickers
-    function pick(sym) {
+    // × on the main row: the first compare symbol takes its place (on touch screens, replace = add, then ×)
+    function dropMain(cell) {
+        const c = P(cell), old = c.symbol;
+        pick(c.compare[0], true);
+        c.compare = c.compare.filter(x => x !== old); delete c.fan['sym:' + old]; delete c.cval[old]; delete cell.cmp[old];
+        save();
+    }
+    // keep: the old main symbol stays on the chart as a compare symbol (swap)
+    function pick(sym, keep) {
         sym = normSym(sym);
         if (!isSym(sym)) { status('That is not a valid symbol.', true); return; }
         const cell = A(), c = P(cell);
-        delete c.fan['sym:' + c.symbol]; c.symbol = sym;
+        if (keep && sym !== c.symbol) {
+            c.compare = c.compare.filter(x => x !== sym); if (!c.compare.includes(c.symbol)) c.compare.push(c.symbol);
+            if (c.val !== 'price') c.cval[c.symbol] = c.val;
+            c.val = c.cval[sym] || 'price'; delete c.cval[sym]; delete cell.cmp[sym];
+        } else delete c.fan['sym:' + c.symbol];
+        c.symbol = sym;
         cell.ovSym = null; cell.ov = null; pendingPt = null;
         save();
         $('chSym').value = sym;
@@ -1045,20 +1076,22 @@
             b.onclick = () => { st.layout = k; save(); buildGrid(); };
             $('chLayout').append(b);
         });
-        const input = $('chSym');
-        input.addEventListener('input', () => lookup(input, $('chLookup'), pick));
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') pick(input.value); if (e.key === 'Escape') $('chLookup').classList.add('hidden'); });
-        input.addEventListener('blur', () => setTimeout(() => $('chLookup').classList.add('hidden'), 150));
-        const cmp = $('chCmp');
-        $('chCmpBtn').onclick = () => { $('chCmpWrap').classList.toggle('open'); cmp.focus(); };
-        const addCmp = sym => {
+        const input = $('chSym'), cmp = $('chCmp');
+        const addCmp = (sym, fromBox) => {
             sym = normSym(sym);
             if (!isSym(sym)) { status('That is not a valid symbol.', true); return; }
-            const cell = A(), c = P(cell);
-            if (sym !== c.symbol && !c.compare.includes(sym)) c.compare.push(sym);
+            const cell = A(), c = P(cell), fresh = sym !== c.symbol && !c.compare.includes(sym);
+            if (fresh) c.compare.push(sym);
             cmp.value = ''; $('chCmpLookup').classList.add('hidden'); $('chCmpWrap').classList.remove('open');
-            save(); render(cell);
+            if (fromBox) { input.value = c.symbol; $('chLookup').classList.add('hidden'); }
+            save(); render(cell); renderExplore();
+            status(fresh ? `${sym} added. Click its name below (or Shift+Enter in the box) to make it the main symbol; × on the main row drops it.` : `${sym} is already on the chart.`);
         };
+        // the symbol box adds to the chart; Shift+Enter replaces the main symbol
+        input.addEventListener('input', () => lookup(input, $('chLookup'), s => addCmp(s, true)));
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') { if (e.shiftKey) pick(input.value); else addCmp(input.value, true); } if (e.key === 'Escape') $('chLookup').classList.add('hidden'); });
+        input.addEventListener('blur', () => setTimeout(() => $('chLookup').classList.add('hidden'), 150));
+        $('chCmpBtn').onclick = () => { $('chCmpWrap').classList.toggle('open'); cmp.focus(); };
         cmp.addEventListener('input', () => lookup(cmp, $('chCmpLookup'), addCmp));
         cmp.addEventListener('keydown', e => { if (e.key === 'Enter') addCmp(cmp.value); });
         cmp.addEventListener('blur', () => setTimeout(() => $('chCmpLookup').classList.add('hidden'), 150));
