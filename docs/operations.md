@@ -650,16 +650,28 @@ record positions.
 
 ## Deploying to the live machine
 
-`scripts/deploy.sh` brings the checkout that serves `market.vlad.yt` up to `origin/main`. Run it on the Mac mini
-(`scripts/deploy.sh --check` shows what it would do). It deploys only when all of these hold: the checkout is on
-`main` with no uncommitted changes, it can fast-forward, and the GitHub `test` run for that exact commit passed.
-Then it fast-forwards, installs `requirements.txt` if it changed, restarts `com.vlad.optionswhale` and
-`com.vlad.mcpserver`, and waits for the terminal to answer. It records the commit the services run in
-`.git/deployed-sha`, so after a hand-run `git pull` it still restarts them (a rollback goes back to that recorded commit; a commit that failed its health check is skipped until `origin/main` moves on). `tests/test_deploy.py` runs it against
-throwaway repos with stub `gh`, `launchctl` and `curl`. If it does not answer, it puts the old commit back and
-restarts again. It never starts a pipeline run, sends anything or touches `.env`. When nothing is new it exits quietly,
-so a timer can call it. To deploy automatically after each green merge, call it from a launchd job with
-`StartInterval` 300 (the same plist shape as `com.vlad.mcpserver`).
+Both copies of the terminal deploy themselves from `main`: the Mac with `scripts/deploy.sh`, Oracle with infra's
+`oracle/market-deploy.sh` (`market-deploy.timer`, every minute; it pins the image by commit, `MARKET_TAG` in
+`/etc/vlad-frontdoor/.env`). Every commit whose GitHub `test` run passed (Oracle also needs the `image` run) reaches both.
+market.vlad.yt's placement (`_placement.vlad.yt`, `market=mac|oracle`, the dash's "Where things run" card) only decides
+the order: the copy that does not serve it goes first, and the serving copy deploys a commit only once the standby runs it
+(after an hour without it, the serving copy holds and ntfys: the standby probably rolled it back). A standby that does not
+answer holds nothing back. Each side waits while a `main_pipeline.py` job runs, checks itself after the restart and rolls
+back on failure; a commit that failed is skipped until `main` moves on.
+
+`scripts/deploy.sh` brings the Mac's live checkout up to `origin/main`. `com.vladhq.deploy` (`~/dev/agents/mcp/deploy.sh`)
+runs `scripts/deploy.sh --auto` every minute; by hand, `scripts/deploy.sh` deploys now and `scripts/deploy.sh --check`
+shows what it would do. It deploys only when all of these hold: the checkout is on `main` with no uncommitted changes, it can
+fast-forward, the GitHub `test` run for that exact commit passed, and no `main_pipeline.py` job is running. Then it
+fast-forwards, installs `requirements.txt` if it changed, byte-compiles, restarts `com.vlad.optionswhale` and
+`com.vlad.mcpserver` (only those that are loaded: a job switched off on the dash stays off), and checks `/`, `/help`,
+`/api/positions`, `/api/forecast?ticker=SPY`, that `/api/version` reports the new commit, and the MCP server's `/healthz`.
+It records the commit the services run in `.git/deployed-sha`, so after a hand-run `git pull` it still restarts them (a
+rollback goes back to that recorded commit; a commit that failed its health check is skipped until `origin/main` moves
+on). If a check fails, it puts the old commit back and restarts again. `--auto` adds ntfy (deployed, rolled back, blocked,
+held; each situation once) and the placement order above. It runs from a copy of itself (the fast-forward rewrites the
+file) and one at a time. It never starts a pipeline run or touches `.env`. `tests/test_deploy.py` runs it against
+throwaway repos with stub `gh`, `launchctl`, `curl`, `pgrep`, `dig` and `ssh`.
 
 ## MCP server (Claude chat, ChatGPT, Gemini CLI)
 
