@@ -164,6 +164,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `docs/methodology.md` | Index of every computed value: owner, version constant, method, link to the detail |
 | `docs/case-study-2026-10-30.md` | The Chaos / Peace stress flip of 2026-10-30, from the stored snapshots |
 | `mcp_server.py` | Standalone MCP server (GET-only proxy of the terminal's read-only sources and the brokerage card), two secret-path endpoints; see [Operations](operations.md#mcp-server-claude-chat-chatgpt-gemini-cli) |
+| `scripts/backup_lake_hf.py` | Copies `portfolio.db` to the private Hugging Face dataset `HF_LAKE_REPO` after every live run and keeps a run/day/week/month timeline of copies (`--check` lists them) |
 | `scripts/sync_secrets.sh` | Operator-run: Bitwarden item `market-terminal` <-> macOS Keychain <-> `.env` (see [Configuration](configuration.md#secrets-in-bitwarden-and-the-keychain)) |
 | `scripts/import_email_positions.py` | Recovers past engine tickets from sent report emails (Apple Mail or a folder of `.eml`/`.mbox`) |
 | `scripts/backfill_crypto_metals.py` | Adds up to one year of BTC, silver and gold history to `crypto_metrics_history` |

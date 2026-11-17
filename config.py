@@ -166,8 +166,9 @@ NEWS_FEEDS_FILE = optional_env("NEWS_FEEDS_FILE", default="")   # empty: the bun
 GOLD_API_KEY = optional_env("GOLD_API_KEY", default="")
 ALPACA_API_KEY_ID = optional_env("ALPACA_API_KEY_ID", default="")           # market data only (core/bars.py --deep); never trades
 ALPACA_API_SECRET_KEY = optional_env("ALPACA_API_SECRET_KEY", default="")
-HF_TOKEN = optional_env("HF_TOKEN", default="")       # scripts/backup_chart_hf.py: write token for HF_REPO only
+HF_TOKEN = optional_env("HF_TOKEN", default="")       # write token for HF_REPO (backup_chart_hf.py) and HF_LAKE_REPO (backup_lake_hf.py)
 HF_REPO = optional_env("HF_REPO", default="")         # private dataset for the chart store backup, e.g. you/market-chart-store
+HF_LAKE_REPO = optional_env("HF_LAKE_REPO", default="")   # private dataset for portfolio.db copies (scripts/backup_lake_hf.py)
 EBAY_APP_ID = optional_env("EBAY_APP_ID", default="")
 EBAY_CERT_ID = optional_env("EBAY_CERT_ID", default="")
 EMAIL_SENDER = optional_env("EMAIL_SENDER", default="")
