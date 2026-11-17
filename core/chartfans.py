@@ -78,8 +78,7 @@ def build_all(conn, main=None):
     """Daily fans for every tracked symbol and every chart series without a snapshot fan, and the 1h and 5m fans of
     SPY and SLV. `main` is a read-only portfolio.db connection for the non-price series (None: they are skipped).
     Returns {"added": rows, "kronos": reason or None}."""
-    predictor, kinfo = fans.load_kronos()
-    kinfo = dict(kinfo or {})
+    predictor, kinfo = _kronos()
     added = _symbols(conn, bars.tracked(conn), predictor, kinfo)
     for f in formulas.all_formulas(conn):
         try:                                   # one formula that no longer computes must not stop the other fans
@@ -105,22 +104,37 @@ def build_all(conn, main=None):
             df.index = df.index.tz_convert(NY).tz_localize(None)      # Kronos sees naive New York clock times
             added += build_one(conn, sym, tf, df, asof, [x.tz_localize(None) for x in stamps],
                                [x.tz_convert("UTC").isoformat() for x in stamps], predictor, kinfo, INTRADAY_VERSIONS, False)
+    return _result(added, kinfo)
+
+
+def _kronos():
+    predictor, kinfo = fans.load_kronos()
+    return predictor, dict(kinfo or {})
+
+
+def _result(added, kinfo):
     return {"added": added, "kronos": None if kinfo.get("status") == "fresh" else kinfo.get("reason")}
 
 
 def build_symbols(conn, symbols):
-    """Daily fans of the given symbols only: the job a looked-up symbol starts builds its fan right after its bars."""
-    predictor, kinfo = fans.load_kronos()
-    kinfo = dict(kinfo or {})
-    return {"added": _symbols(conn, symbols, predictor, kinfo), "kronos": None if kinfo.get("status") == "fresh" else kinfo.get("reason")}
+    """Daily fans of the given symbols only (`bars --fans --symbol X`, which the terminal starts when a chart asks for the
+    fan of a symbol that has none). Kronos is loaded only when some symbol has enough history for a fan."""
+    if not any(sym not in SNAPSHOT_ITEMS and len(bars.read_bars(conn, sym, "1d", limit=60)) >= 60 for sym in symbols):
+        return {"added": 0, "kronos": None}
+    predictor, kinfo = _kronos()
+    return _result(_symbols(conn, symbols, predictor, kinfo), kinfo)
 
 
 def _symbols(conn, symbols, predictor, kinfo):
     added = 0
     for sym in symbols:
-        if sym not in SNAPSHOT_ITEMS:
+        if sym in SNAPSHOT_ITEMS:
+            continue
+        try:                                   # one symbol that fails must not stop the others
             df = fans._clean_ohlcv(bars.read_bars(conn, sym, "1d", limit=fans.LOOKBACK + 1))
             added += _daily(conn, sym, df, predictor, kinfo, True)
+        except Exception as exc:
+            print(f"fans: {sym} skipped: {exc}")
     return added
 
 

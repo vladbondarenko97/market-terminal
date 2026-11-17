@@ -834,7 +834,8 @@ It is a separate job from `run`: it does not take the run lock and writes nothin
 `SourceSession` into `chart.db`, so each response is captured and logged there. A second `bars` job waits for the first (file lock).
 
 - `bars --from-lake`: free, no network. Newest capture wins where captures overlap.
-- `bars --symbol NKE`: adds NKE (name and description from Yahoo), backfills it and builds its daily fan (no need to wait for the evening `--fans`). The terminal starts this itself the first time the CHART tab asks for a symbol with no bars; its output goes to `CHART_STORE/bars_job.log`.
+- `bars --symbol NKE`: adds NKE (name and description from Yahoo), and backfills it.
+- `bars --fans --symbol NKE`: builds only NKE's daily fan, no network (Kronos is loaded only if it has 60 or more daily bars). The terminal starts this itself (`--offline`) when the CHART tab asks for the fan of a tracked symbol that has none. The terminal starts this itself the first time the CHART tab asks for a symbol with no bars; its output goes to `CHART_STORE/bars_job.log`.
 - `bars --backfill`, `bars --backfill --deep --symbol SPY`: re-run the backfill for tracked symbols or named ones. `--deep` saves a day file per session as it goes and skips a 31-day piece that already has 15 or more day files, so a killed run resumes.
 - `bars` alone: the 7-day top-up for every tracked symbol.
 - **Where it runs: Oracle.** The store is `/srv/market/chart` there, mounted writable into `market-web` (infra repo

@@ -228,13 +228,22 @@ class Routes(Base):
         self.assertEqual(self.client.get("/api/chart/bars?symbol=..%2Fx").status_code, 400)
         self.assertEqual(self.client.get("/api/chart/bars?symbol=SPY&tf=3m").status_code, 400)
 
-    def test_a_fan_is_loading_while_its_symbols_job_runs(self):
+    def test_a_tracked_symbol_without_a_fan_starts_one_fan_job(self):
+        api_router._CHART_JOBS.clear()
+        self.addCleanup(api_router._CHART_JOBS.clear)
+        bars.ingest(self.conn, "NKE", "1d", walk(120), "yahoo", now=NOW)
         proc = mock.Mock(**{"poll.return_value": None})
-        with mock.patch.object(api_router.subprocess, "Popen", return_value=proc):
-            self.client.get("/api/chart/bars?symbol=NKE", headers=CH)
-            self.assertEqual(self.client.get("/api/chart/fan?item=NKE").get_json()["status"], "loading")
-            proc.poll.return_value = 0                                              # done, and no fan was built
-            self.assertEqual(self.client.get("/api/chart/fan?item=NKE").get_json()["status"], "missing")
+        with mock.patch.object(api_router.subprocess, "Popen", return_value=proc) as popen:
+            self.assertEqual(self.client.get("/api/chart/fan?item=NKE").get_json()["status"], "missing")   # no CHART header: no job
+            self.assertEqual(self.client.get("/api/chart/fan?item=NKE", headers=CH).get_json()["status"], "loading")
+            self.assertEqual(self.client.get("/api/chart/fan?item=NKE", headers=CH).get_json()["status"], "loading")
+            self.assertEqual(popen.call_count, 1)
+            self.assertEqual(popen.call_args.args[0][-5:], ["bars", "--fans", "--offline", "--symbol", "NKE"])
+            proc.poll.return_value = 0                                              # done, and no fan was built: not again
+            self.assertEqual(self.client.get("/api/chart/fan?item=NKE", headers=CH).get_json()["status"], "missing")
+            self.assertEqual(popen.call_count, 1)
+            self.assertEqual(self.client.get("/api/chart/fan?item=ZZZ", headers=CH).get_json()["status"], "missing")  # not tracked
+            self.assertEqual(popen.call_count, 1)
 
     def test_a_download_needs_the_chart_header_and_at_most_4_run(self):
         with mock.patch.object(api_router.subprocess, "Popen") as popen:
@@ -523,10 +532,13 @@ class ChartFans(Base):
                 self.assertTrue(self.conn.execute("SELECT COUNT(*) FROM v2_chart_fans").fetchone()[0])
         self.conn.execute("DELETE FROM v2_chart_fans")
         self.conn.commit()
-        with mock.patch.object(fans, "load_kronos", return_value=KRONOS_OFF), \
-                mock.patch.object(bars, "collect", return_value={"added": 0, "errors": []}):
-            self.assertEqual(main_pipeline.bars_command(["NKE"]), 0)                 # a looked-up symbol: its fan comes with the bars
+        bars.ingest(self.conn, "TINY", "1d", walk(10), "yahoo", now=NOW)
+        with mock.patch.object(fans, "load_kronos", return_value=KRONOS_OFF) as load:
+            self.assertEqual(main_pipeline.bars_command(["TINY"], fans=True, offline=True), 0)
+            load.assert_not_called()                                                 # no symbol with enough history: no Kronos
+            self.assertEqual(main_pipeline.bars_command(["NKE"], fans=True, offline=True), 0)   # the terminal's per-symbol fan job
         self.assertIsNotNone(chartfans.read(self.conn, "NKE", "1d"))
+        self.assertEqual(self.conn.execute("SELECT COUNT(DISTINCT item) FROM v2_chart_fans").fetchone()[0], 1)
         self.assertTrue(chartfans.due(datetime(2026, 6, 1, 20, 15, tzinfo=NY)))
         self.assertFalse(chartfans.due(datetime(2026, 6, 1, 20, 14, tzinfo=NY)))
         self.assertTrue(chartfans.due(datetime(2026, 5, 30, 17, 0, tzinfo=NY)))         # a Saturday: off hours

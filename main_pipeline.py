@@ -940,7 +940,7 @@ def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, fans=F
     except ValueError as e:
         print(e)
         return 2
-    fetch = not offline and (scheduled or bool(symbols) or not (from_lake or fans))
+    fetch = not offline and (scheduled or (bool(symbols) and not fans) or not (from_lake or fans))   # --fans --symbol X: that fan only
     if offline and not (from_lake or fans or scheduled):
         print("offline: the bars job needs the network (Yahoo, Alpaca); nothing fetched. --from-lake and --fans work offline.")
         return 0
@@ -959,10 +959,10 @@ def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, fans=F
                 for err in res["errors"]:
                     print("  ", err)
                 rc = 1 if res["errors"] else 0
-            if symbols and fetch and not (fans or scheduled):    # a looked-up symbol gets its fan now, not at the evening run
+            if fans and symbols:                                 # `--fans --symbol X`: only those (the terminal starts this)
                 res = chartfans.build_symbols(conn, symbols)
                 print(f"fans: {res['added']} rows added" + (f" (Kronos: {res['kronos']})" if res["kronos"] else ""))
-            if fans or (scheduled and chartfans.due()):          # cheap when all are built: stored ones are skipped
+            elif fans or (scheduled and chartfans.due()):        # cheap when all are built: stored ones are skipped
                 main = lake.connect_readonly(config.DB_PATH) if config.DB_PATH.exists() else None
                 try:
                     res = chartfans.build_all(conn, main)
@@ -1063,7 +1063,7 @@ def main(argv=None):
     ex.add_argument("--out", default="-", help="output file (default - = stdout)")
     bp = sub.add_parser("bars", help="CHART tab bars: fetch (Yahoo; Alpaca with --deep) or import stored captures into CHART_STORE "
                                      "(own file lock, not the run lock)")
-    bp.add_argument("--symbol", action="append", default=[], help="add this symbol and backfill it (repeatable); default: every tracked symbol, 7-day top-up")
+    bp.add_argument("--symbol", action="append", default=[], help="add this symbol and backfill it (repeatable); default: every tracked symbol, 7-day top-up. With --fans: build only its daily fan, no network")
     bp.add_argument("--backfill", action="store_true", help="full Yahoo backfill (1d/1wk max, 1h 730d, 5m 60d, 1m about 30d)")
     bp.add_argument("--deep", action="store_true", help="also Alpaca 1m since 2016 (needs ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)")
     bp.add_argument("--from-lake", action="store_true", help="import every stored ohlcv payload and cache/bars_*.csv (read-only, no network)")
