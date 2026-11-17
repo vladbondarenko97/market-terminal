@@ -187,8 +187,8 @@ classes) the page changes as follows. The wide layout is not affected by any of 
 A thin row under the panels (above the phone navigation), filled by `static/footer.js` from `GET /api/version`, which it pings every 15 s
 (not while the tab is hidden). Left to right: a dot with `Online · N ms` (the ping's round trip; red `Offline` when it fails), `Served by <server>`,
 `Loaded in N ms` (navigation timing), `Version <sha7> <subject>` linking to the commit on GitHub, `pushed ... · live here ...`, the other copy
-(`same version`, `<sha7> (behind|different)`, or `unreachable`; hidden without a peer), `last run ... <state>` and `chart data: local|remote <host>`.
-When the server's commit changes while the page is open, an amber `new version - reload` link appears. See [Configuration](configuration.md) for `MARKET_SERVER` and `MARKET_PEER`.
+(`same version`, `<sha7> (behind|different)`, or `unreachable`; hidden without a peer), `last run ... <state>` (`run in progress, started ...` while one runs) and `chart data: local|remote <host>`.
+When the server's commit changes while the page is open, an amber `new version — reload` link appears. See [Configuration](configuration.md) for `MARKET_SERVER` and `MARKET_PEER`.
 
 ## Macro Direction tab
 

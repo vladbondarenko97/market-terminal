@@ -50,10 +50,11 @@
     const p = v.peer;
     $('vf-peer').innerHTML = !p ? '' : p.status === 'unreachable' ? '<span class="warn">other copy: unreachable</span>'
       : `other copy (${esc(p.server || '?')}): ` + (!p.commit || !v.commit ? 'unknown' : p.commit === v.commit ? 'same version'
-        : `<span class="warn">${esc(p.commit.slice(0, 7))} (${p.live_since && v.live_since && p.live_since < v.live_since ? 'behind' : 'different'})</span>`);
+        : `<span class="warn">${esc(p.commit.slice(0, 7))} (${p.committed && v.committed && p.committed < v.committed ? 'behind' : 'different'})</span>`);
     const lr = v.last_run || {};
-    const at = lr.finished_at || lr.snapshot_at;
-    $('vf-run').innerHTML = lr.run_id || at ? `last run ${rel(at)}${lr.state ? ' ' + esc(lr.state) : ''}` : 'no run yet';
+    const at = lr.state === 'running' ? lr.started_at : lr.finished_at || lr.snapshot_at;
+    $('vf-run').innerHTML = lr.state === 'running' ? `run in progress, started ${rel(at)}`
+      : lr.run_id || at ? `last run ${rel(at)}${lr.state ? ' ' + esc(lr.state) : ''}` : 'no run yet';
     $('vf-chart').innerHTML = `chart data: ${esc(v.chart_store || 'unknown')}`;
   }
   el.addEventListener('click', e => e.target.classList.contains('new') && location.reload());
