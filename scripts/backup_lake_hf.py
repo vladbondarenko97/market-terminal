@@ -3,21 +3,25 @@
   python scripts/backup_lake_hf.py           # what every live pipeline run starts when it ends (main_pipeline.run)
   python scripts/backup_lake_hf.py --check   # list the copies there and which ones the timeline keeps; changes nothing
 
-A copy is SQLite's online backup of DB_PATH (consistent while the terminal reads it), checked with quick_check, then
-uploaded uncompressed as db/<UTC time>.db. Uncompressed on purpose: the stored payloads are compressed already (gzip saved
+A copy is lake.backup_database(): SQLite's online backup of DB_PATH, consistent while the terminal reads it, checked
+with integrity_check. It is uploaded uncompressed as db/<UTC time>.db. Uncompressed on purpose: the stored payloads are compressed already (gzip saved
 only 20%), and Hugging Face de-duplicates unchanged chunks, so an upload sends little more than what the run added. It
 still counts every copy at full size, so old copies are deleted on the timeline in keep() and the history is squashed so
-the deleted files stop counting. Needs HF_TOKEN and HF_LAKE_REPO; without them it says so and exits 0.
+the deleted files stop counting. Needs HF_TOKEN (write access to HF_LAKE_REPO) and HF_LAKE_REPO, a dataset that exists and
+holds nothing else; without them it says so and exits 0. Days, weeks and months are Chicago time, like the run folders.
 """
 import fcntl
-import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
+from core.lake import backup_database  # noqa: E402
+
+CHICAGO = ZoneInfo(config.TZ_NAME)
 
 # The timeline: the newest copy in each of the newest N buckets, per tier. About 17 copies at most once it has run for
 # six months (the tiers overlap), each the size of portfolio.db.
@@ -28,14 +32,20 @@ TIERS = (("run", 3, lambda t: t),                          # the last 3 runs (ab
 FMT = "db/%Y%m%dT%H%M%SZ.db"
 
 
-def keep(names):
-    """{name: [tiers]} for the copies to keep. `names` are repo paths; anything not named like FMT is left alone."""
-    stamped = []
+def copies(names):
+    """[(Chicago time, name)] of the repo paths named like FMT: the only files this script ever deletes."""
+    out = []
     for n in names:
         try:
-            stamped.append((datetime.strptime(n, FMT), n))
+            out.append((datetime.strptime(n, FMT).replace(tzinfo=timezone.utc).astimezone(CHICAGO), n))
         except ValueError:
             continue
+    return out
+
+
+def keep(names):
+    """{name: [tiers]} for the copies to keep. `names` are repo paths; anything not named like FMT is left alone."""
+    stamped = copies(names)
     stamped.sort(reverse=True)
     kept = {}
     for tier, count, bucket in TIERS:
@@ -60,7 +70,7 @@ def main(check):
     if check:
         names = api.list_repo_files(repo, repo_type="dataset")
         kept = keep(names)
-        for n in sorted(n for n in names if n.startswith("db/")):
+        for _, n in sorted(copies(names)):
             print(f"{n}  {'keep: ' + ', '.join(kept[n]) if n in kept else 'delete at the next backup'}")
         return 0
     lock = open(config.DATA_DIR / ".lake_backup.lock", "w")
@@ -69,17 +79,16 @@ def main(check):
     except BlockingIOError:
         print("another lake backup is running")
         return 0
-    api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
+    if not config.DB_PATH.is_file():
+        print(f"lake backup: no database at {config.DB_PATH}; nothing uploaded")
+        return 1
     name = datetime.now(timezone.utc).strftime(FMT)
     with tempfile.TemporaryDirectory() as tmp:
         copy = Path(tmp) / "portfolio.db"
-        src, dst = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True), sqlite3.connect(copy)
-        src.backup(dst)
-        src.close()
-        ok = dst.execute("PRAGMA quick_check").fetchone()[0]
-        dst.close()
-        if ok != "ok":                                     # never upload, and so never prune for, a damaged copy
-            print(f"lake backup NOT uploaded: the copy failed quick_check ({ok})")
+        try:
+            backup_database(config.DB_PATH, copy)
+        except Exception as exc:                           # never upload, and so never prune for, a damaged copy
+            print(f"lake backup NOT uploaded: {exc}")
             return 1
         api.upload_file(path_or_fileobj=copy, path_in_repo=name, repo_id=repo, repo_type="dataset",
                         commit_message=f"portfolio.db {name[3:-3]}")
@@ -88,7 +97,7 @@ def main(check):
         print(f"lake backup: {name} is not listed after the upload; nothing deleted")
         return 1
     kept = keep(names)
-    old = [n for n in names if n.startswith("db/") and n not in kept]
+    old = [n for _, n in copies(names) if n not in kept]
     if old:
         api.create_commit(repo, repo_type="dataset", operations=[CommitOperationDelete(n) for n in old],
                           commit_message=f"timeline: remove {len(old)} old copies")

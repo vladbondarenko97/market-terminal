@@ -789,17 +789,17 @@ This repository contains only the current (v2) code; its history starts at v2, s
 launcher to go back to. The data folder is additive: v2 adds `v2_*` tables and views to `portfolio.db` and new files
 to `CME_Data`, and keeps the legacy ledger tables and CSV headers unchanged. See [Data](data.md).
 
-- **Every live run backs `portfolio.db` up to Hugging Face** when `HF_TOKEN` and `HF_LAKE_REPO` are set. When a live
-  run ends, finished or failed, `main_pipeline.run()` starts `scripts/backup_lake_hf.py` in the background (log
-  `<data>/backup_lake.log`); offline runs never do. It copies the database with the SQLite backup API, checks the copy
-  with `quick_check` (a damaged copy is not uploaded and nothing is deleted), and uploads it uncompressed as
+- **Every delivering run backs `portfolio.db` up to Hugging Face** when `HF_TOKEN` and `HF_LAKE_REPO` are set. When
+  a run has committed its snapshot, `main_pipeline.run()` starts `scripts/backup_lake_hf.py` in the background (log
+  `<data>/backup_lake.log`). Runs with `--offline`, `--no-deliver` or `--no-upload`, and runs that fail before the
+  commit, start none. It copies the database with `lake.backup_database()` (SQLite backup API, `integrity_check`; a damaged copy is not uploaded and nothing is deleted), and uploads it uncompressed as
   `db/<UTC time>.db`. Hugging Face sends only the chunks that changed, so an upload takes seconds, but it counts every
   copy at full size. So after each upload the copies off the timeline are deleted and the history squashed:
 
   | Tier | Keeps |
   |---|---|
   | run | the last 3 runs (about one trading day) |
-  | day | the newest copy of each of the last 7 days that had a run |
+  | day | the newest copy of each of the last 7 days that had a run (Chicago days, like the run folders) |
   | week | the newest copy of each of the last 4 weeks |
   | month | the newest copy of each of the last 6 months |
 

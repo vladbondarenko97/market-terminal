@@ -40,6 +40,18 @@ class Timeline(unittest.TestCase):
         self.assertIn("20260927", days)                                     # 2 recent days + the 5 before the gap
         self.assertNotIn("20260926", days)
 
+    def test_only_its_own_copies_are_candidates_for_deletion(self):
+        names = copies(datetime(2026, 11, 17), 30) + ["db/chart-2026-46.db.gz", "db/notes.txt"]
+        self.assertNotIn("db/chart-2026-46.db.gz", [n for _, n in b.copies(names)])
+        self.assertEqual(len(b.copies(names)), 90)
+
+    def test_days_are_chicago_days(self):
+        # 19:30 Chicago on Monday the 16th is 01:30Z on the 17th: it is Monday's last copy, not Tuesday's
+        names = ["db/20261116T200000Z.db", "db/20261117T013000Z.db", "db/20261117T150000Z.db"]
+        kept = b.keep(names)
+        self.assertIn("day", kept["db/20261117T013000Z.db"])
+        self.assertNotIn("day", kept["db/20261116T200000Z.db"])
+
 
 if __name__ == "__main__":
     unittest.main()
