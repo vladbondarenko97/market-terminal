@@ -1826,6 +1826,19 @@
         </div>
     </main>
 
+    <!-- Footer: filled by static/footer.js from /api/version. A flex row under <main>, above the phone nav. -->
+    <footer id="vfoot" class="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-0.5 px-3 py-1 border-t border-zinc-800 bg-black text-[12px] leading-5 text-zinc-500">
+        <style>
+            #vfoot a{color:inherit}#vfoot b{font-weight:600;color:#a1a1aa}
+            #vfoot .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#71717a;margin-right:6px}
+            #vfoot .ok .dot{background:#22c55e}#vfoot .bad{color:#f87171}#vfoot .bad .dot{background:#f87171}
+            #vfoot .warn{color:#f59e0b}#vfoot .new{color:#f59e0b;cursor:pointer;text-decoration:underline}
+            #vfoot .subj{max-width:min(420px,70vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom}
+        </style>
+        <span id="vf-net"><span class="dot"></span>checking…</span><span id="vf-srv"></span><span id="vf-load"></span>
+        <span id="vf-ver"></span><span id="vf-age"></span><span id="vf-peer"></span><span id="vf-run"></span><span id="vf-chart"></span>
+    </footer>
+
     <!-- Side drawer: the Macro Triggers and the Custom Whale Hunter form. Off canvas (visibility:hidden while closed), slides in from the left on
          every screen width; opened by #menuBtn, closed by the x, the backdrop, Esc or pressing any button inside. Not part of the page flow. -->
     <div id="drawerBackdrop" class="drawer-backdrop" onclick="closeDrawer()" aria-hidden="true"></div>
@@ -1938,6 +1951,7 @@
     <script src="/static/fans.js"></script>
     <script src="/static/chart.js"></script>
     <script src="/static/assistant.js"></script>
+    <script src="/static/footer.js"></script>
 </body>
 
 </html>

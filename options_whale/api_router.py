@@ -1616,6 +1616,12 @@ def api_help():
       <description>State of the pipeline run from .v2_run_status.json: run_id, stage, state, pid, mode, started_at, updated_at, finished_at, elapsed_s, error (null when there is no file), plus lock_held. state is running, completed, completed_with_warnings or failed, or interrupted when the file says running but no run holds the lock.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/version" format="json" source="stored">
+      <description>Which copy answers and what it runs, for the terminal's footer: server (MARKET_SERVER, else Oracle in a container, else Mac mini), commit, subject, committed (unix; from git, or GIT_SHA/GIT_SUBJECT/GIT_COMMITTED in the Docker image; null when unknown), live_since (HEAD's reflog time, else the process start), started, last_run {run_id, state, stage, finished_at, snapshot_at}, chart_store ("local" or "remote host") and peer ({server, commit, live_since} of the other copy from CHART_REMOTE or MARKET_PEER, {"status": "unreachable"}, or null). peer=0 skips the peer lookup.</description>
+      <parameters>
+        <param name="peer" type="string" default="" description="0 leaves the peer out (the peer lookup itself uses it)" />
+      </parameters>
+    </endpoint>
     <endpoint method="GET" path="/api/dump" alias="/dump" format="xml" source="stored">
       <description>The tactical_ruling.txt and volume_dashboard.txt of the newest daily run folder (folders named like Sep-29-26, newest by the date in the name) merged into one XML document.</description>
       <parameters />
@@ -1972,16 +1978,133 @@ def _run_lock_held():
         return False
 
 
-@app.route('/api/run_status', methods=['GET'])
-def api_run_status():
-    """State of the pipeline run: the status file plus whether a run holds the lock right now. A file that says
-    "running" while nothing holds the lock is reported as "interrupted" (the run was killed)."""
+def _run_status_now():
+    """_read_run_status() plus lock_held; a file that says "running" while nothing holds the lock is "interrupted"."""
     status = _read_run_status()
     held = _run_lock_held()
     if status["state"] == "running" and not held:
         status["state"] = "interrupted"
     status["lock_held"] = held
-    return jsonify({"status": "success", "data": status})
+    return status
+
+
+@app.route('/api/run_status', methods=['GET'])
+def api_run_status():
+    """State of the pipeline run: the status file plus whether a run holds the lock right now (see _run_status_now)."""
+    return jsonify({"status": "success", "data": _run_status_now()})
+
+
+_STARTED = int(time.time())
+_GIT_INFO = None
+_PEER = {"value": None, "thread": None}   # the last peer answer and the refresher thread
+_PEER_LOCK = threading.Lock()
+
+
+def _git_info():
+    """commit, subject, committed, live_since of this copy. A checkout answers from git; the Docker image has no .git
+    and gets GIT_SHA, GIT_SUBJECT and GIT_COMMITTED from build args. Missing is None. Only a successful read is cached."""
+    global _GIT_INFO
+    if _GIT_INFO is not None:
+        return _GIT_INFO
+    root = str(_PROJECT_ROOT)
+    info = {"commit": None, "subject": None, "committed": None, "live_since": _STARTED}
+    if os.path.exists(os.path.join(root, ".git")):
+        try:
+            out = subprocess.run(["git", "-C", root, "log", "-1", "--format=%H%n%ct%n%s"], capture_output=True,
+                                 text=True, timeout=5, check=True).stdout.split("\n", 2)
+            info.update(commit=out[0] or None, committed=int(out[1]), subject=out[2].strip() or None)
+            ref = subprocess.run(["git", "-C", root, "log", "-g", "-1", "--format=%gd", "--date=unix", "HEAD"],
+                                 capture_output=True, text=True, timeout=5, check=True).stdout
+            m = re.search(r"\{(\d+)\}", ref)
+            if m:
+                info["live_since"] = int(m.group(1))
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            return info                      # not cached: the next call tries again
+    else:
+        committed = (config.GIT_COMMITTED or "").strip()
+        info.update(commit=config.GIT_SHA or None, subject=config.GIT_SUBJECT or None,
+                    committed=int(committed) if committed.isdigit() else None)
+    _GIT_INFO = info
+    return info
+
+
+def _server_name():
+    return config.MARKET_SERVER or ("Oracle" if os.path.exists("/.dockerenv") else "Mac mini")
+
+
+def _peer_base():
+    return config.MARKET_PEER or config.CHART_REMOTE
+
+
+def _peer_loop():
+    while True:
+        base = _peer_base()
+        try:
+            r = requests.get(base + "/api/version?peer=0", timeout=3)
+            r.raise_for_status()
+            d = r.json()
+            peer = {k: d.get(k) for k in ("server", "commit", "committed", "live_since")}
+        except (requests.RequestException, ValueError, AttributeError):
+            peer = {"status": "unreachable"}
+        _PEER["value"] = peer
+        time.sleep(60)
+
+
+def _version_peer():
+    """The other copy's server, commit, committed and live_since from a background fetch (every 60 s, 3 s timeout;
+    no request waits on the network). None without a peer or before the first answer; unreachable after a failure."""
+    if not _peer_base():
+        return None
+    with _PEER_LOCK:
+        if _PEER["thread"] is None:
+            _PEER["thread"] = threading.Thread(target=_peer_loop, name="version-peer", daemon=True)
+            _PEER["thread"].start()
+    return _PEER["value"]
+
+
+def _last_snapshot_time():
+    try:
+        conn = _v2lake.connect_readonly(_V2_DB_PATH)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT created_at FROM v2_latest_snapshot").fetchone()
+        return _unix(row["created_at"]) if row else None
+    except (sqlite3.Error, KeyError):
+        return None
+    finally:
+        conn.close()
+
+
+def _unix(value):
+    """Unix seconds from an ISO timestamp (UTC when it has no offset); None when missing or unreadable."""
+    try:
+        t = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return int((t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp())
+    except (ValueError, TypeError):
+        return None
+
+
+@app.route('/api/version', methods=['GET'])
+def api_version():
+    """Which copy answers, the commit it runs, the latest run and the other copy's commit (the terminal's footer)."""
+    try:
+        run = _run_status_now()
+        running = run["state"] == "running"
+        remote = config.CHART_REMOTE
+        host = (urlparse(remote).hostname or urlparse("//" + remote).hostname or "") if remote else ""
+        out = {"server": _server_name(), **_git_info(), "started": _STARTED,
+               "last_run": {"run_id": run["run_id"], "state": run["state"], "stage": run["stage"],
+                            "started_at": _unix(run["started_at"]), "finished_at": _unix(run["finished_at"]),
+                            "snapshot_at": _last_snapshot_time()},
+               "chart_store": ("remote " + host).strip() if remote else "local",
+               "peer": _version_peer() if request.args.get("peer") != "0" else None}
+        if running:
+            out["last_run"]["finished_at"] = out["last_run"]["snapshot_at"] = None   # the previous run's times are not this run's
+    except Exception:
+        app.logger.exception("version failed")
+        out = {"status": "error"}
+    return jsonify(out)
 
 
 @app.route('/run', methods=['POST'])
