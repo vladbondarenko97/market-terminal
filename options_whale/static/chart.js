@@ -460,7 +460,8 @@
             if (!f) { ensureFan(cell, it.item); return; }
             if (!f.d) return;
             // the fan starts at its own run (d.last is that day's price), which can be after the last stored bar
-            const d = f.d, tt = [Math.max(it.anchor, d.asof ? isoT(d.asof) : 0)].concat((d.dates || []).map(isoT));
+            const d = f.d, ta = d.asof && ftf === c.tf ? isoT(d.asof) : NaN;
+            const tt = [Number.isFinite(ta) ? Math.max(it.anchor, ta) : it.anchor].concat((d.dates || []).map(isoT));
             tt.forEach(t => { if (t > B.t[B.t.length - 1]) futT.add(t); });
             const p = prim((ctx, size, ts, sr) => drawFan(ctx, ts, sr, it, d, tt), 'normal');
             // a few weeks of fan on years of history is a sliver: the explorer's item is also drawn magnified, over everything
@@ -665,19 +666,16 @@
     }
 
     // ---- info strip and tracked list
-    function mainOnClick(sym, d) {
-        const t = d.firstChild; t.style.cursor = 'pointer'; t.title = 'Make this the main symbol (the current one stays as a compare)';
-        t.onclick = () => pick(sym, true);                      // loadBars redraws once the new bars are in
-    }
     function renderInfo() {
         const box = $('chInfo'), cell = A();
         box.replaceChildren();
         if (!cell) return;
         const c = P(cell), info = symInfo[c.symbol] || {};
-        const row = (title, desc, val, key, onX, color, mode) => {
-            const d = h('div', 'ch-info-row');
+        const row = (title, desc, val, key, onX, color, mode, onTitle) => {
+            const d = h('div', 'ch-info-row'), b = h('b', null, title);
             if (color) d.style.borderLeftColor = color;
-            d.append(h('b', null, title), h('span', 'ch-desc', desc || ''), h('span', 'ch-val', val));
+            if (onTitle) { b.style.cursor = 'pointer'; b.title = 'Make this the main symbol (the current one stays as a compare)'; b.onclick = onTitle; }
+            d.append(b, h('span', 'ch-desc', desc || ''), h('span', 'ch-val', val));
             if (mode) {                                                       // PRICE | MCAP | VOL
                 const s = h('select', 'ch-sel');
                 VALS.forEach(([v, l]) => { const o = h('option', null, l); o.value = v; s.append(o); });
@@ -696,10 +694,10 @@
             return d;
         };
         const B = cell.B;
-        row(c.symbol + (info.name ? ' · ' + info.name : ''), info.description, B && B.t.length ? `${fmtNum(B.c[B.c.length - 1])}${c.val === 'mcap' && cell.last && cell.last.unit ? ' ' + cell.last.unit : ''} · ${fmtDate(B.t[B.t.length - 1], c.tf)}` : '', 'sym:' + c.symbol, null, '#22c55e',
+        row(c.symbol + (info.name ? ' · ' + info.name : ''), info.description, B && B.t.length ? `${fmtNum(B.c[B.c.length - 1])}${c.val === 'mcap' && cell.last && cell.last.unit ? ' ' + cell.last.unit : ''} · ${fmtDate(B.t[B.t.length - 1], c.tf)}` : '', 'sym:' + c.symbol, c.compare.length ? () => dropMain(cell) : null, '#22c55e',
             FID.test(c.symbol) ? null : { cur: c.val, set: v => { c.val = v; save(); loadBars(cell); renderInfo(); renderExplore(); } });
-        c.compare.forEach((s, k) => mainOnClick(s, row(s, symInfo[s] && (symInfo[s].name || symInfo[s].description), cell.cmp[s] && cell.cmp[s].err ? cell.cmp[s].err : '', 'sym:' + s, () => { c.compare = c.compare.filter(x => x !== s); delete cell.cmp[s]; delete c.cval[s]; save(); render(cell); renderInfo(); renderExplore(); }, COLORS[(k + 1) % COLORS.length],
-            FID.test(s) ? null : { cur: c.cval[s] || 'price', set: v => { c.cval[s] = v; delete cell.cmp[s]; save(); render(cell); renderInfo(); renderExplore(); } })));
+        c.compare.forEach((s, k) => row(s, symInfo[s] && (symInfo[s].name || symInfo[s].description), cell.cmp[s] && cell.cmp[s].err ? cell.cmp[s].err : '', 'sym:' + s, () => { c.compare = c.compare.filter(x => x !== s); delete cell.cmp[s]; delete c.cval[s]; save(); render(cell); renderInfo(); renderExplore(); }, COLORS[(k + 1) % COLORS.length],
+            FID.test(s) ? null : { cur: c.cval[s] || 'price', set: v => { c.cval[s] = v; delete cell.cmp[s]; save(); render(cell); renderInfo(); renderExplore(); } }, () => pick(s, true)));   // loadBars redraws once the new bars are in
         c.series.forEach((sd, k) => {
             const l = cell.lines[sd.id], m = l && l.meta, n = m ? m.t.length : 0;
             row(m ? m.label : sd.id, m && m.description, m ? (n ? `${fmtNum(m.v[n - 1])} ${m.unit} · ${new Date(m.t[n - 1] * 1000).toISOString().slice(0, 10)}` : 'no data') : 'loading…', 'ser:' + sd.id, () => { c.series = c.series.filter(s => s.id !== sd.id); delete cell.lines[sd.id]; save(); render(cell); renderInfo(); renderExplore(); }, COLORS[(k + 3) % COLORS.length]);
@@ -735,13 +733,24 @@
     }
 
     // ---- symbol box and pickers
+    // × on the main row: the first compare symbol takes its place (on touch screens, replace = add, then ×)
+    function dropMain(cell) {
+        const c = P(cell), old = c.symbol;
+        pick(c.compare[0], true);
+        c.compare = c.compare.filter(x => x !== old); delete c.fan['sym:' + old]; delete c.cval[old]; delete cell.cmp[old];
+        save();
+    }
     // keep: the old main symbol stays on the chart as a compare symbol (swap)
     function pick(sym, keep) {
         sym = normSym(sym);
         if (!isSym(sym)) { status('That is not a valid symbol.', true); return; }
         const cell = A(), c = P(cell);
-        if (keep && sym !== c.symbol) { c.compare = c.compare.filter(x => x !== sym); if (!c.compare.includes(c.symbol)) c.compare.push(c.symbol); }
-        delete c.fan['sym:' + c.symbol]; c.symbol = sym;
+        if (keep && sym !== c.symbol) {
+            c.compare = c.compare.filter(x => x !== sym); if (!c.compare.includes(c.symbol)) c.compare.push(c.symbol);
+            if (c.val !== 'price') c.cval[c.symbol] = c.val;
+            c.val = c.cval[sym] || 'price'; delete c.cval[sym]; delete cell.cmp[sym];
+        } else delete c.fan['sym:' + c.symbol];
+        c.symbol = sym;
         cell.ovSym = null; cell.ov = null; pendingPt = null;
         save();
         $('chSym').value = sym;
@@ -1048,19 +1057,19 @@
             $('chLayout').append(b);
         });
         const input = $('chSym'), cmp = $('chCmp');
-        const addCmp = sym => {
+        const addCmp = (sym, fromBox) => {
             sym = normSym(sym);
             if (!isSym(sym)) { status('That is not a valid symbol.', true); return; }
-            const cell = A(), c = P(cell);
-            if (sym !== c.symbol && !c.compare.includes(sym)) c.compare.push(sym);
+            const cell = A(), c = P(cell), fresh = sym !== c.symbol && !c.compare.includes(sym);
+            if (fresh) c.compare.push(sym);
             cmp.value = ''; $('chCmpLookup').classList.add('hidden'); $('chCmpWrap').classList.remove('open');
-            input.value = c.symbol; $('chLookup').classList.add('hidden');
-            save(); render(cell); renderInfo(); renderExplore();
-            status(`${sym} added. Shift+Enter in the box, or a click on its name below, makes it the main symbol.`);
+            if (fromBox) { input.value = c.symbol; $('chLookup').classList.add('hidden'); }
+            save(); render(cell); renderExplore();
+            status(fresh ? `${sym} added. Click its name below (or Shift+Enter in the box) to make it the main symbol; × on the main row drops it.` : `${sym} is already on the chart.`);
         };
         // the symbol box adds to the chart; Shift+Enter replaces the main symbol
-        input.addEventListener('input', () => lookup(input, $('chLookup'), addCmp));
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') (e.shiftKey ? pick : addCmp)(input.value); if (e.key === 'Escape') $('chLookup').classList.add('hidden'); });
+        input.addEventListener('input', () => lookup(input, $('chLookup'), s => addCmp(s, true)));
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') { if (e.shiftKey) pick(input.value); else addCmp(input.value, true); } if (e.key === 'Escape') $('chLookup').classList.add('hidden'); });
         input.addEventListener('blur', () => setTimeout(() => $('chLookup').classList.add('hidden'), 150));
         $('chCmpBtn').onclick = () => { $('chCmpWrap').classList.toggle('open'); cmp.focus(); };
         cmp.addEventListener('input', () => lookup(cmp, $('chCmpLookup'), addCmp));
