@@ -21,7 +21,7 @@ SECRET_NAMES = (
     "DATABENTO_API_KEY", "DB_API_KEY", "FRED_API_KEY", "EIA_API_KEY", "GOLD_API_KEY", "EBAY_APP_ID", "EBAY_CERT_ID",
     "CME_LOGIN_USERNAME", "CME_LOGIN_PASSWORD", "EMAIL_PASSWORD", "UPLOAD_TOKEN", "NTFY_URL", "ASSISTANT_LOCAL_API_KEY", "ANTHROPIC_API_KEY",
     "SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY", "MCP_MARKET_TOKEN", "MCP_BROKERAGE_TOKEN",
-    "ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY", "HF_TOKEN",
+    "ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY", "HF_TOKEN", "DEPLOY_NTFY_URL",
 )
 
 
@@ -181,6 +181,11 @@ SMTP_PORT = int_env("SMTP_PORT", 587, minimum=1, maximum=65535)
 RECIPIENT_EMAIL = optional_env("RECIPIENT_EMAIL", default="")
 IMAP_SERVER = optional_env("IMAP_SERVER", default="") or SMTP_SERVER      # the sender's mailbox, read only to find bounce notices
 NTFY_URL = optional_env("NTFY_URL", default="")
+# scripts/deploy.sh --auto: where deploy news goes (a full ntfy topic URL; blank = none), and the standby copy it waits for
+# while this one serves market.vlad.yt: an ssh host whose 127.0.0.1:DEPLOY_PEER_PORT is that copy's terminal (blank = no wait)
+DEPLOY_NTFY_URL = optional_env("DEPLOY_NTFY_URL", default="")
+DEPLOY_PEER_SSH = optional_env("DEPLOY_PEER_SSH", default="")
+DEPLOY_PEER_PORT = int_env("DEPLOY_PEER_PORT", 8792, minimum=1, maximum=65535)
 DASHBOARD_URL = optional_env("DASHBOARD_URL", default="")
 UPLOAD_URL = optional_env("UPLOAD_URL", default="")
 UPLOAD_TOKEN = optional_env("UPLOAD_TOKEN", default="")

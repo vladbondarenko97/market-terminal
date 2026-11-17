@@ -148,6 +148,9 @@ set, some empty: `failed`**, with the empty names in the detail, and the run end
 
 | Variable | Default | Read by | When empty |
 |---|---|---|---|
+| `DEPLOY_NTFY_URL` | `""` | `scripts/deploy.sh --auto` | No deploy pushes. A full ntfy topic URL (a secret, like `NTFY_URL`; the Keychain may hold it). |
+| `DEPLOY_PEER_SSH` | `""` | `scripts/deploy.sh --auto` | No placement order: the Mac deploys on its own checks. Otherwise the ssh host of the standby copy (Oracle), asked for its `/api/version` while the Mac serves market.vlad.yt. |
+| `DEPLOY_PEER_PORT` | `8792` | `scripts/deploy.sh --auto` | The standby terminal's port on its own loopback. |
 | `NTFY_URL` | `""` | `send_email.py` (daily brief, refinery alerts, CME login alert) | No pushes are sent. The daily brief and every alert are recorded as `skipped` (`NTFY_URL not configured`), which is not a warning. `main_pipeline.py ntfy-test` exits 2. Use the full topic URL, for example `https://ntfy.sh/<topic>`. |
 | `DASHBOARD_URL` | `""` | `main_pipeline.py` through `config.DASHBOARD_URL` | The daily push has no **Dashboard** button. Set it to the address of your terminal that your phone can reach (for example a Tailscale address). |
 
