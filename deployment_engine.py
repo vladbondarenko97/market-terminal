@@ -5,12 +5,11 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
-from config import DATA_DIR, PROJECT_ROOT
+from config import DATA_DIR, DB_PATH, PROJECT_ROOT
 
 # --- CONSTANTS & CONFIG ---
 DEPLOYMENT_STATE_FILE = os.path.join(PROJECT_ROOT, "deployment_state.json")
 DEPLOYMENT_PAYLOAD_FILE = os.path.join(PROJECT_ROOT, "deployment_payload.json")
-MACRO_LEDGER_FILE = os.path.join(DATA_DIR, "macro_master_ledger.csv")
 
 # Kelly Criterion Assumptions (operator choices, reported as assumptions in the payload, not market data)
 WIN_RATE = 0.75 # Assumed 75% win rate for Put Credit Spreads
@@ -23,19 +22,24 @@ PREMIUM_BUY_BELOW_PCT = 15.0
 # Nothing is filled in with a stand-in number.
 
 def get_latest_vmri():
-    """The most recent VMRI score from the macro master ledger as (score, reason). The score is None, with the
-    reason, when the ledger or a score in it is not there."""
-    if not os.path.exists(MACRO_LEDGER_FILE):
-        return None, "macro_master_ledger.csv not found in the data folder"
+    """The most recent VMRI score from the macro master ledger (portfolio.db) as (score, reason). The score is None,
+    with the reason, when the ledger or a score in it is not there."""
+    if not os.path.exists(DB_PATH):
+        return None, "portfolio.db not found in the data folder"
     try:
-        df = pd.read_csv(MACRO_LEDGER_FILE)
+        from core import history, lake
+        conn = lake.connect_readonly(DB_PATH)
+        try:
+            df = history.ledger_frame(conn, "macro_master_ledger")
+        finally:
+            conn.close()
     except Exception as e:
-        return None, f"macro_master_ledger.csv could not be read ({type(e).__name__})"
+        return None, f"macro_master_ledger could not be read ({type(e).__name__})"
     if 'VMRI_Score' not in df.columns:
-        return None, "macro_master_ledger.csv has no VMRI_Score column"
+        return None, "macro_master_ledger has no VMRI_Score column"
     valid_scores = df['VMRI_Score'].dropna()
     if valid_scores.empty:
-        return None, "macro_master_ledger.csv has no VMRI_Score values"
+        return None, "macro_master_ledger has no VMRI_Score values"
     return float(valid_scores.iloc[-1]), None
 
 def calculate_volatility(ticker_symbol):

@@ -1,5 +1,4 @@
 import math
-import os
 import time
 from datetime import datetime, timedelta
 
@@ -24,8 +23,8 @@ class QuantEngine:
     OSCILLATOR_COMPONENTS = (("vix", "VIX", -1.0), ("gex", "GEX", 1.0), ("dix", "DIX", 1.0))
     RATE_CACHE_SECONDS = 60
 
-    def __init__(self, ledger_file):
-        self.ledger_file = ledger_file
+    def __init__(self, load_ledger):
+        self.load_ledger = load_ledger   # () -> the macro ledger DataFrame (empty when there is none)
         self.rolling_window = 30 # days
         self._rate_cache = None   # (monotonic time, rate)
 
@@ -33,10 +32,9 @@ class QuantEngine:
         """Loads the macro ledger and calculates the mean, standard deviation and sample count of each oscillator
         component over the last 30 days (the last 100 rows when the ledger has nothing that recent). A component
         with no recent values has n == 0. Returns None when there is no ledger."""
-        if not os.path.exists(self.ledger_file):
+        df = self.load_ledger()
+        if df.empty:
             return None
-
-        df = pd.read_csv(self.ledger_file)
         df['Datetime'] = pd.to_datetime(df['Datetime'], format='mixed')
 
         # Filter for last 30 days

@@ -4,10 +4,12 @@ Everything runs offline against a scratch data folder with Flask's test client. 
 subprocess are replaced by fakes; no route here reaches a network or a real data folder.
 """
 import hashlib
+import io
 import json
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -37,9 +39,7 @@ NOT_INITIALISED = "database not initialised: run the pipeline once"
 
 # api_router constants that hold paths under the data folder
 PATH_NAMES = {
-    "DATA_DIR": "", "LEDGER_CSV": "macro_master_ledger.csv",
-    "INSTITUTIONAL_LEDGER_CSV": "equities_darkpool_gex_ledger.csv", "INVENTORY_CSV": "comex_inventory_history.csv",
-    "MANUAL_RUN_LOG": ".v2_manual_run.log", "_V2_DB_PATH": "portfolio.db",
+    "DATA_DIR": "", "MANUAL_RUN_LOG": ".v2_manual_run.log", "_V2_DB_PATH": "portfolio.db",
 }
 
 
@@ -119,7 +119,13 @@ class ApiCase(unittest.TestCase):
             mock.patch.object(api_router, name, str(data / leaf) if leaf else str(data)).start()
         mock.patch.object(runlock, "LOCK_PATH", data / ".v2_run.lock").start()
         mock.patch.object(runlock, "STATUS_PATH", data / ".v2_run_status.json").start()
-        mock.patch.object(api_router.quant, "ledger_file", str(data / "macro_master_ledger.csv")).start()
+
+    def put_ledger(self, table, csv_text, append=False):
+        """A legacy ledger table in the test database, from CSV text (the way the ledgers were once files)."""
+        conn = sqlite3.connect(api_router._V2_DB_PATH)
+        pd.read_csv(io.StringIO(csv_text)).to_sql(table, conn, if_exists="append" if append else "replace", index=False)
+        conn.close()
+        api_router.data_cache.cache.clear()
 
     def fake_yahoo(self, **registry):
         FakeTicker.registry = registry
@@ -730,7 +736,7 @@ LEDGER_HEADER = "Datetime,VMRI_Score,DXY,10Y_Yield,High_Yield_OAS,VIX,GEX,DIX\n"
 
 class WarRoom(ApiCase):
     def write_ledger(self, text):
-        (self.tmp / "macro_master_ledger.csv").write_text(text)
+        self.put_ledger("macro_master_ledger", text)
 
     def test_returns_the_scenario_from_the_ledger(self):
         self.write_ledger(LEDGER_HEADER + "2026-10-01 10:00,180.0,100,4.0,4.0,20,,\n")
@@ -864,7 +870,7 @@ class TimeArbitrage(ApiCase):
         for i in range(10):
             day = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d %H:%M")
             rows.append(f"{day},{15 + i % 4},{1000 + i if with_gex else ''},")
-        (self.tmp / "macro_master_ledger.csv").write_text("\n".join(rows) + "\n")
+        self.put_ledger("macro_master_ledger", "\n".join(rows) + "\n")
 
     def run_route(self):
         self.fake_yahoo(**self.registry)
@@ -899,14 +905,14 @@ class TimeArbitrage(ApiCase):
 
     def test_gex_joins_the_oscillator_when_the_ledger_has_it(self):
         self.write_macro(with_gex=True)
-        with open(self.tmp / "macro_master_ledger.csv", "a") as f:
-            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M')},17,1500,\n")
+        self.put_ledger("macro_master_ledger", f"Datetime,VIX,GEX,DIX\n{datetime.now().strftime('%Y-%m-%d %H:%M')},17,1500,\n",
+                        append=True)
         data = self.run_route()
         self.assertEqual(data["z_components"]["used"], ["vix", "gex"])
         self.assertEqual(set(data["z_components"]["missing"]), {"dix"})
 
     def test_gamma_state_comes_from_the_stored_zero_gamma_level(self):
-        (self.tmp / "equities_darkpool_gex_ledger.csv").write_text(
+        self.put_ledger("equities_darkpool_gex_ledger", 
             "Date,Ticker,Spot_Price,GEX_Zero_Gamma\n2026-10-02,SPY,100.0,98.0\n")
         data = self.run_route()
         self.assertAlmostEqual(data["gamma_state"]["distance"], 2.0)
@@ -944,10 +950,8 @@ class TimeArbitrage(ApiCase):
 # ============================================================ QuantEngine
 class QuantEngineUnits(ApiCase):
     def engine(self, rows=None):
-        path = self.tmp / "ledger.csv"
-        if rows is not None:
-            path.write_text("Datetime,VIX,GEX,DIX\n" + "\n".join(rows) + "\n")
-        return quant_engine.QuantEngine(str(path))
+        text = "Datetime,VIX,GEX,DIX\n" + "\n".join(rows) + "\n" if rows is not None else None
+        return quant_engine.QuantEngine(lambda: pd.read_csv(io.StringIO(text)) if text else pd.DataFrame())
 
     def recent(self, n, vix, gex="", dix=""):
         return [f"{(datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d %H:%M')},{vix(i)},{gex},{dix}"
@@ -1054,7 +1058,7 @@ class ArbitrageHistory(ApiCase):
         json.dumps(out, allow_nan=False)
 
     def test_route_serves_the_series_without_a_database(self):
-        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        self.put_ledger("macro_master_ledger", ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(index=False))
         data = self.get_json("/api/arbitrage_history?limit=5")["data"]
         self.assertEqual(data["labels"], ["2026-10-01 10:00"])
         self.assertEqual(data["benchmark_symbol"], "SI=F")
@@ -1069,7 +1073,7 @@ class ArbitrageHistory(ApiCase):
         conn.close()
 
     def test_route_reads_statistics_book_and_flow_from_the_snapshot(self):
-        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        self.put_ledger("macro_master_ledger", ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(index=False))
         listing = lambda i, cost, status, **kw: {"item_id": i, "title": i, "total_cost": cost, "premium_percent": cost - 60,
                                                  "status": status, "sold_qty": 5, **kw}
         self.commit_snapshot(ebay={
@@ -1091,7 +1095,7 @@ class ArbitrageHistory(ApiCase):
         self.assertEqual(book["run_at"], api_router._utc_to_local_label("2026-10-09T19:45:01+00:00"))
 
     def test_missing_flow_is_null_and_a_book_without_a_summary_gives_the_count(self):
-        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        self.put_ledger("macro_master_ledger", ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(index=False))
         self.commit_snapshot(ebay={"flow": {"status": "missing", "reason": "x"}, "listings": [
             {"item_id": "a", "total_cost": 70.0, "premium_percent": 10.0, "status": "IN_STOCK"}]})
         data = self.get_json("/api/arbitrage_history")["data"]
@@ -1101,7 +1105,7 @@ class ArbitrageHistory(ApiCase):
         self.assertEqual((book["listings"][0]["sold_prev"], book["listings"][0]["sold_7d"]), (None, None))
 
     def test_route_with_a_snapshot_that_predates_the_statistics(self):
-        ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(self.tmp / "macro_master_ledger.csv", index=False)
+        self.put_ledger("macro_master_ledger", ledger_frame([("10/1/26 10:00", 50.0, 55.0, 60.0)]).to_csv(index=False))
         self.commit_snapshot(ebay={"status": "missing", "listings": []})
         data = self.get_json("/api/arbitrage_history")["data"]
         self.assertEqual((data["stats"], data["book"], data["flow"]), (None, None, None))
@@ -1150,7 +1154,7 @@ class InstitutionalHistorySideInfo(ApiCase):
 
     def ledger(self, dates):
         body = "".join(f"{d},SLV,50,BULLISH,1,1,1,50,0,0,55,45,50\n" for d in dates)
-        (self.tmp / "equities_darkpool_gex_ledger.csv").write_text(self.HEADER + body)
+        self.put_ledger("equities_darkpool_gex_ledger", self.HEADER + body)
 
     def add_run(self, conn, run_id, generated_at, session=None):
         lake.create_run(conn, run_id, mode="live", trigger="test", run_folder="x", code_version="t")
@@ -1215,7 +1219,7 @@ class MmriCard(ApiCase):
 
     def test_history_has_the_mmri_series_from_the_stored_columns(self):
         # the second row has no VMRI score (an input was missing) and the third has no DXY: no MMRI either
-        (self.tmp / "macro_master_ledger.csv").write_text(
+        self.put_ledger("macro_master_ledger", 
             self.HEADER + "2026-10-01 10:00,180.0,100,4.0,20,2000,80,4.0\n"
                           "2026-10-02 10:00,,100,4.0,,2000,80,\n"
                           "2026-10-03 10:00,170.0,,4.0,20,2000,80,4.0\n")

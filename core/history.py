@@ -1,4 +1,5 @@
 """Read-side history queries over the lake and legacy tables, with explicit as-of cutoffs."""
+import io
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -59,6 +60,15 @@ def inventory_series(conn, as_of=None):
                           "source": "legacy_table (download-dated)"}
             known_pairs.add(pair)
     return [reports[d] for d in sorted(reports)]
+
+
+def ledger_frame(conn, table):
+    """A legacy ledger table the way the terminal read its CSV before the CSVs were retired: rows in the order they were
+    added, and every value parsed by pd.read_csv (a column can hold REAL and TEXT, e.g. "N/A"). Empty when absent."""
+    if not lake.table_columns(conn, table):
+        return pd.DataFrame()
+    df = pd.read_sql(f'SELECT * FROM "{table}" ORDER BY rowid', conn)
+    return pd.read_csv(io.StringIO(df.to_csv(index=False))) if not df.empty else df
 
 
 def legacy_frame(conn, table, time_col, as_of=None, where=None, params=()):

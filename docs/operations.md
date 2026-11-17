@@ -806,15 +806,20 @@ to `CME_Data`, and keeps the legacy ledger tables and CSV headers unchanged. See
   The tiers overlap, so it holds at most about 17 copies. `scripts/backup_lake_hf.py --check` lists the copies and
   which tier keeps each, and changes nothing. To restore one, download it (`huggingface_hub.hf_hub_download(repo,
   "db/<time>.db", repo_type="dataset")`), run `PRAGMA integrity_check` on it, stop the terminal and the schedule, and
-  put it in place of `portfolio.db`. Only the database is copied: not the ledger CSVs, `state.json` (CME cookies,
+  put it in place of `portfolio.db`. The ledgers are tables in it. Not copied: `state.json` (CME cookies,
   sensitive) or the day folders (`replay` re-renders a run from its snapshot).
 - **`import-history` backs the database up for you.** Before it imports it copies `portfolio.db` to
   `backups/portfolio-<UTC time>.db` with the SQLite backup API and checks the copy (`lake.backup_database()`). If the
   backup fails nothing is imported and the command exits 1; `--no-backup` skips the copy. Backups are never pruned or
-  rotated: delete old ones by hand. They hold only the database, not the ledger CSVs or `state.json`.
-- **Back up `CME_Data` before any other large change.** Copy the whole folder (`portfolio.db`, the ledger CSVs,
+  rotated: delete old ones by hand. They hold only the database (the ledgers included), not `state.json`.
+- **Back up `CME_Data` before any other large change.** Copy the whole folder (`portfolio.db`,
   `state.json`) while no run is in progress. The database uses the default rollback journal, so a copy between runs
   is complete.
+- **The ledger CSVs are retired.** The ledgers are tables in `portfolio.db` only. Run once on the scheduling Mac, after
+  the code that reads the tables is deployed: `.venv/bin/python scripts/retire_ledger_csvs.py --check`, then without
+  `--check`. It refuses during a run, backs the database up to `backups/`, adds the CSV rows the tables lack, checks
+  that every CSV row is in its table, zips the CSVs into `archive/ledger_csvs_<date>.zip`, reads the zip back byte for
+  byte and only then deletes them. Older code that reads the CSVs needs them back: unzip the archive into the data folder.
 - **Go back to earlier code** by checking out an earlier commit of this repository. Newer code may add tables or
   columns that older code does not know about, so keep the copy.
 - **Snapshots are immutable.** A wrong value is fixed by changing the model and making a new run, and recorded in

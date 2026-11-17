@@ -1,5 +1,4 @@
 import os
-import csv
 import base64
 from core.api_client import api_client
 import xml.etree.ElementTree as ET
@@ -8,7 +7,7 @@ from datetime import datetime
 import time
 
 # --- CONFIGURATION ---
-from config import DATA_DIR, EBAY_APP_ID, EBAY_CERT_ID
+from config import EBAY_APP_ID, EBAY_CERT_ID
 
 # --- EBAY API CREDENTIALS ---
 APP_ID = EBAY_APP_ID
@@ -126,15 +125,10 @@ def get_ebay_arbitrage_data_api(item_id, token):
         return {"error": str(e)}
 
 def log_arbitrage_ledger(cheapest_cost, avg_cost, comex_spot, item_count):
-    """Appends the latest physical arbitrage metrics to a dedicated CSV ledger."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    
-    file_path = os.path.join(DATA_DIR, "physical_arbitrage_ledger.csv")
-    file_exists = os.path.isfile(file_path)
-
+    """Appends the latest physical arbitrage metrics to the physical_arbitrage_ledger table in portfolio.db."""
     headers = [
-        "Datetime", "COMEX_Spot", "Cheapest_Eagle", "Average_Eagle", 
-        "Cheapest_Premium_Dollars", "Cheapest_Premium_Percent", 
+        "Datetime", "COMEX_Spot", "Cheapest_Eagle", "Average_Eagle",
+        "Cheapest_Premium_Dollars", "Cheapest_Premium_Percent",
         "Average_Premium_Dollars", "Average_Premium_Percent", "Dealers_Scanned"
     ]
 
@@ -143,32 +137,19 @@ def log_arbitrage_ledger(cheapest_cost, avg_cost, comex_spot, item_count):
     avg_prem_dlr = avg_cost - comex_spot if avg_cost else 0
     avg_prem_pct = (avg_prem_dlr / comex_spot * 100) if comex_spot else 0
 
-    with open(file_path, mode='a', newline='') as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(headers)
-        
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-        
-        row = [
-            current_time, 
-            round(comex_spot, 2), 
-            round(cheapest_cost, 2) if cheapest_cost else "NaN", 
-            round(avg_cost, 2) if avg_cost else "NaN",
-            round(cheapest_prem_dlr, 2),
-            round(cheapest_prem_pct, 2),
-            round(avg_prem_dlr, 2),
-            round(avg_prem_pct, 2),
-            item_count
-        ]
-        writer.writerow(row)
-        
-        try:
-            row_dict = dict(zip(headers, row))
-            from core.sqlite_layer import append_row
-            append_row('physical_arbitrage_ledger', row_dict)
-        except Exception as e:
-            print(f"⚠️ SQLite dual-write failed for ebay.py: {e}")
+    row = [
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        round(comex_spot, 2),
+        round(cheapest_cost, 2) if cheapest_cost else "NaN",
+        round(avg_cost, 2) if avg_cost else "NaN",
+        round(cheapest_prem_dlr, 2),
+        round(cheapest_prem_pct, 2),
+        round(avg_prem_dlr, 2),
+        round(avg_prem_pct, 2),
+        item_count
+    ]
+    from core.sqlite_layer import append_row
+    append_row('physical_arbitrage_ledger', dict(zip(headers, row)))   # a failed save raises: nothing else holds the row
 
 # --- 3. EXECUTION ENGINE ---
 if __name__ == "__main__":
