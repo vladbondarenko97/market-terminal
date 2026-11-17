@@ -52,6 +52,24 @@ class Retire(unittest.TestCase):
         self.assertEqual(len(list((self.dir / "backups").glob("portfolio-*.db"))), 1)
         self.assertEqual(r.main(self.dir, self.db), 0)                      # a second run finds nothing to do
 
+    def test_the_same_time_written_another_way_is_not_added_again(self):
+        (self.dir / "institutional_ledger.csv").write_text(HEADER + "10/1/26 9:31,spy,500.0,BULLISH\n")
+        self.assertEqual(r.main(self.dir, self.db), 0)
+        self.assertEqual(len(self.table()), 1)
+
+    def test_a_time_repeated_in_the_csv_but_not_in_the_table_stops_everything(self):
+        (self.dir / "institutional_ledger.csv").write_text(
+            HEADER + "2026-10-01 09:31,SPY,500.0,BULLISH\n2026-10-01 09:31,SPY,499.0,BEARISH\n")
+        self.assertEqual(r.main(self.dir, self.db), 1)
+        self.assertEqual(len(self.table()), 1)
+        self.assertTrue((self.dir / "institutional_ledger.csv").exists())
+        self.assertFalse((self.dir / "archive").exists())
+
+    def test_no_database_stops_and_check_never_creates_one(self):
+        self.db.unlink()
+        self.assertEqual(r.main(self.dir, self.db, check=True), 1)
+        self.assertFalse(self.db.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

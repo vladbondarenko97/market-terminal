@@ -65,22 +65,18 @@ class DataCache:
 
     def get_ledger(self, table):
         """A copy of a legacy ledger table (history.ledger_frame), cached for `ttl` seconds. Empty when the database
-        or the table is not there yet."""
+        or the table is not there yet; a database that cannot be read raises (the route answers 500, not "not found")."""
         current_time = time.time()
         key = ("ledger", _V2_DB_PATH, table)
         if key not in self.cache or current_time - self.last_update.get(key, 0) >= self.ttl:
             if not os.path.exists(_V2_DB_PATH):
                 return pd.DataFrame()
+            conn = _v2lake.connect_readonly(_V2_DB_PATH)
             try:
-                conn = _v2lake.connect_readonly(_V2_DB_PATH)
-                try:
-                    self.cache[key] = _v2history.ledger_frame(conn, table)
-                finally:
-                    conn.close()
-                self.last_update[key] = current_time
-            except Exception as e:
-                print(f"Ledger load error for {table}: {e}")
-                return pd.DataFrame()
+                self.cache[key] = _v2history.ledger_frame(conn, table)
+            finally:
+                conn.close()
+            self.last_update[key] = current_time
         return self.cache[key].copy()
 
     def get(self, key):
@@ -408,9 +404,10 @@ def _eagle_book(ebay, run_at):
 @guarded("Arbitrage history")
 def get_arbitrage_history():
     limit = int_arg('limit', 50)
-    if data_cache.get_ledger(LEDGER_TABLE).empty:
+    df = data_cache.get_ledger(LEDGER_TABLE)
+    if df.empty:
         return json_error("Ledger file not found.", 404)
-    payload = build_arbitrage_series(data_cache.get_ledger(LEDGER_TABLE), limit)
+    payload = build_arbitrage_series(df, limit)
     if payload is None:
         return json_error("Ledger is empty.", 404)
 
@@ -538,10 +535,9 @@ def get_dark_pool_profile():
 def get_vmri_history():
     """Returns the time-series history of VMRI scores, math derivatives, and macro context."""
     try:
-        if data_cache.get_ledger(LEDGER_TABLE).empty:
-            return jsonify({"status": "error", "message": "Ledger not found", "error": "Ledger not found"}), 404
-            
         df = data_cache.get_ledger(LEDGER_TABLE)
+        if df.empty:
+            return jsonify({"status": "error", "message": "Ledger not found", "error": "Ledger not found"}), 404
         
         # 1. THE FIX: Drop completely empty rows or rows missing a Datetime BEFORE parsing
         df = df.dropna(how='all')
@@ -994,9 +990,9 @@ def api_war_room():
     vix_shift_pct = finite_float(data.get('vix_shift_pct', 0.0), 'vix_shift_pct')
 
     # 2. Ingest the Latest Valid Live Environment
-    if data_cache.get_ledger(LEDGER_TABLE).empty:
-        raise ApiError("macro ledger not found: run the pipeline", 503)
     df = data_cache.get_ledger(LEDGER_TABLE)
+    if df.empty:
+        raise ApiError("macro ledger not found: run the pipeline", 503)
     # CRITICAL FIX: Drop completely empty rows that might be at the end of the CSV
     df = df.dropna(how='all')
     if df.empty:
@@ -1141,12 +1137,12 @@ def api_silver_eagle_prices():
 def get_inventory_data():
     """COMEX inventory by report date (comex_inventory_history) as JSON for the JS chart."""
     try:
-        if data_cache.get_ledger(INVENTORY_TABLE).empty:
+        df = data_cache.get_ledger(INVENTORY_TABLE)
+        if df.empty:
             return jsonify({"status": "error", "message": "CSV not found", "error": "CSV not found"}), 404
-            
         # A report date can be stored more than once (the CSV import and the pipeline both wrote some): the last row
         # is the one the CSV kept
-        df = data_cache.get_ledger(INVENTORY_TABLE).drop_duplicates('Date', keep='last')
+        df = df.drop_duplicates('Date', keep='last')
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.sort_values('Date')
         
@@ -2386,10 +2382,9 @@ def get_institutional_history():
     limit = int_arg('limit', 100)
     
     try:
-        if data_cache.get_ledger(INSTITUTIONAL_LEDGER_TABLE).empty:
-            return jsonify({"status": "error", "message": "Institutional ledger not found."}), 404
-        
         df = data_cache.get_ledger(INSTITUTIONAL_LEDGER_TABLE)
+        if df.empty:
+            return jsonify({"status": "error", "message": "Institutional ledger not found."}), 404
         
         if df.empty:
             return jsonify({"status": "error", "message": "Ledger is empty."}), 404
@@ -2501,10 +2496,9 @@ def get_macro_ledger_full():
     limit = int_arg('limit', 200)
     
     try:
-        if data_cache.get_ledger(LEDGER_TABLE).empty:
-            return jsonify({"status": "error", "message": "Macro ledger not found."}), 404
-        
         df = data_cache.get_ledger(LEDGER_TABLE)
+        if df.empty:
+            return jsonify({"status": "error", "message": "Macro ledger not found."}), 404
         df = df.dropna(how='all')
         df = df.dropna(subset=['Datetime'])
         df['Datetime'] = pd.to_datetime(df['Datetime'], format='mixed')

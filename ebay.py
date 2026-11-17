@@ -1,4 +1,5 @@
 import os
+import sys
 import base64
 from core.api_client import api_client
 import xml.etree.ElementTree as ET
@@ -196,12 +197,6 @@ if __name__ == "__main__":
     # Sort by lowest premium percent mathematically
     scraped_data.sort(key=lambda x: x['total_cost'])
 
-    # --- FIRE LEDGER ENTRY ---
-    if len(scraped_data) > 0 and COMEX_SPOT:
-        cheapest = scraped_data[0]['total_cost']
-        avg = sum(d['total_cost'] for d in scraped_data) / len(scraped_data)
-        log_arbitrage_ledger(cheapest, avg, COMEX_SPOT, len(scraped_data))
-
     # Build XML Root for the terminal
     root = ET.Element("physical_arbitrage", 
                       comex_spot=f"${COMEX_SPOT:.2f}" if COMEX_SPOT else "unavailable", 
@@ -232,3 +227,12 @@ if __name__ == "__main__":
     pretty_xml = minidom.parseString(raw_xml).toprettyxml(indent="  ")
     
     print(pretty_xml)
+
+    # --- FIRE LEDGER ENTRY --- (after the XML, so a failed save never costs the terminal the scan)
+    if len(scraped_data) > 0 and COMEX_SPOT:
+        cheapest = scraped_data[0]['total_cost']
+        avg = sum(d['total_cost'] for d in scraped_data) / len(scraped_data)
+        try:
+            log_arbitrage_ledger(cheapest, avg, COMEX_SPOT, len(scraped_data))
+        except Exception as e:
+            print(f"physical_arbitrage_ledger row NOT saved: {e}", file=sys.stderr)

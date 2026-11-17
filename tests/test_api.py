@@ -1187,10 +1187,10 @@ class InstitutionalHistorySideInfo(ApiCase):
         self.ledger([label(a), label(b), label(c), "2026-01-01 09:00"])
         d = self.get_json("/api/institutional_history?ticker=SLV")["data"]
         full = ["2026-10-07", "vwap_heuristic", 1000.0, 700.0, 300.0]
-        self.assertEqual([d[k][0] for k in self.NEW], full)
+        self.assertEqual([d[k][0] for k in self.NEW], [None] * 5)          # the ledger is read in time order: January first
         self.assertEqual([d[k][1] for k in self.NEW], full)
-        self.assertEqual([d[k][2] for k in self.NEW], ["2026-10-08", None, None, None, None])
-        self.assertEqual([d[k][3] for k in self.NEW], [None] * 5)
+        self.assertEqual([d[k][2] for k in self.NEW], full)
+        self.assertEqual([d[k][3] for k in self.NEW], ["2026-10-08", None, None, None, None])
         json.dumps(d, allow_nan=False)
 
 

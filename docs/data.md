@@ -134,13 +134,14 @@ existing table with `ALTER TABLE ADD COLUMN`; if a table is missing it is create
 | `comex_inventory_history` | `comex_inventory_history.csv` | Only when a new silver workbook was downloaded and its (Registered, Eligible) pair is not already stored. `Date` is the report date. Troy ounces. | `Date`, `Registered`, `Eligible`, `Total`, `Reg_Change`, `Elig_Change`, `Total_Change` |
 | `crypto_metrics_history` | **none** (SQLite only) | 1 row per live run if the date is not already present; `scripts/backfill_crypto_metals.py` adds a year of history | `Date`, `BTC_Price`, `Silver_Price`, `Gold_Price`, `Silver_BTC_Ratio`, `Gold_BTC_Ratio` |
 
+| `daily_volume`, `silver_stocks` | none | never; read-only legacy tables | no current code creates or writes them |
+
 The ledgers live only in these `portfolio.db` tables. Until 2026-11 every row was also appended to a CSV of the same
 name in the data folder, and some terminal routes read those files. Now the pipeline (`export_ledgers()`) and `ebay.py`
 write only the tables, and the terminal reads them through `history.ledger_frame()` (rows in insertion order, values
-parsed as `pd.read_csv` parsed the files, so the routes answer as before). `scripts/retire_ledger_csvs.py` moved the
+sorted by time, values parsed as `pd.read_csv` parsed the files, so the routes answer as before). `scripts/retire_ledger_csvs.py` moved the
 last CSV-only rows into the tables and zipped the files into `archive/`. `import-history` still imports a ledger CSV
 it finds in the data folder.
-| `daily_volume`, `silver_stocks` | none | never; read-only legacy tables | no current code creates or writes them |
 
 Rules that hold for all of them:
 
