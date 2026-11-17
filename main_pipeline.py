@@ -959,6 +959,9 @@ def bars_command(symbols, *, backfill=False, deep=False, from_lake=False, fans=F
                 for err in res["errors"]:
                     print("  ", err)
                 rc = 1 if res["errors"] else 0
+            if symbols and fetch and not (fans or scheduled):    # a looked-up symbol gets its fan now, not at the evening run
+                res = chartfans.build_symbols(conn, symbols)
+                print(f"fans: {res['added']} rows added" + (f" (Kronos: {res['kronos']})" if res["kronos"] else ""))
             if fans or (scheduled and chartfans.due()):          # cheap when all are built: stored ones are skipped
                 main = lake.connect_readonly(config.DB_PATH) if config.DB_PATH.exists() else None
                 try:

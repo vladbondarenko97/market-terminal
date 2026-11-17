@@ -228,6 +228,14 @@ class Routes(Base):
         self.assertEqual(self.client.get("/api/chart/bars?symbol=..%2Fx").status_code, 400)
         self.assertEqual(self.client.get("/api/chart/bars?symbol=SPY&tf=3m").status_code, 400)
 
+    def test_a_fan_is_loading_while_its_symbols_job_runs(self):
+        proc = mock.Mock(**{"poll.return_value": None})
+        with mock.patch.object(api_router.subprocess, "Popen", return_value=proc):
+            self.client.get("/api/chart/bars?symbol=NKE", headers=CH)
+            self.assertEqual(self.client.get("/api/chart/fan?item=NKE").get_json()["status"], "loading")
+            proc.poll.return_value = 0                                              # done, and no fan was built
+            self.assertEqual(self.client.get("/api/chart/fan?item=NKE").get_json()["status"], "missing")
+
     def test_a_download_needs_the_chart_header_and_at_most_4_run(self):
         with mock.patch.object(api_router.subprocess, "Popen") as popen:
             r = self.client.get("/api/chart/bars?symbol=AAAA")                  # e.g. an <img> on another site
@@ -513,6 +521,12 @@ class ChartFans(Base):
             with mock.patch.object(chartfans, "due", return_value=True):
                 main_pipeline.bars_command([], scheduled=True, offline=True)
                 self.assertTrue(self.conn.execute("SELECT COUNT(*) FROM v2_chart_fans").fetchone()[0])
+        self.conn.execute("DELETE FROM v2_chart_fans")
+        self.conn.commit()
+        with mock.patch.object(fans, "load_kronos", return_value=KRONOS_OFF), \
+                mock.patch.object(bars, "collect", return_value={"added": 0, "errors": []}):
+            self.assertEqual(main_pipeline.bars_command(["NKE"]), 0)                 # a looked-up symbol: its fan comes with the bars
+        self.assertIsNotNone(chartfans.read(self.conn, "NKE", "1d"))
         self.assertTrue(chartfans.due(datetime(2026, 6, 1, 20, 15, tzinfo=NY)))
         self.assertFalse(chartfans.due(datetime(2026, 6, 1, 20, 14, tzinfo=NY)))
         self.assertTrue(chartfans.due(datetime(2026, 5, 30, 17, 0, tzinfo=NY)))         # a Saturday: off hours

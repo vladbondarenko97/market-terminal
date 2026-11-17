@@ -343,6 +343,7 @@
         if (cell.fans[key]) return;
         cell.fans[key] = { pending: true };
         const r = await chartJson(`${API_BASE}/api/chart/fan?item=${encodeURIComponent(item)}&tf=${fanTf(P(cell).tf)}`);
+        if (r.status === 'loading') { setTimeout(() => { delete cell.fans[key]; if (cells.includes(cell)) { render(cell); renderExplore(); } }, 5000); return; }   // a new symbol's job builds it
         cell.fans[key] = r.status === 'success' && r.models ? { d: r } : { err: r.reason || r.message || `no fan (${r.status})` };
         if (cells.includes(cell)) { render(cell); if (cell.i === st.active) renderExplore(); }
     }
