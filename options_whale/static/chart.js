@@ -538,6 +538,20 @@
     const shownModels = d => Object.keys(MODELS).filter(name => (ex.model === 'both' || ex.model === name) && modelOk(d.models[name]));
     function drawFan(ctx, ts, sr, it, d, tt) {
         paintFan(ctx, d, it, (vals, j) => { const x = ts.timeToCoordinate(tt[j]), y = vals[j] == null ? null : sr.priceToCoordinate(vals[j]); return x == null || y == null ? null : [x, y]; });
+        // the run is newer than the last stored bar (the session's candle is stored in the evening): a dotted bridge
+        // from the last close to the run's price, so the gap reads as today's move
+        if (tt[0] > it.anchor && d.last != null) {
+            const data = it.api.data();
+            let v = null; for (let i = data.length - 1; i >= 0 && v == null; i--) if (data[i].time <= it.anchor) v = data[i].close != null ? data[i].close : data[i].value;
+            const x0 = ts.timeToCoordinate(it.anchor), y0 = v == null ? null : sr.priceToCoordinate(v), x1 = ts.timeToCoordinate(tt[0]), y1 = sr.priceToCoordinate(d.last);
+            if (x0 == null || y0 == null || x1 == null || y1 == null) return;
+            ctx.save(); ctx.strokeStyle = '#a1a1aa'; ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+            ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.setLineDash([]);
+            ctx.fillStyle = '#e4e4e7'; ctx.beginPath(); ctx.arc(x1, y1, 3, 0, 2 * Math.PI); ctx.fill();
+            ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+            ctx.fillText(`${fmtNum(d.last)} at the ${d.asof} run (candle stored tonight)`, x1 - 6, y1 + (y1 > y0 ? 14 : -8));
+            ctx.restore();
+        }
     }
     // x is time, so a daily fan on a weekly or monthly chart keeps its true length; history covers twice the fan's span
     function fanInset(ctx, size, it, d, tt) {
