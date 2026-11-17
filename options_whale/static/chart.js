@@ -462,8 +462,12 @@
             const d = f.d, tt = [it.anchor].concat((d.dates || []).map(isoT));
             tt.slice(1).forEach(t => { if (t > B.t[B.t.length - 1]) futT.add(t); });
             const p = prim((ctx, size, ts, sr) => drawFan(ctx, ts, sr, it, d, tt), 'normal');
-            it.api.attachPrimitive(p); cell.prims.push(p);
-            if (it.api === cell.candles) cell.cprims.push(p);
+            // a few weeks of fan on years of history is a sliver: the explorer's item is also drawn magnified, over everything
+            const pi = prim((ctx, size, ts) => {
+                const x0 = ts.timeToCoordinate(tt[0]), x1 = ts.timeToCoordinate(tt[tt.length - 1]);
+                if (cell.i === st.active && it.key === ex.item && x0 != null && x1 != null && x1 - x0 < 60) fanInset(ctx, size, it, d, tt);
+            }, 'top');
+            [p, pi].forEach(q => { it.api.attachPrimitive(q); cell.prims.push(q); if (it.api === cell.candles) cell.cprims.push(q); });
         });
 
         // candle data, with empty future points so the fans have somewhere to go
@@ -529,14 +533,43 @@
     // ---- scenario fans
     function modelOk(m) { return m && m.status !== 'missing' && (m.paths || m.q); }
     function pathVals(arr, d, last) { return arr.length === (d.dates || []).length ? [last].concat(arr) : arr; }
+    const shownModels = d => Object.keys(MODELS).filter(name => (ex.model === 'both' || ex.model === name) && modelOk(d.models[name]));
     function drawFan(ctx, ts, sr, it, d, tt) {
-        const px = j => ts.timeToCoordinate(tt[j]);
-        const pt = (vals, j) => { const x = px(j), y = vals[j] == null ? null : sr.priceToCoordinate(vals[j]); return x == null || y == null ? null : [x, y]; };
+        paintFan(ctx, d, it, (vals, j) => { const x = ts.timeToCoordinate(tt[j]), y = vals[j] == null ? null : sr.priceToCoordinate(vals[j]); return x == null || y == null ? null : [x, y]; });
+    }
+    // x is time, so a daily fan on a weekly or monthly chart keeps its true length; history covers twice the fan's span
+    function fanInset(ctx, size, it, d, tt) {
+        const t1 = tt[tt.length - 1], tFrom = it.anchor - 2 * (t1 - it.anchor), data = it.api.data(), hist = [];
+        for (let i = data.length - 1; i >= 0 && (data[i].time > tFrom || hist.length < 2); i--) {
+            const b = data[i], v = b.close != null ? b.close : b.value;
+            if (b.time <= it.anchor && v != null) hist.unshift([b.time, v]);
+        }
+        if (hist.length < 2) return;
+        const W = Math.min(320, size.width * 0.4), H = Math.min(180, size.height * 0.4), X = 12, Y = 12, pad = 10;   // top-left: the real fan is at the right
+        const vals = hist.map(p => p[1]);
+        shownModels(d).forEach(name => {
+            const m = d.models[name], q = m.q || {};
+            ['p10', 'p90'].forEach(k => (q[k] || []).forEach(v => vals.push(v)));
+            if (it.key === ex.item && (m.paths || []).length) (ex.all ? m.paths : ex.playing || ex.hl ? [m.paths[ex.idx % m.paths.length]] : []).forEach(p => p.forEach(v => vals.push(v)));
+        });
+        const ok = vals.filter(v => v != null), lo = Math.min(...ok), hi = Math.max(...ok), t0 = hist[0][0];
+        const xOf = t => X + pad + (t - t0) / ((t1 - t0) || 1) * (W - 2 * pad), yOf = v => Y + pad + (hi - v) / ((hi - lo) || 1) * (H - 2 * pad);
+        ctx.save();
+        ctx.fillStyle = 'rgba(9,9,11,.92)'; ctx.fillRect(X, Y, W, H);
+        ctx.strokeStyle = '#3f3f46'; ctx.lineWidth = 1; ctx.strokeRect(X, Y, W, H);
+        ctx.beginPath(); ctx.rect(X, Y, W, H); ctx.clip();
+        const a = xOf(it.anchor);
+        ctx.strokeStyle = '#3f3f46'; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(a, Y); ctx.lineTo(a, Y + H); ctx.stroke(); ctx.setLineDash([]);
+        ctx.strokeStyle = '#a1a1aa'; ctx.lineWidth = 1.5; ctx.beginPath(); hist.forEach(([t, v], i) => i ? ctx.lineTo(xOf(t), yOf(v)) : ctx.moveTo(xOf(t), yOf(v))); ctx.stroke();
+        paintFan(ctx, d, it, (vals, j) => vals[j] == null ? null : [xOf(tt[j]), yOf(vals[j])]);
+        ctx.fillStyle = '#71717a'; ctx.font = '10px sans-serif'; ctx.fillText(`last ${hist.length} bars + ${tt.length - 1}-step fan`, X + 6, Y + 12);
+        ctx.restore();
+    }
+    // pt(vals, j) maps the j-th fan point (0 = the last bar) to [x, y], or null
+    function paintFan(ctx, d, it, pt) {
         const path = (vals, move) => { let open = false; vals.forEach((_, j) => { const p = pt(vals, j); if (!p) return; if (!open) { ctx.moveTo(p[0], p[1]); open = true; } else ctx.lineTo(p[0], p[1]); }); };
-        Object.keys(MODELS).forEach(name => {
-            if (ex.model !== 'both' && ex.model !== name) return;
+        shownModels(d).forEach(name => {
             const m = d.models[name];
-            if (!modelOk(m)) return;
             const rgb = MODELS[name][1], q = m.q || {}, V = k => Array.isArray(q[k]) ? pathVals(q[k], d, d.last) : null;
             const band = (lo, hi, a) => {
                 if (!lo || !hi) return;
