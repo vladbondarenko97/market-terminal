@@ -160,7 +160,7 @@ SOURCES = OrderedDict([
 
 def catalog_text(sources=None):
     lines = []
-    for name, (_route, params, desc) in (sources or SOURCES).items():
+    for name, (_route, params, desc) in (SOURCES if sources is None else sources).items():
         lines.append(f"- {name}{' (' + ', '.join(params) + ')' if params else ''}: {desc}")
     return "\n".join(lines)
 
@@ -698,7 +698,7 @@ SHAPERS = {**{n: _shape_fed if n.endswith("_history") else _shape_fed_latest for
 # ---------------------------------------------------------------- the one data tool
 def resolve_source(source, path="", sources=None):
     """(source, path) as fetch_source reads them: models sometimes write positions.trades or put the source in path."""
-    sources = sources or SOURCES
+    sources = SOURCES if sources is None else sources   # {} = nothing allowed, never the console's full list (holdings included)
     source, path = str(source or "").strip(), str(path or "").strip()
     if source not in sources:
         for text in (source, path):
@@ -726,7 +726,7 @@ def _stored_gex(app, params, live_error):
 
 def fetch_source(app, source, query="", path="", last=10, sources=None):
     """GET one whitelisted route (from `sources`, default SOURCES) through Flask's test client and return shaped text. Never raises."""
-    sources = sources or SOURCES
+    sources = SOURCES if sources is None else sources
     source, path = resolve_source(source, path, sources)
     if source not in sources:
         return (f"error: `source` must be one of: {', '.join(sources)}. Example: source=positions, path=trades, last=10. "
