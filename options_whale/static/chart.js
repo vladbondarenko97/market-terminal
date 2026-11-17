@@ -343,6 +343,12 @@
         if (cell.fans[key]) return;
         cell.fans[key] = { pending: true };
         const r = await chartJson(`${API_BASE}/api/chart/fan?item=${encodeURIComponent(item)}&tf=${fanTf(P(cell).tf)}`);
+        if (r.status === 'loading') {                       // the server is building it: ask again every 5 s, for up to 10 minutes
+            cell.fanTries = cell.fanTries || {};
+            if ((cell.fanTries[key] = (cell.fanTries[key] || 0) + 1) > 120) { cell.fans[key] = { err: 'the fan is still being built; reload later' }; return; }
+            setTimeout(() => { delete cell.fans[key]; if (cells.includes(cell)) { render(cell); if (cell.i === st.active) renderExplore(); } }, 5000);
+            return;
+        }
         cell.fans[key] = r.status === 'success' && r.models ? { d: r } : { err: r.reason || r.message || `no fan (${r.status})` };
         if (cells.includes(cell)) { render(cell); if (cell.i === st.active) renderExplore(); }
     }

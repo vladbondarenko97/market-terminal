@@ -1838,7 +1838,7 @@ def api_help():
       </parameters>
     </endpoint>
     <endpoint method="GET" path="/api/chart/fan" format="json" source="stored">
-      <description>CHART tab scenario fans of one item: the future dates, the last value and, per model (kronos, baseline), status, reason, 100 paths and p05 to p95 per step. The 1d fans of items the latest snapshot forecasts (SPY, SLV, ^VIX, SI=F, GC=F, HG=F, CL=F, HO=F, RB=F, NG=F, DX-Y.NYB, ^TNX, EIA stocks and days of supply) are the snapshot's (source snapshot); everything else and all intraday fans come from chart.db, built by `bars --fans` (source chart). status missing (HTTP 200) when none is stored.</description>
+      <description>CHART tab scenario fans of one item: the future dates, the last value and, per model (kronos, baseline), status, reason, 100 paths and p05 to p95 per step. The 1d fans of items the latest snapshot forecasts (SPY, SLV, ^VIX, SI=F, GC=F, HG=F, CL=F, HO=F, RB=F, NG=F, DX-Y.NYB, ^TNX, EIA stocks and days of supply) are the snapshot's (source snapshot); everything else and all intraday fans come from chart.db, built by `bars --fans` (source chart). A tracked symbol with no 1d fan (looked up since the evening build) starts one `bars --fans --offline --symbol` job, once per server start and only with the CHART tab's header, and answers status loading (HTTP 200) while it runs; status missing (HTTP 200) when none is stored.</description>
       <parameters>
         <param name="item" type="string" default="" description="a symbol, a series id or a formula id (f.xxxxxxxx) from /api/chart/catalog" />
         <param name="tf" type="string" default="1d" description="1d, 1h or 5m (1h and 5m exist for SPY and SLV)" />
@@ -3667,14 +3667,26 @@ def api_chart_fan():
                     models["kronos"] = got[3]["kronos"]
                     out["verdict"] = "Kronos on the weekly days-of-supply ratio is not backtested yet; the daily Kronos fan loses to the baseline out of sample"
             return jsonify({**out, "source": "snapshot", "asof": s["asof"], "last": s["last"], "dates": s["dates"], "models": models})
+    with _CHART_JOBS_LOCK:                         # before the read: a job that ends in between has written its fan
+        job = _CHART_JOBS.get("fan:" + item)
+    running = job is not None and job.poll() is None
     cconn = _chartbars.connect_readonly()
     try:
         got = _chartfans.read(cconn, item, tf)
+        tracked = cconn is not None and _chartbars.has(cconn, item)
     finally:
         if cconn is not None:
             cconn.close()
     if got is None:
-        return jsonify({"status": "missing", "reason": f"no {tf} fan stored for {item}: they are built by `main_pipeline.py bars --fans`"})
+        if running:
+            return jsonify({"status": "loading", "item": item})
+        # a tracked symbol with no 1d fan (looked up since the evening build): build it now, once per server start
+        if tf == "1d" and job is None and tracked and not _formulas.ID_RE.match(item) and item not in _chartbars.SERIES:
+            with _CHART_JOBS_LOCK:
+                err = None if "fan:" + item in _CHART_JOBS else _chart_spawn("fan:" + item, "bars", "--fans", "--offline", "--symbol", item)
+            if err is None:
+                return jsonify({"status": "loading", "item": item})
+        return jsonify({"status": "missing", "reason": f"no {tf} fan stored for {item}: the evening bars job builds them (`main_pipeline.py bars --fans`)"})
     asof, last, dates, models = got
     models = {k: models.get(k) or {"status": "missing", "reason": "not built"} for k in ("kronos", "baseline")}
     return jsonify({**out, "source": "chart", "asof": asof, "last": last, "dates": dates, "models": models})
