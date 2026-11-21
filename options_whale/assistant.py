@@ -41,13 +41,53 @@ LOCAL_URL = optional_env("ASSISTANT_LOCAL_URL", default="http://127.0.0.1:11434/
 LOCAL_MODEL = optional_env("ASSISTANT_LOCAL_MODEL", default="qwen3.6:35b-a3b")
 
 
+# /load 12b|9b|27b: the ids agents/mcp's local_agent.MODELS knows (one local model in oMLX, shared with the iMessage assistant and ai.vlad.yt).
+SWITCH_MODELS = {"12b": "gemma-4-12B-it-oQ4e-mtp", "9b": "Qwen3.5-9B-MLX-8bit", "27b": "Qwen3.8-27B-Huihui-Abliterated-oQ4e-MTP-MLX"}
+PLACEMENT_URL = "http://127.0.0.1:8803/placement/omlx?on={on}"     # the dash's switch, as agents/mcp loaded.switch() calls it
+PICK_FILE = Path.home() / ".imessage_local_model"
+_SWITCH_LOCK = threading.Lock()
+
+
 def picked_local_model():
     """The local model loaded in oMLX (agents/mcp /load 12b|9b writes its id there), else .env: one local model in RAM, never two."""
     try:
-        return open(os.path.expanduser("~/.imessage_local_model")).read().strip() or LOCAL_MODEL
+        return PICK_FILE.read_text().strip() or LOCAL_MODEL
     except OSError:
         return LOCAL_MODEL
 LOCAL_API_KEY = optional_env("ASSISTANT_LOCAL_API_KEY", default="local")
+def can_switch():
+    """The model switch exists only where oMLX and the dash do: the Mac, never the container (Oracle)."""
+    return not os.path.exists("/.dockerenv")
+
+
+def switch_model(want):
+    """Same as loaded.switch(): write the pick, then the placement POST (loads it, unloads the other). want = 12b|9b|27b, an id of
+    SWITCH_MODELS, or sonnet (oMLX off). -> (ok, message)"""
+    if not can_switch():
+        return False, "Switching models is only possible on the Mac, where oMLX runs."
+    want = str(want or "").strip().lower()
+    ids = {k.lower(): v for k, v in SWITCH_MODELS.items()} | {v.lower(): v for v in SWITCH_MODELS.values()}
+    if want != "sonnet" and want not in ids:
+        return False, f"Unknown model {want[:60]!r}: /load 12b, 9b, 27b or sonnet."
+    with _SWITCH_LOCK:
+        try:
+            old = PICK_FILE.read_text() if PICK_FILE.exists() else None
+        except OSError:
+            old = None
+        if want != "sonnet":
+            PICK_FILE.write_text(ids[want])
+        try:
+            r = requests.post(PLACEMENT_URL.format(on=int(want != "sonnet")), headers={"X-Placement": "1"}, timeout=180)
+            ok = r.status_code == 200 and r.json().get("ok") is True
+        except (requests.RequestException, ValueError):
+            ok = False
+        if not ok:
+            if want != "sonnet" and old is not None:
+                PICK_FILE.write_text(old)            # the switch did not happen: the pick stays what is loaded
+            return False, "The dash's oMLX switch did not answer; nothing changed."
+    return True, "Sonnet (oMLX stopped)." if want == "sonnet" else f"Loaded {ids[want]}."
+
+
 # auto = answer from the brief or pick sources without deliberate reasoning (fast), then reason briefly over fetched data.
 LOCAL_REASONING = optional_env("ASSISTANT_LOCAL_REASONING", default="auto")      # auto | none | low | medium | high
 MAX_SECONDS = float(optional_env("ASSISTANT_MAX_SECONDS", default="150"))        # per question; a runaway answer is cut here
@@ -1505,9 +1545,11 @@ def register(app, port=None):
             local["models"] = [n for n in names if n and "embed" not in n]
             local["ok"] = r.status_code == 200
             local["model_installed"] = local["model"] in names
+            local["switchable"] = [m for m in local["models"] if m in SWITCH_MODELS.values()]
         except Exception as e:
             local["error"] = type(e).__name__
         threading.Thread(target=brief, args=(app,), daemon=True).start()     # the page is open: have the brief ready
+        local["can_switch"] = can_switch()
         return jsonify({"status": "success", "version": 3, "local": local, "engine": pick_engine(), "local_off": NINEB_OFF.exists(),
                         "claude": {"model": CLAUDE_MODEL, "key": bool(CLAUDE_CLI or optional_env("ANTHROPIC_API_KEY", default="")),
                                    "via": "claude code" if CLAUDE_CLI else "api"},
@@ -1534,7 +1576,8 @@ def register(app, port=None):
         if pick_engine(body.get("engine")) == "claude":
             events = run_claude(app, conv, question)
         else:
-            events = run_local(app, conv, question, str(body.get("model") or picked_local_model())[:120], body.get("reasoning"))
+            # Only the loaded model is ever asked: another id would make oMLX load a 2nd one beside it (switching is /api/assistant/switch).
+            events = run_local(app, conv, question, picked_local_model(), body.get("reasoning"))
 
         def stream():
             try:
@@ -1547,6 +1590,13 @@ def register(app, port=None):
                 yield f"data: {json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {str(e)[:200]}'})}\n\n"
         return Response(stream_with_context(stream()), mimetype="text/event-stream",
                         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.route("/api/assistant/switch", methods=["POST"])
+    def assistant_switch():
+        if not can_switch():
+            return jsonify({"status": "error", "message": "Switching models is only possible on the Mac, where oMLX runs."}), 403
+        ok, msg = switch_model((request.get_json(silent=True) or {}).get("model"))
+        return jsonify({"status": "success" if ok else "error", "message": msg, "model": picked_local_model()}), 200 if ok else 502
 
     @app.route("/api/assistant/reset", methods=["POST"])
     def assistant_reset():

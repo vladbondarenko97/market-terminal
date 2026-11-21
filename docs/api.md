@@ -205,6 +205,7 @@ Open issues and deliberate choices are listed in [Known issues](known-issues.md)
 | `GET /api/forecast` | Also returns `signals`: the Signal Watch rows |
 | `GET /api/guide` (`?term=reverse repo`) | The plain-English guide ([guide.md](guide.md)): `{status, sections: [{heading, text}]}`, the two entries that best match `term` (heading words first, then text); without a term `{status, headings}`; `{status: "missing", reason, headings}` when nothing matches. Stored (reads the file). |
 | `POST /api/assistant/ask` | Ask the console engine a question; streams the answer as server-sent events |
+| `POST /api/assistant/switch` `{model: "12b"|"9b"|"27b"|"sonnet"}` | Load another local model in oMLX (writes `~/.imessage_local_model`, then the dash's placement POST, as the iMessage assistant's `/load` does; shared with ai.vlad.yt). 403 on Oracle. `ask` always uses the loaded model, whatever `model` says. `status` adds `local.can_switch` and `local.switchable` |
 | `GET /api/assistant/status`, `GET /api/assistant/data?source=…`, `POST /api/assistant/reset` | Model server and sources; exactly what the model sees for one source (`source=brief` for the brief); forget a conversation. `brokerage` (real holdings) is a console source only; the market MCP link does not serve it |
 
 Details: [terminal.md](terminal.md#rule-cards-and-alerts-forecast-lab-tab-top).

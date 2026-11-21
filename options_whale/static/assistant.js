@@ -52,10 +52,10 @@ async function askLoadStatus() {
     const sel = document.getElementById('askEngine'), dot = document.getElementById('askDot');
     try {
         const s = ASK.status = await (await fetch(`${API_BASE}/api/assistant/status`)).json();
-        const local = s.local, saved = localStorage.getItem('terminal_ask_engine');
-        const models = [local.model, ...local.models.filter(m => m !== local.model)];
-        sel.innerHTML = models.map((m, i) => `<option value="${askEsc(m)}">${askEsc(m)}${i ? '' : ' (default)'}</option>`).join('');
-        if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+        const local = s.local;
+        const models = [local.model, ...local.models.filter(m => m !== local.model)], sw = new Set(local.switchable || []);
+        sel.innerHTML = models.map((m, i) => `<option value="${askEsc(m)}" ${i && !(local.can_switch && sw.has(m)) ? 'disabled' : ''}>${askEsc(m)}${i ? '' : ' (loaded)'}</option>`).join('')
+            + '<option value="sonnet">Sonnet (cloud)</option>';
         const be = document.getElementById('askBackend'), savedBe = localStorage.getItem('terminal_ask_backend');
         be.value = ['local', 'claude'].includes(savedBe) ? savedBe : (s.engine || 'local');
         be.querySelector('option[value=local]').disabled = !!s.local_off;   // the dash switch stopped the 9B: Sonnet only
@@ -70,7 +70,7 @@ async function askLoadStatus() {
 // The local model menu only matters for the local engine; the dot shows whether the chosen engine is ready.
 function askSyncBackend() {
     const claude = askBackend() === 'claude', s = ASK.status, dot = document.getElementById('askDot');
-    document.getElementById('askEngine').classList.toggle('hidden', claude);
+    document.getElementById('askEngine').value = claude ? 'sonnet' : s ? s.local.model : '';
     if (!s) return;
     if (claude) {
         dot.className = `ask-dot ${s.claude && s.claude.key ? 'ok' : 'bad'}`;
@@ -81,6 +81,31 @@ function askSyncBackend() {
         dot.title = (l.ok ? `Model server running at ${l.url}` + (l.model_installed ? '' : ` · default model ${l.model} is not installed`)
                           : `Model server not reachable at ${l.url}`) + ` · ${s.sources.length} read-only data sources`;
     }
+}
+
+// The menu picks the loaded model: another local model means loading it in oMLX (and unloading this one), shared with the iMessage assistant and ai.vlad.yt.
+const ASK_LOAD = /^\/load\s+(12b|9b|27b|sonnet)\s*$/i;
+async function askSwitch(want) {
+    const r = await fetch(`${API_BASE}/api/assistant/switch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: want }) });
+    const j = await r.json().catch(() => ({ message: `HTTP ${r.status}` }));
+    await askLoadStatus();
+    if (want.toLowerCase() === 'sonnet' && j.status === 'success') { document.getElementById('askBackend').value = 'claude'; askSyncBackend(); }
+    return j;
+}
+async function askPickModel(sel) {
+    const want = sel.value, s = ASK.status, cur = s && s.local.model;
+    if (want === 'sonnet') { document.getElementById('askBackend').value = 'claude'; localStorage.setItem('terminal_ask_backend', 'claude'); askSyncBackend(); return; }
+    document.getElementById('askBackend').value = 'local'; localStorage.setItem('terminal_ask_backend', 'local');
+    if (want === cur || !s) { askSyncBackend(); return; }
+    if (!confirm(`This will load ${want} and unload ${cur} (also used by the iMessage assistant and ai.vlad.yt).`)) { askSyncBackend(); return; }
+    sel.disabled = true;
+    const j = await askSwitch(want).catch(e => ({ message: e.message }));
+    sel.disabled = false;
+    askNote(j.message || '');
+}
+function askNote(text) {
+    const logEl = document.getElementById('consoleLog'), d = document.createElement('div');
+    d.className = 'ask-intro'; d.textContent = text; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
 }
 
 function askShowSuggestions() {
@@ -120,6 +145,13 @@ async function askSend(text) {
     const input = document.getElementById('askInput');
     const question = (text ?? input.value).trim();
     if (!question || ASK.busy) return;
+    const load = ASK_LOAD.exec(question);
+    if (load) {
+        input.value = '';
+        if (!ASK.status || !ASK.status.local.can_switch) return askNote('Switching models is only possible on the Mac, where oMLX runs.');
+        askNote(`Loading ${load[1]}… (can take a minute)`);
+        return askSwitch(load[1]).then(j => askNote(j.message || '')).catch(e => askNote(e.message));
+    }
     input.value = '';
     input.style.height = '';
     document.getElementById('askSuggest').classList.add('hidden');
@@ -193,7 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('askForm').addEventListener('submit', e => { e.preventDefault(); ASK.busy ? askStop() : askSend(); });
     input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!ASK.busy) askSend(); } });
     input.addEventListener('input', () => { input.style.height = ''; input.style.height = Math.min(input.scrollHeight, 96) + 'px'; });
-    document.getElementById('askEngine').addEventListener('change', e => localStorage.setItem('terminal_ask_engine', e.target.value));
+    document.getElementById('askEngine').addEventListener('change', e => askPickModel(e.target));
     document.getElementById('askBackend').addEventListener('change', e => { localStorage.setItem('terminal_ask_backend', e.target.value); askSyncBackend(); });
     askLoadStatus();
     askShowSuggestions();

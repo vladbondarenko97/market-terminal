@@ -837,5 +837,108 @@
     "n_buys": 0
    }
   ]
- }
+ },
+ "congress_detail": {
+  "big_sales_30d": [
+   {
+    "member": "Sample Member of Congress",
+    "ticker": "TSLA",
+    "amount_low": 100001,
+    "amount_high": 250000,
+    "date": "2026-11-05",
+    "filed": "2026-11-12"
+   },
+   {
+    "member": "Sample Senator",
+    "ticker": "AAPL",
+    "amount_low": 1000001,
+    "amount_high": 5000000,
+    "date": "2026-11-01",
+    "filed": "2026-11-15"
+   }
+  ],
+  "overlaps": [
+   {
+    "ticker": "GOOGL",
+    "members": [
+     "Sample Member of Congress",
+     "Sample Senator"
+    ],
+    "direction": "buy",
+    "n": 3
+   },
+   {
+    "ticker": "TSLA",
+    "members": [
+     "Sample Member of Congress",
+     "Sample Senator"
+    ],
+    "direction": "mixed",
+    "n": 2
+   }
+  ]
+ },
+ "companies": [
+  {
+   "slug": "sample-media",
+   "name": "Sample Media Group",
+   "ticker": "SMG",
+   "cik": "0001000000",
+   "as_of": "2026-11-19",
+   "market_cap": 4200000000,
+   "shares_outstanding": 280000000,
+   "price": 15.0,
+   "price_as_of": "2026-11-19",
+   "treasury": [
+    {
+     "asset": "bitcoin",
+     "amount": 11500,
+     "value_est": 1000000000,
+     "as_of": "2026-09-30",
+     "source_url": "https://www.sec.gov/Archives/edgar/data/1000000/fixture-10q.htm"
+    }
+   ],
+   "top_holders": [
+    {
+     "name": "Sample Founder Trust",
+     "shares": 114000000,
+     "pct": 40.7,
+     "change_shares": -500000,
+     "as_of": "2026-11-10",
+     "form": "SC 13D"
+    },
+    {
+     "name": "Sample Index Fund",
+     "shares": 9000000,
+     "pct": 3.2,
+     "change_shares": null,
+     "as_of": "2026-09-30",
+     "form": "13F-HR"
+    }
+   ],
+   "insider_trades": [
+    {
+     "date": "2026-11-10",
+     "filed": "2026-11-12",
+     "ticker": "SMG",
+     "name": "Sample Media Group",
+     "type": "sell",
+     "shares": 500000,
+     "amount_low": null,
+     "amount_high": null,
+     "price": 15.1,
+     "owner": "Sample Founder Trust",
+     "form": "4",
+     "source_url": "https://www.sec.gov/Archives/edgar/data/1000000/fixture-form4.xml"
+    }
+   ],
+   "sources": [
+    {
+     "label": "SEC EDGAR",
+     "url": "https://www.sec.gov/cgi-bin/browse-edgar?CIK=1000000"
+    }
+   ],
+   "completeness": "Fixture: treasury from the latest 10-Q; holders from 13F and 13D; insiders from Form 4."
+  }
+ ]
 }
