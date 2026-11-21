@@ -313,6 +313,15 @@ The BITCOIN tab sits right after CHART (`static/bitcoin.js`, data: `/api/bitcoin
 
 B6 (macro link), B7 (regulation calendar) and B8 (plan and taxes) are phase 3 and not built. A part whose source failed shows `<name>: <reason>`; if `/api/bitcoin` fails every card shows the server's message.
 
+## People tab
+
+The PEOPLE tab sits right after BITCOIN (`static/people.js`, data: `/api/people`, which serves `people_portfolios.json` written daily by an external job; see [Data](data.md)). One card per tracked person (SEC filers with exact shares, members of Congress with disclosure ranges), each with the **?**, **⛶** and **COPY** controls and a pin star:
+
+- **Top strip**: *Congress this month* (most bought and most sold by number of members; hidden when the file has no `congress_summary`), *Latest trades across everyone* (last 10) and *Most bought this month* (count of tracked people buying in the 30 days to the file's date).
+- **Controls**: ALL / SEC / CONGRESS filter, a name search box, REFRESH and a "manage people →" link to `https://search.vlad.yt/people` (where people are added; tailnet-only). Pinned cards come first: Pelosi, Trump and Musk until you pin or unpin anything, after which your pins (saved in this browser's `localStorage`) rule. Cards load when they scroll into view, so 100+ people stay fast on a phone.
+- **Card**: total estimated value (Congress: `~$X (range $L-$H), estimated from disclosure ranges`), day / 1M / YTD change and change vs SPY since tracking start; a value-history line chart (Lightweight Charts, 1W 1M 3M YTD 1Y ALL); an allocation bar of the top holdings; the holdings list (tap a row to open it in CHART as the active chart's main symbol); recent trades newest first with BUY / SELL badge, amount or range, owner, the filing link and the filing lag (`filed +Nd`; Congress files up to 45 days late); the `completeness` note and the sources.
+- A missing value shows `—` with a tooltip giving the reason, never 0. If `/api/people` answers missing the tab shows the reason.
+
 ## Chart tab
 
 TradingView's open-source Lightweight Charts (v5, pinned from jsDelivr) over our stored bars, from `static/chart.js`. It builds on the first open and reopens as you left it: layout, active chart, SYNC and each chart's symbol, timeframe, range, series, compare symbols, indicators, Kronos toggles, zones, overlays are remembered in this browser (`localStorage`; drawings per symbol). The toolbar edits the **active chart** (blue border); click a chart to make it active.

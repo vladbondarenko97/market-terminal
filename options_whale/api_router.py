@@ -1878,6 +1878,12 @@ def api_help():
       <description>Weekly series stored in the latest snapshot's bitcoin block for the charts: `t` (days since 1970-01-01), `price`, `ma_200w`, `realized_price`, `mvrv_z` (null where not computable). 404 when the snapshot has none.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/people" format="json" source="stored">
+      <description>The PEOPLE tab's file: people_portfolios.json from the data folder, written daily by an external job (people_track.py), never computed here. Per tracked person (SEC 13F filer or member of Congress): total estimated value (with the disclosure range for Congress), day / 1M / YTD change, change vs SPY since tracking start, value history, holdings, transactions (with the filing date and link) and sources. 404 with status missing when the file is absent; 502 when it cannot be read.</description>
+      <parameters>
+        <param name="person" type="string" default="" description="Keep the people whose slug or name contains this text, e.g. pelosi" />
+      </parameters>
+    </endpoint>
     <endpoint method="GET" path="/api/fed_ops" format="json" source="stored">
       <description>Fed / Treasury operations (card 15) of the latest committed snapshot, or before the first run the same block summarised from the stored history (every part stale). repo: per market and reference rate (SOFR, TGCR, BGCR, EFFR) the latest day, the 4-week change and `ago` (the reading 1 month, 3 months and 1 year earlier); `monthly` and `yearly` levels (average, highest day, last day with its date, in USD bn; rate means). buybacks: `this_year_vs_last_year_same_dates`, the last operations, scheduled ones, the 5 largest, monthly, quarterly, yearly (with year to date and by operation type) and trailing-12-month totals, by security type. auctions: recent results, the upcoming calendar, per-tenor bid-to-cover now and a year earlier and by year, monthly issuance. A part that could not be refreshed is status stale with the date of its stored data. 404 when nothing is stored.</description>
       <parameters />
@@ -3427,6 +3433,26 @@ def api_bitcoin_history():
     if not blk.get("history"):
         return json_error("this snapshot has no Bitcoin history series", 404)
     return jsonify({"status": "success", "run": run, "as_of": blk.get("as_of"), "data": blk["history"]})
+
+
+@app.route('/api/people', methods=['GET'])
+@guarded("People")
+def api_people():
+    """people_portfolios.json from the data folder: an input written daily by an external job (people_track.py), only read here.
+    ?person= keeps the people whose slug or name contains it."""
+    path = os.path.join(DATA_DIR, "people_portfolios.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except FileNotFoundError:
+        return jsonify({"status": "missing", "reason": "people_portfolios.json is not in the data folder: the people tracker has not written it yet"}), 404
+    except (OSError, ValueError) as exc:
+        return jsonify({"status": "missing", "reason": f"people_portfolios.json is unreadable: {exc}"}), 502
+    q = (request.args.get("person") or "").strip().lower()
+    people = [p for p in doc.get("people") or [] if not q or q in str(p.get("slug", "")).lower() or q in str(p.get("name", "")).lower()]
+    if q and not people:
+        return jsonify({"status": "missing", "reason": f"nobody tracked matches '{q}'"}), 404
+    return jsonify({"status": "success", "as_of": doc.get("as_of"), "data": dict(doc, people=people)})
 
 
 GUIDE_SKIP = {"what", "whats", "the", "and", "does", "mean", "means", "explain", "how", "why", "are", "for", "this", "that", "card", "like", "new", "simple", "terms", "program", "tell", "about"}

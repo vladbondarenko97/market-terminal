@@ -139,6 +139,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `options_whale/static/app.js` | Macro, Time Arbitrage, War Room, Engine Positions UI |
 | `options_whale/static/forecast.js` | Forecast Lab UI |
 | `options_whale/static/bitcoin.js` | BITCOIN tab UI (reuses forecast.js helpers) |
+| `options_whale/static/people.js` | PEOPLE tab UI: cards, filters, lazy rendering (reuses forecast.js helpers and Lightweight Charts). Reads `/api/people`, a file in the data folder written by an external job |
 | `options_whale/static/chart.js` | CHART tab UI (Lightweight Charts) |
 | `options_whale/static/favicon.svg`, `favicon-32.png`, `apple-touch-icon.png` | The terminal's icon (SVG, a PNG fallback, the iPhone home-screen icon) |
 | `options_whale/static/styles.css` | Styles |

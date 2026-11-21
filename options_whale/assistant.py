@@ -98,6 +98,10 @@ SOURCES = OrderedDict([
         "multiple, halving clock, realized price, MVRV and MVRV Z-score, hash ribbons, Deribit funding and open interest, DVOL, IBIT flows, Coinbase premium, "
         "stablecoin supply, CME COT, then the HOLD / BUY / SELL / NO CALL verdict and every checklist row (fired, waiting or missing with the reason, and "
         "whether it is graded on history). Conditions, not a trade call. Say the run time.")),
+    ("people", ("/api/people", ("person",), "Tracked people (PEOPLE tab: SEC 13F filers and members of Congress) as labelled rows: estimated portfolio value "
+        "(Congress: the disclosure range), day / 1M / YTD change, change vs SPY since tracking start, top holdings with weight, and the latest trades "
+        "(date, filed date, BUY or SELL, ticker, amount or range, owner, filing link). person=name or slug narrows it, e.g. 'what did Pelosi buy'. "
+        "Congress amounts are disclosure ranges filed up to 45 days late; 13F is quarterly. Say the as-of time.")),
     ("macro_ledger", ("/api/macro_ledger_full", ("limit",), "Macro ledger rows per run: VMRI, DXY, yields, OAS, VIX, crude, gold, ratios. limit=N rows.")),
     ("institutional_history", ("/api/institutional_history", ("ticker", "limit"), "Per-run dark-pool and GEX history for SPY or SLV. limit=N rows.")),
     ("arbitrage_history", ("/api/arbitrage_history", ("limit",), "Physical silver vs spot premium history (eBay Silver Eagles). limit=N rows.")),
@@ -405,6 +409,22 @@ def _shape_bitcoin(obj, _params):
             f"Verdict: {v.get('call')}. {v.get('text')}"]
     rows += [f"{r['side']} row {r['name']}: {r['status']}" + (f" ({r['reading']})" if r.get("reading") and r["status"] != "missing" else f" ({r.get('reason')})" if r["status"] == "missing" else "")
              + f"; {r['evidence']}" for r in d.get("rows") or []]
+    return {"as_of": obj.get("as_of"), "rows": rows}
+
+
+def _shape_people(obj, _params):
+    n = lambda x, f="{:,.0f}": "n/a" if x is None else f.format(x)
+    rows = []
+    for p in (obj.get("data") or {}).get("people") or []:
+        t = p.get("totals") or {}
+        val = f"~${n(t.get('value_est'))} (range ${n(t.get('value_low'))}-${n(t.get('value_high'))}, estimated from disclosure ranges)" if p.get("kind") == "congress" else f"${n(t.get('value_est'))}"
+        rows.append(f"{p['name']} ({p.get('role')}): {val}; {t.get('n_positions')} positions; day {n(t.get('change_1d_pct'), '{:+.2f}')}%, 1M {n(t.get('change_1m_pct'), '{:+.2f}')}%, "
+                    f"YTD {n(t.get('change_ytd_pct'), '{:+.2f}')}%, vs SPY since tracking start {n(t.get('vs_spy_since_start_pct'), '{:+.2f}')}%. {p.get('completeness')}")
+        rows += [f"  holding {h['ticker']} ({h.get('name')}): ${n(h.get('value_est'))}, {n(h.get('weight_pct'), '{:.1f}')}% of the portfolio, day {n(h.get('change_1d_pct'), '{:+.2f}')}%, {h.get('owner')}"
+                 for h in (p.get("holdings") or [])[:10]]
+        rows += [f"  trade {x['date']} (filed {x.get('filed')}) {str(x['type']).upper()} {x['ticker']}: "
+                 + (f"{n(x['shares'])} shares" if x.get("shares") is not None else f"${n(x.get('amount_low'))}-${n(x.get('amount_high'))}") + f", {x.get('owner')}, {x.get('form')}, {x.get('source_url') or 'no filing link'}"
+                 for x in sorted(p.get("transactions") or [], key=lambda x: x["date"], reverse=True)[:10]]
     return {"as_of": obj.get("as_of"), "rows": rows}
 
 
@@ -718,7 +738,7 @@ def _shape_fed_latest(obj, params=None):
 
 
 SHAPERS = {**{n: _shape_fed if n.endswith("_history") else _shape_fed_latest for n in FED_SOURCES},
-           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "eia_history": _shape_eia, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "bitcoin": _shape_bitcoin, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "eia_history": _shape_eia, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "bitcoin": _shape_bitcoin, "people": _shape_people, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool

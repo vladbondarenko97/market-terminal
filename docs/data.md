@@ -188,6 +188,7 @@ CME_Data/
 ├── analyst_sandbox/                  empty working folder of the Claude Code analyst (`narrative --engine claude`)
 ├── backups/                          portfolio-<UTC time>.db copies made before import-history
 ├── backup_lake.log                   output of the Hugging Face lake backup after each live run
+├── people_portfolios.json            INPUT for the PEOPLE tab, written by an external job (see below); the terminal only reads it
 ├── .lake_backup.lock                 lock file: one lake backup at a time
 ├── archive/ledger_csvs_<date>.zip    the retired ledger CSVs (the tables in portfolio.db hold the rows)
 └── Sep-29-26/                        one folder per Chicago day (see Daily folder)
@@ -254,6 +255,12 @@ the report text, `email.eml` and the whole snapshot of every run are stored in t
 - `dump_data.py` (a legacy wrapper) rewrites only `volume_dashboard.txt`, in the folder named by the latest
   snapshot.
 - During a write you may see `.<name>.tmp`, `email.eml.tmp` or `<chart>.png.tmp.png`.
+
+## people_portfolios.json (input, not written by the terminal)
+
+The PEOPLE tab's data. **It is written once a day, atomically, by `people_track.py` in the operator's separate `~/dev/library` project** (not by the pipeline or the terminal) and synced to the web server with the rest of the data folder. The terminal only reads it (`GET /api/people`); a missing file is `{"status": "missing", "reason": ...}` with HTTP 404 and the tab shows the reason. Nothing here is computed or estimated by this repository.
+
+Shape (`version` 1): `as_of` (ISO time), optional `congress_summary` (`members_trading_30d`, `most_bought_30d` and `most_sold_30d`, each a list of `{ticker, n_members, n_buys}`; the strip is hidden when absent) and `people`, one entry per tracked person: `slug`, `name`, `role`, `kind` (`sec` for exact shares from 13F / Form 4, `congress` for disclosure ranges), `completeness` (what the data does not cover), `totals` (`value_est`, `value_low`, `value_high`, `n_positions`, `change_1d_pct`, `change_1m_pct`, `change_ytd_pct`, `vs_spy_since_start_pct`; any may be null), `value_history` (`[["YYYY-MM-DD", value], ...]`), `holdings` (ticker, name, shares or null, value estimate and range, `weight_pct`, price and its date, `change_1d_pct`, `owner`, `first_seen`, `last_tx_date`), `transactions` (date, filed date, ticker, name, `type` buy or sell, shares or null, `amount_low` / `amount_high`, owner, `form`, `source_url`) and `sources` (`label`, `url`). A null is shown as a dash with a tooltip, never as 0. A test fixture with fixed dates is `tests/fixtures/people/people_portfolios.json`.
 
 ## What gets uploaded
 

@@ -64,6 +64,7 @@
                 <div id="tab-forecast" class="tab-btn" onclick="switchTab('forecast')"><span class="fc-rainbow-text">FORECAST LAB</span></div>
                 <div id="tab-chart" class="tab-btn" onclick="switchTab('chart')">CHART</div>
                 <div id="tab-bitcoin" class="tab-btn" onclick="switchTab('bitcoin')">BITCOIN</div>
+                <div id="tab-people" class="tab-btn" onclick="switchTab('people')">PEOPLE</div>
                 <label class="fans-tog" title="Overlay Kronos scenario fans (100 sampled paths) on Forecast Lab cards 1, 10 and 11. Off by default."><input type="checkbox" id="fansToggle"> KRONOS</label>
             </nav>
 
@@ -1610,6 +1611,39 @@
                 </div>
             </div>
 
+            <div id="people-tab" class="tab-content hidden flex-1 flex flex-col overflow-hidden">
+                <div class="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
+                    <div class="text-[10px] tracking-[0.25em] text-zinc-400 uppercase">
+                        <span class="fc-rainbow-text font-bold">People</span>
+                        <span class="text-zinc-600">·</span> <span id="pplRunInfo">—</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button class="fc-toggle active" data-kind="all" onclick="pplKind('all')">ALL</button>
+                        <button class="fc-toggle" data-kind="sec" onclick="pplKind('sec')">SEC</button>
+                        <button class="fc-toggle" data-kind="congress" onclick="pplKind('congress')">CONGRESS</button>
+                        <input id="pplSearch" type="search" placeholder="Search name" aria-label="Search people" oninput="pplRender()"
+                            class="bg-black border border-zinc-800 rounded px-2 py-1 text-[11px] text-zinc-300 w-36">
+                        <button class="fc-toggle" onclick="loadPeople()">REFRESH</button>
+                        <a class="fc-toggle" href="https://search.vlad.yt/people" target="_blank" rel="noopener"
+                            title="Where people are added. Reachable only on the tailnet (Tailscale).">manage people →</a>
+                    </div>
+                </div>
+                <div id="pplBackdrop" class="fc-backdrop hidden" onclick="pplFull()"></div>
+                <div id="pplFaqModal" class="fc-faq hidden" role="dialog" aria-modal="true" aria-labelledby="pplFaqTitle">
+                    <div class="fc-faq-inner rainbow-card" style="min-height:0">
+                        <div class="rainbow-inner">
+                            <div class="fc-head"><div class="fc-title" id="pplFaqTitle">FAQ</div>
+                                <button class="fc-icon" onclick="pplFaqClose()" title="Close (Esc)">✕</button></div>
+                            <div id="pplFaqBody" class="fc-faq-body"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="px-5 pt-3"><div id="pplStrip" class="grid grid-cols-1 lg:grid-cols-3 gap-4"></div></div>
+                <div id="pplGrid" class="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-6 p-5 overflow-y-auto terminal-scroll pb-24 flex-1 auto-rows-min">
+                    <div class="fc-muted">Loading…</div>
+                </div>
+            </div>
+
             <div id="forecast-tab" class="tab-content hidden flex-1 flex flex-col overflow-hidden">
                 <div class="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
                     <div class="text-[10px] tracking-[0.25em] text-zinc-400 uppercase">
@@ -2037,6 +2071,7 @@
     <script src="/static/app.js"></script>
     <script src="/static/forecast.js"></script>
     <script src="/static/bitcoin.js"></script>
+    <script src="/static/people.js"></script>
     <script src="/static/fans.js"></script>
     <script src="/static/chart.js"></script>
     <script src="/static/assistant.js"></script>

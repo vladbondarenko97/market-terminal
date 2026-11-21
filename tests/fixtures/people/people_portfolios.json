@@ -1,0 +1,841 @@
+{
+ "version": 1,
+ "as_of": "2026-11-20T21:30:00+00:00",
+ "people": [
+  {
+   "slug": "sample-fund",
+   "name": "Sample Fund Manager",
+   "role": "13F filer (test fixture)",
+   "kind": "sec",
+   "completeness": "Quarterly 13F (long US equities only), as of 2026-09-30; filed 2026-11-14. Shorts, options and non-US holdings are not shown.",
+   "totals": {
+    "value_est": 14000000.0,
+    "value_low": 14000000.0,
+    "value_high": 14000000.0,
+    "n_positions": 3,
+    "change_1d_pct": 0.8,
+    "change_1m_pct": -2.1,
+    "change_ytd_pct": 55.0,
+    "vs_spy_since_start_pct": 12.4
+   },
+   "value_history": [
+    [
+     "2026-01-02",
+     8824000.0
+    ],
+    [
+     "2026-01-09",
+     9110000.0
+    ],
+    [
+     "2026-01-16",
+     9396000.0
+    ],
+    [
+     "2026-01-23",
+     9242000.0
+    ],
+    [
+     "2026-01-30",
+     9528000.0
+    ],
+    [
+     "2026-02-06",
+     9374000.0
+    ],
+    [
+     "2026-02-13",
+     9660000.0
+    ],
+    [
+     "2026-02-20",
+     9946000.0
+    ],
+    [
+     "2026-02-27",
+     9792000.0
+    ],
+    [
+     "2026-03-06",
+     10078000.0
+    ],
+    [
+     "2026-03-13",
+     9924000.0
+    ],
+    [
+     "2026-03-20",
+     10210000.0
+    ],
+    [
+     "2026-03-27",
+     10496000.0
+    ],
+    [
+     "2026-04-03",
+     10342000.0
+    ],
+    [
+     "2026-04-10",
+     10628000.0
+    ],
+    [
+     "2026-04-17",
+     10474000.0
+    ],
+    [
+     "2026-04-24",
+     10760000.0
+    ],
+    [
+     "2026-05-01",
+     11046000.0
+    ],
+    [
+     "2026-05-08",
+     10892000.0
+    ],
+    [
+     "2026-05-15",
+     11178000.0
+    ],
+    [
+     "2026-05-22",
+     11024000.0
+    ],
+    [
+     "2026-05-29",
+     11310000.0
+    ],
+    [
+     "2026-06-05",
+     11596000.0
+    ],
+    [
+     "2026-06-12",
+     11442000.0
+    ],
+    [
+     "2026-06-19",
+     11728000.0
+    ],
+    [
+     "2026-06-26",
+     11574000.0
+    ],
+    [
+     "2026-07-03",
+     11860000.0
+    ],
+    [
+     "2026-07-10",
+     12146000.0
+    ],
+    [
+     "2026-07-17",
+     11992000.0
+    ],
+    [
+     "2026-07-24",
+     12278000.0
+    ],
+    [
+     "2026-07-31",
+     12124000.0
+    ],
+    [
+     "2026-08-07",
+     12410000.0
+    ],
+    [
+     "2026-08-14",
+     12696000.0
+    ],
+    [
+     "2026-08-21",
+     12542000.0
+    ],
+    [
+     "2026-08-28",
+     12828000.0
+    ],
+    [
+     "2026-09-04",
+     12674000.0
+    ],
+    [
+     "2026-09-11",
+     12960000.0
+    ],
+    [
+     "2026-09-18",
+     13246000.0
+    ],
+    [
+     "2026-09-25",
+     13092000.0
+    ],
+    [
+     "2026-10-02",
+     13378000.0
+    ],
+    [
+     "2026-10-09",
+     13224000.0
+    ],
+    [
+     "2026-10-16",
+     13510000.0
+    ],
+    [
+     "2026-10-23",
+     13796000.0
+    ],
+    [
+     "2026-10-30",
+     13642000.0
+    ],
+    [
+     "2026-11-06",
+     13928000.0
+    ],
+    [
+     "2026-11-13",
+     13774000.0
+    ]
+   ],
+   "holdings": [
+    {
+     "ticker": "AAPL",
+     "name": "Apple Inc.",
+     "shares": 30000,
+     "value_est": 8100000.0,
+     "value_low": 8100000.0,
+     "value_high": 8100000.0,
+     "weight_pct": 57.9,
+     "price": 270.0,
+     "price_as_of": "2026-11-20",
+     "change_1d_pct": 1.1,
+     "owner": "self",
+     "first_seen": "2025-03-31",
+     "last_tx_date": "2026-09-30"
+    },
+    {
+     "ticker": "MSFT",
+     "name": "Microsoft Corp.",
+     "shares": 10000,
+     "value_est": 4500000.0,
+     "value_low": 4500000.0,
+     "value_high": 4500000.0,
+     "weight_pct": 32.1,
+     "price": 450.0,
+     "price_as_of": "2026-11-20",
+     "change_1d_pct": 0.3,
+     "owner": "self",
+     "first_seen": "2025-03-31",
+     "last_tx_date": "2026-06-30"
+    },
+    {
+     "ticker": "SLV",
+     "name": "iShares Silver Trust",
+     "shares": 20000,
+     "value_est": 1400000.0,
+     "value_low": 1400000.0,
+     "value_high": 1400000.0,
+     "weight_pct": 10.0,
+     "price": 70.0,
+     "price_as_of": "2026-11-20",
+     "change_1d_pct": null,
+     "owner": "self",
+     "first_seen": "2026-06-30",
+     "last_tx_date": "2026-09-30"
+    }
+   ],
+   "transactions": [
+    {
+     "date": "2026-09-30",
+     "filed": "2026-11-14",
+     "ticker": "SLV",
+     "name": "iShares Silver Trust",
+     "type": "buy",
+     "shares": 20000,
+     "amount_low": null,
+     "amount_high": null,
+     "price": null,
+     "owner": "self",
+     "form": "13F-HR",
+     "source_url": "https://www.sec.gov/Archives/edgar/data/0000000/fixture-13f"
+    },
+    {
+     "date": "2026-06-30",
+     "filed": "2026-08-14",
+     "ticker": "MSFT",
+     "name": "Microsoft Corp.",
+     "type": "sell",
+     "shares": 2000,
+     "amount_low": null,
+     "amount_high": null,
+     "price": null,
+     "owner": "self",
+     "form": "13F-HR",
+     "source_url": "https://www.sec.gov/Archives/edgar/data/0000000/fixture-13f-q2"
+    }
+   ],
+   "sources": [
+    {
+     "label": "SEC EDGAR 13F filings",
+     "url": "https://www.sec.gov/edgar"
+    }
+   ]
+  },
+  {
+   "slug": "sample-member",
+   "name": "Sample Member of Congress",
+   "role": "U.S. Representative (test fixture)",
+   "kind": "congress",
+   "completeness": "Periodic Transaction Reports only: amounts are disclosed as ranges, filed up to 45 days after the trade. Holdings are rebuilt from trades since tracking began and omit anything held before.",
+   "totals": {
+    "value_est": 2400000.0,
+    "value_low": 1100000.0,
+    "value_high": 3700000.0,
+    "n_positions": 2,
+    "change_1d_pct": -0.4,
+    "change_1m_pct": 3.2,
+    "change_ytd_pct": null,
+    "vs_spy_since_start_pct": -1.5
+   },
+   "value_history": [
+    [
+     "2026-01-02",
+     1952000.0
+    ],
+    [
+     "2026-01-09",
+     2030000.0
+    ],
+    [
+     "2026-01-16",
+     2108000.0
+    ],
+    [
+     "2026-01-23",
+     2066000.0
+    ],
+    [
+     "2026-01-30",
+     2144000.0
+    ],
+    [
+     "2026-02-06",
+     2102000.0
+    ],
+    [
+     "2026-02-13",
+     2180000.0
+    ],
+    [
+     "2026-02-20",
+     2258000.0
+    ],
+    [
+     "2026-02-27",
+     2216000.0
+    ],
+    [
+     "2026-03-06",
+     2294000.0
+    ],
+    [
+     "2026-03-13",
+     2252000.0
+    ],
+    [
+     "2026-03-20",
+     2330000.0
+    ],
+    [
+     "2026-03-27",
+     2408000.0
+    ],
+    [
+     "2026-04-03",
+     2366000.0
+    ],
+    [
+     "2026-04-10",
+     2444000.0
+    ],
+    [
+     "2026-04-17",
+     2402000.0
+    ],
+    [
+     "2026-04-24",
+     2480000.0
+    ],
+    [
+     "2026-05-01",
+     2558000.0
+    ],
+    [
+     "2026-05-08",
+     2516000.0
+    ],
+    [
+     "2026-05-15",
+     2594000.0
+    ],
+    [
+     "2026-05-22",
+     2552000.0
+    ],
+    [
+     "2026-05-29",
+     2630000.0
+    ],
+    [
+     "2026-06-05",
+     2708000.0
+    ],
+    [
+     "2026-06-12",
+     2666000.0
+    ],
+    [
+     "2026-06-19",
+     2744000.0
+    ],
+    [
+     "2026-06-26",
+     2702000.0
+    ],
+    [
+     "2026-07-03",
+     2780000.0
+    ],
+    [
+     "2026-07-10",
+     2858000.0
+    ],
+    [
+     "2026-07-17",
+     2816000.0
+    ],
+    [
+     "2026-07-24",
+     2894000.0
+    ],
+    [
+     "2026-07-31",
+     2852000.0
+    ],
+    [
+     "2026-08-07",
+     2930000.0
+    ],
+    [
+     "2026-08-14",
+     3008000.0
+    ],
+    [
+     "2026-08-21",
+     2966000.0
+    ],
+    [
+     "2026-08-28",
+     3044000.0
+    ],
+    [
+     "2026-09-04",
+     3002000.0
+    ],
+    [
+     "2026-09-11",
+     3080000.0
+    ],
+    [
+     "2026-09-18",
+     3158000.0
+    ],
+    [
+     "2026-09-25",
+     3116000.0
+    ],
+    [
+     "2026-10-02",
+     3194000.0
+    ],
+    [
+     "2026-10-09",
+     3152000.0
+    ],
+    [
+     "2026-10-16",
+     3230000.0
+    ],
+    [
+     "2026-10-23",
+     3308000.0
+    ],
+    [
+     "2026-10-30",
+     3266000.0
+    ],
+    [
+     "2026-11-06",
+     3344000.0
+    ],
+    [
+     "2026-11-13",
+     3302000.0
+    ]
+   ],
+   "holdings": [
+    {
+     "ticker": "NVDA",
+     "name": "NVIDIA Corp.",
+     "shares": null,
+     "value_est": 1500000.0,
+     "value_low": 600000.0,
+     "value_high": 2400000.0,
+     "weight_pct": 62.5,
+     "price": 180.0,
+     "price_as_of": "2026-11-20",
+     "change_1d_pct": -0.9,
+     "owner": "spouse",
+     "first_seen": "2026-02-10",
+     "last_tx_date": "2026-10-15"
+    },
+    {
+     "ticker": "GOOGL",
+     "name": "Alphabet Inc.",
+     "shares": null,
+     "value_est": 900000.0,
+     "value_low": 500000.0,
+     "value_high": 1300000.0,
+     "weight_pct": 37.5,
+     "price": 300.0,
+     "price_as_of": "2026-11-20",
+     "change_1d_pct": 0.2,
+     "owner": "self",
+     "first_seen": "2026-05-03",
+     "last_tx_date": "2026-11-02"
+    }
+   ],
+   "transactions": [
+    {
+     "date": "2026-11-02",
+     "filed": "2026-11-10",
+     "ticker": "GOOGL",
+     "name": "Alphabet Inc.",
+     "type": "buy",
+     "shares": null,
+     "amount_low": 500001,
+     "amount_high": 1000000,
+     "price": null,
+     "owner": "self",
+     "form": "PTR",
+     "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/fixture1.pdf"
+    },
+    {
+     "date": "2026-10-15",
+     "filed": "2026-11-19",
+     "ticker": "NVDA",
+     "name": "NVIDIA Corp.",
+     "type": "buy",
+     "shares": null,
+     "amount_low": 250001,
+     "amount_high": 500000,
+     "price": null,
+     "owner": "spouse",
+     "form": "PTR",
+     "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/fixture2.pdf"
+    },
+    {
+     "date": "2026-09-01",
+     "filed": "2026-09-20",
+     "ticker": "TSLA",
+     "name": "Tesla Inc.",
+     "type": "sell",
+     "shares": null,
+     "amount_low": 15001,
+     "amount_high": 50000,
+     "price": null,
+     "owner": "joint",
+     "form": "PTR",
+     "source_url": null
+    }
+   ],
+   "sources": [
+    {
+     "label": "House Clerk financial disclosures",
+     "url": "https://disclosures-clerk.house.gov/"
+    }
+   ]
+  },
+  {
+   "slug": "musk",
+   "name": "Sample Insider",
+   "role": "Company insider, Form 4 filer (test fixture)",
+   "kind": "sec",
+   "completeness": "Form 4 trades only: holdings are the latest reported ownership after each trade; options and trusts may be missing.",
+   "totals": {
+    "value_est": 5000000.0,
+    "value_low": 5000000.0,
+    "value_high": 5000000.0,
+    "n_positions": 1,
+    "change_1d_pct": 0.8,
+    "change_1m_pct": -2.1,
+    "change_ytd_pct": null,
+    "vs_spy_since_start_pct": 12.4
+   },
+   "value_history": [
+    [
+     "2026-01-02",
+     2941333.33
+    ],
+    [
+     "2026-01-09",
+     3036666.67
+    ],
+    [
+     "2026-01-16",
+     3132000.0
+    ],
+    [
+     "2026-01-23",
+     3080666.67
+    ],
+    [
+     "2026-01-30",
+     3176000.0
+    ],
+    [
+     "2026-02-06",
+     3124666.67
+    ],
+    [
+     "2026-02-13",
+     3220000.0
+    ],
+    [
+     "2026-02-20",
+     3315333.33
+    ],
+    [
+     "2026-02-27",
+     3264000.0
+    ],
+    [
+     "2026-03-06",
+     3359333.33
+    ],
+    [
+     "2026-03-13",
+     3308000.0
+    ],
+    [
+     "2026-03-20",
+     3403333.33
+    ],
+    [
+     "2026-03-27",
+     3498666.67
+    ],
+    [
+     "2026-04-03",
+     3447333.33
+    ],
+    [
+     "2026-04-10",
+     3542666.67
+    ],
+    [
+     "2026-04-17",
+     3491333.33
+    ],
+    [
+     "2026-04-24",
+     3586666.67
+    ],
+    [
+     "2026-05-01",
+     3682000.0
+    ],
+    [
+     "2026-05-08",
+     3630666.67
+    ],
+    [
+     "2026-05-15",
+     3726000.0
+    ],
+    [
+     "2026-05-22",
+     3674666.67
+    ],
+    [
+     "2026-05-29",
+     3770000.0
+    ],
+    [
+     "2026-06-05",
+     3865333.33
+    ],
+    [
+     "2026-06-12",
+     3814000.0
+    ],
+    [
+     "2026-06-19",
+     3909333.33
+    ],
+    [
+     "2026-06-26",
+     3858000.0
+    ],
+    [
+     "2026-07-03",
+     3953333.33
+    ],
+    [
+     "2026-07-10",
+     4048666.67
+    ],
+    [
+     "2026-07-17",
+     3997333.33
+    ],
+    [
+     "2026-07-24",
+     4092666.67
+    ],
+    [
+     "2026-07-31",
+     4041333.33
+    ],
+    [
+     "2026-08-07",
+     4136666.67
+    ],
+    [
+     "2026-08-14",
+     4232000.0
+    ],
+    [
+     "2026-08-21",
+     4180666.67
+    ],
+    [
+     "2026-08-28",
+     4276000.0
+    ],
+    [
+     "2026-09-04",
+     4224666.67
+    ],
+    [
+     "2026-09-11",
+     4320000.0
+    ],
+    [
+     "2026-09-18",
+     4415333.33
+    ],
+    [
+     "2026-09-25",
+     4364000.0
+    ],
+    [
+     "2026-10-02",
+     4459333.33
+    ],
+    [
+     "2026-10-09",
+     4408000.0
+    ],
+    [
+     "2026-10-16",
+     4503333.33
+    ],
+    [
+     "2026-10-23",
+     4598666.67
+    ],
+    [
+     "2026-10-30",
+     4547333.33
+    ],
+    [
+     "2026-11-06",
+     4642666.67
+    ],
+    [
+     "2026-11-13",
+     4591333.33
+    ]
+   ],
+   "holdings": [
+    {
+     "ticker": "TSLA",
+     "name": "Tesla Inc.",
+     "shares": 12000,
+     "value_est": 5000000.0,
+     "value_low": 5000000.0,
+     "value_high": 5000000.0,
+     "weight_pct": 100.0,
+     "price": 416.67,
+     "price_as_of": "2026-11-20",
+     "change_1d_pct": 1.1,
+     "owner": "self",
+     "first_seen": "2025-03-31",
+     "last_tx_date": "2026-09-30"
+    }
+   ],
+   "transactions": [
+    {
+     "date": "2026-11-12",
+     "filed": "2026-11-16",
+     "ticker": "TSLA",
+     "name": "Tesla Inc.",
+     "type": "buy",
+     "shares": 12000,
+     "amount_low": null,
+     "amount_high": null,
+     "price": null,
+     "owner": "self",
+     "form": "4",
+     "source_url": "https://www.sec.gov/Archives/edgar/data/0000000/fixture-form4"
+    }
+   ],
+   "sources": [
+    {
+     "label": "SEC EDGAR Form 4",
+     "url": "https://www.sec.gov/edgar"
+    }
+   ]
+  }
+ ],
+ "congress_summary": {
+  "members_trading_30d": 2,
+  "most_bought_30d": [
+   {
+    "ticker": "GOOGL",
+    "n_members": 2,
+    "n_buys": 3
+   },
+   {
+    "ticker": "NVDA",
+    "n_members": 1,
+    "n_buys": 1
+   }
+  ],
+  "most_sold_30d": [
+   {
+    "ticker": "TSLA",
+    "n_members": 1,
+    "n_buys": 0
+   }
+  ]
+ }
+}
