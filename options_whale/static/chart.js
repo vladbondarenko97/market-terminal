@@ -1063,6 +1063,9 @@
     }
     const toggle = k => { const c = P(A()); c[k] = !c[k]; save(); syncUI(); render(A()); };
 
+    // PEOPLE tab: open a holding's ticker as the main symbol of the active chart
+    window.chartOpenSymbol = sym => { window.switchTab('chart'); if (started) pick(sym); };
+
     window.initChartTab = function () {
         if (started) return;
         started = true;
