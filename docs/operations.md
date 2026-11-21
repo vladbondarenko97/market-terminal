@@ -443,6 +443,7 @@ fails is a warning (see [What makes a run `completed_with_warnings`](#what-makes
 | Variable | Used for |
 |---|---|
 | `EMAIL_SENDER`, `EMAIL_PASSWORD`, `SMTP_SERVER`, `SMTP_PORT` (default 587), `RECIPIENT_EMAIL` | Email |
+| `EMAIL_TRANSPORT` (`smtp` or `resend`), `RESEND_API_KEY`, `RESEND_FROM` | Email through Resend's HTTPS API instead of SMTP |
 | `NTFY_URL`, `DASHBOARD_URL` | Phone push; the optional "Dashboard" button |
 | `UPLOAD_URL`, `UPLOAD_TOKEN` | Both uploads |
 | `REPORT_UPLOAD` (`1` to enable) | Report upload only |
@@ -454,6 +455,14 @@ Full list and meanings: [Configuration](configuration.md). An empty value switch
 
 - `EMAIL_SENDER`, `EMAIL_PASSWORD`, `SMTP_SERVER` and `RECIPIENT_EMAIL` must all be set. The connection is
   SMTP with STARTTLS (no implicit-SSL port), timeout 60 seconds.
+- **Resend transport.** With `EMAIL_TRANSPORT=resend` the saved `email.eml` is sent by `send_email.deliver_resend()` over HTTPS
+  (`https://api.resend.com/emails`: text, HTML, the charts as inline attachments, `X-Run-ID`) from `RESEND_FROM` to
+  `RECIPIENT_EMAIL`, and the SMTP settings are not used. Use it when the recipient's server refuses mail from your own SMTP
+  domain (a Gmail bounce on domain reputation, for example). `smtp` is the default and the fallback: set it back, nothing else
+  changes. The statuses below are shared; `smtp_accepted` then means Resend accepted it. The `bounced` check reads the SMTP
+  mailbox only, so a message Resend accepted and the recipient later refused is not detected (see Resend's dashboard).
+- When email did not go through (`failed`, `outcome_unknown`, or an earlier run's bounce found this run), the run's daily-brief
+  push gets one line at the bottom, `email: failed (<reason, 110 characters>)` or `email: bounced (<reason>)`. It is not a separate push.
 - The subject is `Daily Market Report & Options Brief | <day folder>` (with a leading chart emoji). The plain-text
   body is exactly `daily_market_report.txt`; the HTML alternative adds the charts inline.
 - Outcomes stored as `delivery_status`:

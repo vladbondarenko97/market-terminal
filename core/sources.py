@@ -21,7 +21,7 @@ PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forex
                    "cboe": 1, "finra": 1, "treasury": 1, "rss": 6,
                    "federalreserve": 1, "nyfed": 2,
                    "sec": 2, "alpaca": 3, "wikipedia": 1, "gdelt": 1,
-                   "coinmetrics": 1, "deribit": 2, "coinbase": 1, "kraken": 1, "defillama": 1}
+                   "coinmetrics": 1, "bgeometrics": 1, "coinalyze": 1, "deribit": 2, "coinbase": 1, "kraken": 1, "defillama": 1}
 
 
 class SourceUnavailable(Exception):
@@ -583,6 +583,39 @@ def deribit_dvol(s, start_ms, end_ms):
         "deribit", "dvol", "https://www.deribit.com/api/v2/public/get_volatility_index_data",
         {"currency": "BTC", "resolution": 86400, "start_timestamp": start_ms, "end_timestamp": end_ms})["result"]["data"],
         kind="deribit_dvol", fmt="json", capture=_rows_capture)
+
+
+BGEOMETRICS_METRICS = {"sopr": "sopr", "sth_sopr": "sth-sopr", "sth_realized_price": "sth-realized-price", "liquidations": "btc-liquidations-1d",
+                       "funding": "funding-rate", "open_interest": "open-interest-futures"}
+
+
+def bgeometrics_series(s, metric, start, end):
+    """One BGeometrics (bitcoin-data.com, free, no key) metric over [start, end] -> (rows as the API returns them, payload_id). The free plan
+    allows 10 requests an hour and 15 a day per IP and serves data ~6 days old, so a capture under a day old is reused (offline: any age):
+    a pipeline that runs three times a day makes the six calls once."""
+    path = BGEOMETRICS_METRICS[metric]
+    hit = _stored_payload(s, f"bgeometrics_{metric}", 1)
+    if hit:
+        return json.loads(hit[1]), hit[0]
+    return s.fetch("bgeometrics", {"metric": path, "start": start, "end": end}, lambda: _get_json(
+        "bgeometrics", path, f"https://bitcoin-data.com/v1/{path}", {"startday": start, "endday": end}),
+        kind=f"bgeometrics_{metric}", fmt="json", capture=_rows_capture)
+
+
+def coinalyze(s, endpoint, symbols, start, end, interval="daily"):
+    """Coinalyze (free key, 40 calls a minute) liquidation / open-interest / funding-rate history of perpetual symbols -> [{symbol, history}]."""
+    import config
+    import requests
+    if not config.COINALYZE_API_KEY:
+        raise SourceUnavailable("coinalyze", "not_configured", "COINALYZE_API_KEY not set")
+
+    def go():
+        r = requests.get(f"https://api.coinalyze.net/v1/{endpoint}-history", timeout=60, headers={"api_key": config.COINALYZE_API_KEY, "User-Agent": "market-terminal"},
+                         params={"symbols": symbols, "interval": interval, "from": start, "to": end, "convert_to_usd": "true"})
+        if r.status_code != 200:
+            raise SourceUnavailable("coinalyze", f"http_{r.status_code}", endpoint)
+        return r.json()
+    return s.fetch("coinalyze", {"endpoint": endpoint, "symbols": symbols, "start": start, "end": end}, go, kind=f"coinalyze_{endpoint}", fmt="json", capture=_rows_capture)
 
 
 def ishares_ibit(s):

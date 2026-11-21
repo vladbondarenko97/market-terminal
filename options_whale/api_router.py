@@ -1871,7 +1871,7 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/bitcoin" format="json" source="stored">
-      <description>The BITCOIN tab's block of the latest committed snapshot: price and cycle (200-week MA, Mayer multiple, drawdown, halving clock), on-chain (realized price, MVRV, MVRV Z-score, hash ribbons), leverage (Deribit funding, open interest, DVOL), flows (IBIT, Coinbase premium, stablecoin supply, CME COT), the checklist rows with their status and the HOLD / BUY / SELL / NO CALL verdict. Each part is fresh, stale or missing with a reason; the history series are left out (see /api/bitcoin/history). Conditions, not a trade call. 404 when the snapshot has no bitcoin block, 503 before the first run.</description>
+      <description>The BITCOIN tab's block of the latest committed snapshot: price and cycle (200-week MA, Mayer multiple, drawdown, halving clock), on-chain (realized price, MVRV, MVRV Z-score, hash ribbons), leverage (Deribit funding, open interest, DVOL; Coinalyze live liquidations, open interest, funding; BGeometrics delayed copies), delayed on-chain (SOPR, STH SOPR, STH cost basis from BGeometrics, each with its own as-of date and age), flows (IBIT, Coinbase premium, stablecoin supply, CME COT), the checklist rows with their status and the HOLD / BUY / SELL / NO CALL verdict. Each part is fresh, stale or missing with a reason; the history series are left out (see /api/bitcoin/history). Conditions, not a trade call. 404 when the snapshot has no bitcoin block, 503 before the first run.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/bitcoin/history" format="json" source="stored">

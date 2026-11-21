@@ -88,7 +88,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `config.py` | Paths, data-folder resolution, time zone, every setting read from `.env` |
 | `run_dashboard.command` | zsh launcher used by the schedule and by the terminal's Run button (`scheduled` or `manual` trigger) |
 | `core/collect.py` | Builds the run context: runs every collector, computes the models, decides fresh/cached/stale |
-| `core/sources.py` | Provider fetchers (yfinance, FRED, Databento, CFTC, EIA, TCEQ, eBay, iShares, Coin Metrics, Deribit, DefiLlama …) and `SourceSession` |
+| `core/sources.py` | Provider fetchers (yfinance, FRED, Databento, CFTC, EIA, TCEQ, eBay, iShares, Coin Metrics, Deribit, DefiLlama, BGeometrics, Coinalyze …) and `SourceSession` |
 | `core/cme.py` | CME downloads (volume FTP listing, inventory workbooks), browser login, workbook parsing |
 | `core/lake.py` | SQLite lake: `v2_*` schema, payload store, observations, snapshots, credential redaction |
 | `core/sqlite_layer.py` | Helpers for the legacy ledger tables in `portfolio.db` |

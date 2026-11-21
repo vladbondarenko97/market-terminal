@@ -452,6 +452,13 @@ def _shape_bitcoin(obj, _params):
             part("Coinbase premium", fl.get("coinbase_premium"), lambda x: f"{n(x['premium_pct'], '{:+.3f}')}% (Coinbase USD vs Kraken USDT)"),
             part("Stablecoins", fl.get("stablecoins"), lambda x: f"USDT+USDC ${n(x['usdt_usdc_usd'])}, 30-day change {n(x.get('change_30d_pct'), '{:+.2f}')}%"),
             part("CME COT", fl.get("cot"), lambda x: f"as of {x['as_of']}: asset managers net {n(x['asset_managers']['net'])}, leveraged funds net {n(x['leveraged_funds']['net'])}"),
+            *[part(label, g.get(k), lambda x: f"{n(x['value'], fmt)} {x['note']}") for label, k, fmt, g in (
+                ("SOPR (delayed)", "sopr", "{:.3f}", d.get("onchain_delayed") or {}), ("STH SOPR (delayed)", "sth_sopr", "{:.3f}", d.get("onchain_delayed") or {}),
+                ("STH cost basis USD (delayed)", "sth_cost_basis", "{:,.0f}", d.get("onchain_delayed") or {}))],
+            part("Liquidations live (Coinalyze)", lv.get("liq_live"), lambda x: f"last full day {(x.get('last_full_day') or {}).get('date')}: longs ${n((x.get('last_full_day') or {}).get('long_usd'))}, "
+                                                                                 f"shorts ${n((x.get('last_full_day') or {}).get('short_usd'))}; the day {x['as_of']} is partial"),
+            part("Open interest live (Coinalyze)", lv.get("oi_live"), lambda x: f"${n(x['oi_usd'])} as of {x['as_of']}, 7-day change {n(x.get('change_7d_pct'), '{:+.1f}')}%"),
+            part("Funding live (Coinalyze)", lv.get("funding_live"), lambda x: f"{n(x['funding_pct'], '{:+.4f}')}% per funding interval as of {x['as_of']}"),
             f"Verdict: {v.get('call')}. {v.get('text')}"]
     rows += [f"{r['side']} row {r['name']}: {r['status']}" + (f" ({r['reading']})" if r.get("reading") and r["status"] != "missing" else f" ({r.get('reason')})" if r["status"] == "missing" else "")
              + f"; {r['evidence']}" for r in d.get("rows") or []]

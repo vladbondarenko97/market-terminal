@@ -8,6 +8,9 @@ const btcNum = (v, d = 0, pre = '') => (v === null || v === undefined) ? '—' :
 const btcOk = p => p && p.status && p.status !== 'missing';
 const btcMissing = (p, what) => `<div class="fc-muted">${fcEsc(what || 'Unavailable')}: ${fcEsc((p && (p.reason || p.message)) || 'not in this snapshot')}</div>`;
 const btcNote = (p, keys) => keys.filter(k => p && p.missing && p.missing[k]).map(k => `<div class="fc-note">${fcEsc(k)}: missing, ${fcEsc(p.missing[k])}</div>`).join('');
+const btcLag = p => `as of ${p.as_of} (${p.lag_days} days old, BGeometrics free)`;      // a delayed reading always says how old it is
+const btcBar = (id, labels, sets) => fcChart(id, { type: 'bar', data: { labels, datasets: sets },
+    options: { scales: { x: axis({ stacked: true, ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 8 } }), y: axis({ stacked: true }) } } });
 const btcDay = t => new Date(t * 864e5).toISOString().slice(0, 10);
 
 async function loadBitcoin() {
@@ -74,14 +77,15 @@ function btcPrice(d) {
 }
 function btcOnchain(d) {
     const o = d.onchain, el = document.getElementById('b3');
-    if (!btcOk(o)) { el.innerHTML = btcMissing(o, 'On-chain'); return; }
+    if (!btcOk(o)) { el.innerHTML = btcMissing(o, 'On-chain') + btcDelayed(d.onchain_delayed); btcDelayedCharts(d.onchain_delayed); return; }
     const hr = o.hash_ribbons || {};
     el.innerHTML = `<div class="fc-kpis">${kpi('MVRV Z-score', btcNum(o.mvrv_z, 2), '≤ 0.5 bottom zone · ≥ 6 top zone')}${kpi('MVRV', btcNum(o.mvrv, 2), 'market / realized cap')}
         ${kpi('Realized price', btcNum(o.realized_price, 0, '$'))}${kpi('Hash ribbons', fcEsc(hr.state || 'missing'), hr.state ? `30d ${btcNum(hr.hash_30d_eh)} vs 60d ${btcNum(hr.hash_60d_eh)} EH/s` : fcEsc(hr.reason || ''))}</div>
         ${o.status === 'stale' ? `<div class="fc-warn">Stale: ${fcEsc(o.reason)}</div>` : ''}${btcNote(o, ['mvrv_z'])}
         ${BTC.hist ? '<div class="fc-chart"><canvas id="b3Chart"></canvas></div>' : ''}
         <div class="fc-note">${fcEsc(o.formula)}. Coin Metrics' free API withholds CapRealUSD, so the realized cap is derived from two free metrics. As of ${fcEsc(o.as_of)}.</div>
-        ${Object.entries(o.unavailable || {}).map(([k, v]) => `<div class="fc-note">${fcEsc(k)}: missing, ${fcEsc(v)}</div>`).join('')}`;
+        ${Object.entries(o.unavailable || {}).map(([k, v]) => `<div class="fc-note">${fcEsc(k)}: missing, ${fcEsc(v)}</div>`).join('')}${btcDelayed(d.onchain_delayed)}`;
+    btcDelayedCharts(d.onchain_delayed);
     const H = BTC.hist;
     if (H) {
         const lab = H.t.map(btcDay);
@@ -90,6 +94,69 @@ function btcOnchain(d) {
             { label: '6', data: lab.map(() => 6), borderColor: FC_COL.orange, borderDash: [4, 4], pointRadius: 0, borderWidth: 1 }]);
     }
 }
+
+// SOPR, STH SOPR and the short-term-holder cost basis come from BGeometrics' free API, which serves them about six days late: each carries its own as-of date
+// and its age, and the cards say so. A delayed value is never presented as today's.
+function btcDelayed(g) {
+    if (!g || g.status === 'missing') return btcMissing(g, 'SOPR and STH cost basis (BGeometrics)');
+    const one = (p, label, fmt, sub) => btcOk(p) ? kpi(label, fmt(p.value), `${btcLag(p)}${sub ? ' · ' + sub : ''}`) : '';
+    const px = (g.sth_cost_basis || {}).price, c = (g.sth_cost_basis || {}).value;
+    const rel = btcOk(g.sth_cost_basis) && px && c ? `BTC ${fcPct((px / c - 1) * 100)} vs it on that date` : '';
+    return `<div class="fc-sub" style="margin-top:10px">SOPR AND SHORT-TERM-HOLDER COST BASIS · DELAYED</div>
+        <div class="fc-kpis">${one(g.sopr, 'SOPR', v => btcNum(v, 3), '1.0 = break-even')}${one(g.sth_sopr, 'STH SOPR', v => btcNum(v, 3), 'coins under 155 days')}${one(g.sth_cost_basis, 'STH cost basis', v => btcNum(v, 0, '$'), rel)}</div>
+        ${['sopr', 'sth_sopr', 'sth_cost_basis'].filter(k => !btcOk(g[k])).map(k => btcMissing(g[k], k)).join('')}
+        ${btcOk(g.sth_cost_basis) ? '<div class="fc-chart"><canvas id="b3Sth"></canvas></div>' : ''}
+        ${btcOk(g.sopr) || btcOk(g.sth_sopr) ? '<div class="fc-chart"><canvas id="b3Sopr"></canvas></div>' : ''}
+        <div class="fc-note">Source: BGeometrics free API (${fcEsc(g.sopr?.source || '')}); free data is delayed about 6 days. Not graded on history.</div>`;
+}
+function btcDelayedCharts(g) {
+    if (!g) return;
+    const st = g.sth_cost_basis;
+    if (btcOk(st)) btcLine('b3Sth', st.days.map(x => x.date), [
+        { label: 'STH cost basis', data: st.days.map(x => x.value), borderColor: FC_COL.orange, pointRadius: 0, borderWidth: 1.5 },
+        { label: 'BTC price', data: st.days.map(x => x.price), borderColor: FC_COL.blue, pointRadius: 0, borderWidth: 1.2 }]);
+    const a = g.sopr, b = g.sth_sopr, lab = [...new Set([...(btcOk(a) ? a.days : []), ...(btcOk(b) ? b.days : [])].map(x => x.date))].sort();
+    const by = p => Object.fromEntries((btcOk(p) ? p.days : []).map(x => [x.date, x.value]));
+    const ma = by(a), mb = by(b);
+    if (lab.length) btcLine('b3Sopr', lab, [
+        { label: 'SOPR', data: lab.map(d => ma[d] ?? null), borderColor: FC_COL.violet, pointRadius: 0, borderWidth: 1.3, spanGaps: true },
+        { label: 'STH SOPR', data: lab.map(d => mb[d] ?? null), borderColor: FC_COL.yellow, pointRadius: 0, borderWidth: 1.3, spanGaps: true },
+        { label: '1.0', data: lab.map(() => 1), borderColor: FC_COL.aqua, borderDash: [4, 4], pointRadius: 0, borderWidth: 1 }]);
+}
+// B4: liquidations, open interest and funding. Coinalyze is live; BGeometrics is the delayed second source, shown with its own as-of date.
+function btcDerivs(lv) {
+    if (!lv) return '';
+    const L = lv.liq_live, O = lv.oi_live, F = lv.funding_live, g = lv.bgeo || {};
+    const day = L && L.last_full_day;
+    const usd = v => v == null ? '—' : fcBig(v).replace('+', '');
+    let h = `<div class="fc-sub" style="margin-top:10px">LIQUIDATIONS, OPEN INTEREST, FUNDING · LIVE (COINALYZE)</div><div class="fc-kpis">`
+        + (btcOk(L) ? kpi('Longs liquidated', usd(day && day.long_usd), day ? `last full day ${fcEsc(day.date)}` : '') + kpi('Shorts liquidated', usd(day && day.short_usd), day ? fcEsc(day.date) : '')
+            + kpi('7-day longs / shorts', `${usd(L.long_7d_usd)} / ${usd(L.short_7d_usd)}`, `today's day is still filling (${fcEsc(L.as_of)})`) : '')
+        + (btcOk(O) ? kpi('Open interest', usd(O.oi_usd), `${fcEsc(O.as_of)} · 7d ${O.change_7d_pct == null ? '—' : fcPct(O.change_7d_pct)}`) : '')
+        + (btcOk(F) ? kpi('Funding', fcPct(F.funding_pct, 4), `${fcEsc(F.as_of)} · 7d avg ${F.avg_7d_pct == null ? '—' : fcPct(F.avg_7d_pct, 4)}`, fcCls(F.funding_pct)) : '') + '</div>'
+        + [[L, 'Liquidations'], [O, 'Open interest'], [F, 'Funding']].filter(x => !btcOk(x[0])).map(x => btcMissing(x[0], x[1])).join('')
+        + (btcOk(L) ? '<div class="fc-chart"><canvas id="b4Liq"></canvas></div>' : '') + (btcOk(O) || btcOk(F) ? '<div class="fc-chart"><canvas id="b4Oi"></canvas></div>' : '')
+        + `<div class="fc-note">${fcEsc((btcOk(F) && F.note) || 'Coinalyze free API.')} Liquidation bars: longs and shorts per UTC day, last 90 days (the newest bar is today's, partial).</div>`;
+    if (g.status && g.status !== 'missing') {
+        const q = (p, label, fmt) => btcOk(p) ? kpi(label, fmt(p.value), btcLag(p)) : '';
+        h += `<div class="fc-sub" style="margin-top:10px">THE SAME, DELAYED (BGEOMETRICS)</div><div class="fc-kpis">${q(g.liquidations, 'Liquidations (day)', usd)}${q(g.open_interest, 'Open interest', usd)}${q(g.funding, 'Funding', v => fcPct(v * 100, 4))}</div>`
+            + ['liquidations', 'open_interest', 'funding'].filter(k => !btcOk(g[k])).map(k => btcMissing(g[k], k)).join('');
+    } else h += btcMissing(g, 'BGeometrics derivatives');
+    return h;
+}
+function btcDerivsCharts(lv) {
+    if (!lv) return;
+    const L = lv.liq_live, O = lv.oi_live, F = lv.funding_live;
+    if (btcOk(L)) btcBar('b4Liq', L.days.map(x => x.date + (x.partial ? '*' : '')), [
+        { label: 'Longs liquidated', data: L.days.map(x => x.long_usd), backgroundColor: FC_COL.orange },
+        { label: 'Shorts liquidated', data: L.days.map(x => -x.short_usd), backgroundColor: FC_COL.aqua }]);
+    const lab = [...new Set([...(btcOk(O) ? O.days : []), ...(btcOk(F) ? F.days : [])].map(x => x.date))].sort();
+    const mo = Object.fromEntries((btcOk(O) ? O.days : []).map(x => [x.date, x.oi_usd])), mf = Object.fromEntries((btcOk(F) ? F.days : []).map(x => [x.date, x.funding_pct]));
+    if (lab.length) fcChart('b4Oi', { type: 'line', data: { labels: lab, datasets: [
+        { label: 'Open interest (USD)', data: lab.map(d => mo[d] ?? null), borderColor: FC_COL.blue, pointRadius: 0, borderWidth: 1.4, yAxisID: 'y', spanGaps: true },
+        { label: 'Funding (%)', data: lab.map(d => mf[d] ?? null), borderColor: FC_COL.yellow, pointRadius: 0, borderWidth: 1.2, yAxisID: 'y1', spanGaps: true }] },
+        options: { scales: { x: axis({ ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 8 } }), y: axis(), y1: axis({ position: 'right', grid: { drawOnChartArea: false } }) } } });
+}
 function btcLeverage(d) {
     const f = (d.leverage || {}).funding, v = (d.leverage || {}).dvol, el = document.getElementById('b4');
     const fund = btcOk(f) ? `<div class="fc-kpis">${kpi('Funding / 8h', f.funding_8h == null ? '—' : fcPct(f.funding_8h * 100, 4), f.annualized_pct == null ? '' : `${fcPct(f.annualized_pct)} a year`, fcCls(f.funding_8h))}
@@ -97,7 +164,8 @@ function btcLeverage(d) {
         ${kpi('Open interest', btcNum(f.open_interest_usd, 0, '$'), 'Deribit perpetual')}</div>${btcNote(f, ['history'])}` : btcMissing(f, 'Funding');
     const vol = btcOk(v) ? `<div class="fc-kpis" style="margin-top:8px">${kpi('DVOL', btcNum(v.dvol, 1), `${btcNum(v.percentile)}th percentile of ${v.days} days`)}${kpi('30 days ago', btcNum(v.dvol_30d_ago, 1))}</div>
         <div class="fc-note">25-delta skew: ${fcEsc(v.skew_25d)}</div>` : btcMissing(v, 'DVOL');
-    el.innerHTML = fund + vol + `<div class="fc-note">Liquidations: ${fcEsc((f && f.liquidations) || 'missing: no free keyless liquidation feed')}. Funding by day (UTC): ${((f && f.last_days) || []).map(x => x[0].slice(5) + ' ' + (x[1] * 100).toFixed(4) + '%').join(' · ') || '—'}.</div>`;
+    el.innerHTML = fund + vol + btcDerivs(d.leverage) + `<div class="fc-note">Deribit funding by day (UTC): ${((f && f.last_days) || []).map(x => x[0].slice(5) + ' ' + (x[1] * 100).toFixed(4) + '%').join(' · ') || '—'}.</div>`;
+    btcDerivsCharts(d.leverage);
 }
 function btcFlows(d) {
     const fl = d.flows || {}, el = document.getElementById('b5'), i = fl.ibit, c = fl.coinbase_premium, s = fl.stablecoins, k = fl.cot;
@@ -112,7 +180,7 @@ function btcFlows(d) {
 }
 
 function btcCopy(id) {
-    const d = BTC.data || {}, map = { b1: { verdict: d.verdict, rows: d.rows }, b2: d.price, b3: d.onchain, b4: d.leverage, b5: d.flows };
+    const d = BTC.data || {}, map = { b1: { verdict: d.verdict, rows: d.rows }, b2: d.price, b3: { onchain: d.onchain, delayed: d.onchain_delayed }, b4: d.leverage, b5: d.flows };
     const title = document.querySelector(`#${id}`)?.closest('.rainbow-inner')?.querySelector('.fc-title')?.textContent || id;
     const payload = JSON.stringify({ card: title, as_of: d.as_of, data: map[id] ?? null }, null, 2);
     if (typeof openCopyModal === 'function') openCopyModal(title, payload, 'json'); else navigator.clipboard?.writeText(payload);
@@ -144,11 +212,11 @@ const BTC_FAQ = {
         what: 'What coin holders paid, from Coin Metrics\' free community data.',
         read: ['<b>MVRV Z-score</b> = (market cap − realized cap) / standard deviation of market cap over the whole history to date. Low values mean the market trades near holders\' cost.',
                '<b>Hash ribbons</b>: 30-day vs 60-day mean hash rate. Capitulation = miners switching off; recovery = the 30-day crossing back above within 30 days.'],
-        caveats: ['The free API withholds realized cap, so it is derived (market cap / MVRV). SOPR, short-term-holder cost basis and exchange balances have no free keyless source and show as missing.'] },
+        caveats: ['The free API withholds realized cap, so it is derived (market cap / MVRV). <b>SOPR</b> (spent-output profit ratio: above 1.0 coins moved at a profit) and the <b>short-term-holder cost basis</b> (average cost of coins held under 155 days) come from BGeometrics\' free API, about 6 days late: every reading shows its own as-of date and age. Exchange balances have no free source and show as missing. None of these is graded on history.'] },
     b4: { title: 'B4 · Leverage & options — FAQ',
         what: 'How crowded the leveraged side is, from Deribit\'s public API.',
-        read: ['<b>Funding</b>: what longs pay shorts (negative: shorts pay) every 8 hours on the perpetual. <b>DVOL</b>: Bitcoin\'s implied volatility index, with its percentile over the last year.'],
-        caveats: ['Liquidations and 25-delta skew are not collected (no free keyless liquidation feed; skew needs the full option chain). Binance and Bybit refuse US addresses.'] },
+        read: ['<b>Funding</b>: what longs pay shorts (negative: shorts pay) every 8 hours on the perpetual. <b>DVOL</b>: Bitcoin\'s implied volatility index, with its percentile over the last year. <b>Liquidations</b>: forced closes of longs (orange, up) and shorts (green, down) per day.'],
+        caveats: ['Liquidations (longs vs shorts), aggregated open interest and funding are live from Coinalyze (free key); BGeometrics serves the same about 6 days late and is shown as a second, dated source. 25-delta skew is not collected (it needs the full option chain). Not graded on history.'] },
     b5: { title: 'B5 · Flows — FAQ',
         what: 'Money moving into and out of Bitcoin.',
         read: ['<b>IBIT flow</b> = daily change in shares outstanding × NAV, from iShares\' page; history builds one day per pipeline run. <b>Coinbase premium</b>: Coinbase USD price vs Kraken USDT. <b>Stablecoins</b>: USDT + USDC supply and its 30-day change. <b>CME COT</b>: CFTC positions in CME Bitcoin futures.'],

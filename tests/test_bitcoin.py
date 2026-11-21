@@ -301,7 +301,9 @@ class Collect(unittest.TestCase):
                 mock.patch.object(src, "coinbase_btc_usd", return_value=({"price": 55654.28}, 5)),
                 mock.patch.object(src, "kraken_btc_usdt", return_value=({"price": 55759.0}, 6)),
                 mock.patch.object(src, "defillama_stablecoin", return_value=([{"date": "2026-10-20", "usd": 1.0}, {"date": "2026-11-19", "usd": 2.0}], 7)),
-                mock.patch.object(src, "cftc_cot", return_value=(load("cftc_cme_bitcoin.json"), 8))]
+                mock.patch.object(src, "cftc_cot", return_value=(load("cftc_cme_bitcoin.json"), 8)),
+                mock.patch.object(src, "bgeometrics_series", side_effect=lambda s, m, a, b: (load(f"bgeo_{m}.json"), 9)),
+                mock.patch.object(src, "coinalyze", side_effect=lambda s, ep, *a: (load(f"coinalyze_{ep}.json"), 10))]
 
     def cm(self, n=500):
         d = pd.date_range(end="2026-11-19", periods=n, freq="D")
@@ -345,6 +347,110 @@ class Collect(unittest.TestCase):
         self.assertIn("deribit", blk["leverage"]["funding"]["reason"])
         self.assertEqual(blk["onchain"]["status"], "fresh")
         self.assertEqual(blk["status"], "partial")
+
+
+class FreeFeeds(unittest.TestCase):
+    """BGeometrics (delayed, no key) and Coinalyze (live, key) on recorded responses of 2026-11-21."""
+    T21 = date(2026, 11, 21)
+
+    def test_bgeometrics_one_ranged_request_the_free_limits_and_a_day_of_cache(self):
+        conn, s = session()
+        with mock.patch("requests.get", return_value=resp(load("bgeo_sth_sopr.json"))) as g:
+            rows, _ = src.bgeometrics_series(s, "sth_sopr", "2026-07-24", "2026-11-21")
+            src.bgeometrics_series(s, "sth_sopr", "2026-07-24", "2026-11-21")
+            s2 = SourceSession(conn, "t2")                                   # a later run the same day: the stored capture, no request
+            src.bgeometrics_series(s2, "sth_sopr", "2026-07-24", "2026-11-21")
+        self.assertEqual(g.call_count, 1)
+        self.assertEqual((g.call_args.args[0], g.call_args.kwargs["params"]), ("https://bitcoin-data.com/v1/sth-sopr", {"startday": "2026-07-24", "endday": "2026-11-21"}))
+        self.assertEqual(rows[-1]["sthSopr"], 0.9898)
+
+    def test_bgeometrics_rate_limited_is_an_unavailable_source_with_the_status(self):
+        _, s = session()
+        with mock.patch("requests.get", return_value=resp({"error": {"code": "RATE_LIMIT_HOUR_EXCEEDED"}}, status=429)):
+            with self.assertRaises(SourceUnavailable) as e:
+                src.bgeometrics_series(s, "sopr", "a", "b")
+        self.assertEqual(e.exception.outcome, "http_429")
+
+    def test_a_delayed_reading_carries_its_own_date_and_age_never_today(self):
+        r = B.bgeo_reading(load("bgeo_sth_sopr.json"), self.T21, what="sth_sopr")
+        self.assertEqual((r["status"], r["as_of"], r["lag_days"], r["value"]), ("delayed", "2026-11-14", 7, 0.9898))
+        self.assertEqual(r["note"], "as of 2026-11-14 (7 days old, BGeometrics free)")
+        self.assertEqual(r["days"][-1]["date"], "2026-11-14")
+
+    def test_stale_lag_grows_with_the_clock_and_a_current_day_reads_fresh(self):
+        rows = load("bgeo_sth_sopr.json")
+        self.assertEqual(B.bgeo_reading(rows, date(2026, 12, 30), what="sth_sopr")["lag_days"], 46)       # the source stopped: the age shows, the value stays dated
+        self.assertEqual(B.bgeo_reading(rows, date(2026, 11, 14), what="sth_sopr")["status"], "fresh")
+        self.assertEqual(B.bgeo_reading([], self.T21, what="sopr")["status"], "missing")
+        self.assertEqual(B.bgeo_reading([{"d": "2026-11-14", "sopr": None}], self.T21)["status"], "missing")      # a null is missing, not 0
+
+    def test_bgeometrics_aggregate_field_leads_and_sth_cost_basis_gets_the_price_of_its_day(self):
+        oi = B.bgeo_reading(load("bgeo_open_interest.json"), self.T21, what="open_interest")
+        self.assertEqual(list(oi["fields"])[0], "openInterestFutures")
+        self.assertGreater(oi["value"], 2e10)
+        lq = B.bgeo_reading(load("bgeo_liquidations.json"), self.T21, what="liquidations")
+        self.assertEqual(lq["fields"]["totalLiquidationsUsd"], lq["value"])
+        sc = B.bgeo_reading(load("bgeo_sth_realized_price.json"), self.T21, {"2026-11-14": 68000.0}, "sth_realized_price")
+        self.assertEqual((sc["value"], sc["days"][-1]["price"]), (75049.06, 68000.0))
+        self.assertIsNone(sc["days"][0]["price"])                                # no price that day: missing, not 0
+
+    def test_coinalyze_sends_the_key_header_and_asks_usd(self):
+        _, s = session()
+        with mock.patch("config.COINALYZE_API_KEY", "k-test"), mock.patch("requests.get", return_value=resp(load("coinalyze_liquidation.json"))) as g:
+            src.coinalyze(s, "liquidation", B.COINALYZE_SYMBOLS, 1, 2)
+        self.assertEqual(g.call_args.args[0], "https://api.coinalyze.net/v1/liquidation-history")
+        self.assertEqual((g.call_args.kwargs["headers"]["api_key"], g.call_args.kwargs["params"]["convert_to_usd"]), ("k-test", "true"))
+
+    def test_coinalyze_without_a_key_is_unavailable_and_makes_no_request(self):
+        _, s = session()
+        with mock.patch("config.COINALYZE_API_KEY", ""), mock.patch("requests.get") as g:
+            with self.assertRaises(SourceUnavailable) as e:
+                src.coinalyze(s, "liquidation", "x", 1, 2)
+        self.assertFalse(g.called)
+        self.assertIn("COINALYZE_API_KEY", str(e.exception))
+        conn, s = session()
+        errors = {}
+        with mock.patch("config.COINALYZE_API_KEY", ""):
+            parts = B._coinalyze_parts(s, self.T21, errors)
+        self.assertTrue(all(p["status"] == "missing" for p in parts.values()))
+        self.assertIn("COINALYZE_API_KEY", parts["liq_live"]["reason"])
+
+    def test_coinalyze_block_sums_perpetuals_marks_today_partial_and_never_sums_a_short_day(self):
+        b = B.coinalyze_block(load("coinalyze_liquidation.json"), load("coinalyze_open-interest.json"), load("coinalyze_funding-rate.json"), self.T21)
+        lq = b["liquidations"]
+        self.assertEqual((lq["as_of"], lq["days"][-1]["partial"], lq["last_full_day"]["date"]), ("2026-11-21", True, "2026-11-20"))
+        raw = {x["symbol"]: {h["t"]: h for h in x["history"]} for x in load("coinalyze_liquidation.json")}
+        t = max(raw["BTCUSD_PERP.A"])
+        self.assertAlmostEqual(lq["days"][-1]["long_usd"], sum(raw[k][t]["l"] for k in raw))
+        self.assertEqual(len(lq["days"]), 11)
+        self.assertIsNotNone(lq["long_7d_usd"])
+        self.assertEqual(b["open_interest"]["as_of"], "2026-11-21")
+        self.assertIsNotNone(b["open_interest"]["change_7d_pct"])
+        self.assertEqual(b["funding"]["as_of"], "2026-11-21")
+        # a symbol that lacks the newest day: that day is dropped for everyone, not summed short
+        cut = load("coinalyze_liquidation.json")
+        cut[0]["history"] = cut[0]["history"][:-1]
+        self.assertEqual(B.coinalyze_block(cut, None, None, self.T21)["liquidations"]["as_of"], "2026-11-20")
+        none = B.coinalyze_block(None, [], [{"symbol": "x", "history": [{"t": 1, "c": None}]}], self.T21)
+        self.assertTrue(all(p["status"] == "missing" for p in none.values()))
+
+    def test_collect_fills_the_new_parts_with_their_dates_and_a_failing_feed_leaves_the_rest(self):
+        conn, s = session()
+        for p in Collect.faked(self, Collect.cm(self), None):
+            p.start()
+            self.addCleanup(p.stop)
+        mock.patch.object(src, "bgeometrics_series", side_effect=lambda s, m, a, b: (load(f"bgeo_{m}.json"), 9) if m != "sopr" else (_ for _ in ()).throw(
+            SourceUnavailable("bgeometrics", "http_429", "sopr"))).start()
+        self.addCleanup(mock.patch.stopall)
+        blk = B.collect(conn, s, "t", self.T21)
+        d = blk["onchain_delayed"]
+        self.assertEqual((d["sth_cost_basis"]["as_of"], d["sth_cost_basis"]["lag_days"]), ("2026-11-14", 7))
+        self.assertEqual(d["sopr"]["status"], "missing")
+        self.assertIn("http_429", d["sopr"]["reason"])
+        self.assertEqual(d["status"], "delayed")
+        self.assertEqual(blk["leverage"]["liq_live"]["last_full_day"]["date"], "2026-11-20")
+        self.assertEqual(blk["leverage"]["bgeo"]["liquidations"]["as_of"], "2026-11-20")
+        self.assertIn("bgeometrics:sopr", blk["source_errors"])
 
 
 class SignalWatch(unittest.TestCase):
