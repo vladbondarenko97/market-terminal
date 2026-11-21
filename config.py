@@ -23,6 +23,8 @@ SECRET_NAMES = (
     "SNAPTRADE_CLIENT_ID", "SNAPTRADE_CONSUMER_KEY", "MCP_MARKET_TOKEN", "MCP_BROKERAGE_TOKEN",
     "ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY", "HF_TOKEN", "DEPLOY_NTFY_URL",
 )
+# Keys the operator keeps under their own Keychain service (service, account), not under KEYCHAIN_SERVICE.
+OWN_KEYCHAIN = {"COINALYZE_API_KEY": ("coinalyze", "api_key"), "RESEND_API_KEY": ("resend", "api_key")}
 
 
 def _load_keychain():
@@ -30,11 +32,12 @@ def _load_keychain():
     import subprocess
     if os.environ.get("MT_NO_KEYCHAIN") == "1" or not shutil.which("security"):
         return
-    for name in SECRET_NAMES:
+    for name in (*SECRET_NAMES, *OWN_KEYCHAIN):
         if str(os.environ.get(name, "")).strip():
             continue
+        service, account = OWN_KEYCHAIN.get(name, (KEYCHAIN_SERVICE, name))
         try:
-            out = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", name, "-w"],
+            out = subprocess.run(["security", "find-generic-password", "-s", service, "-a", account, "-w"],
                                  capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError) as exc:
             print(f"config: Keychain lookup for {name} failed ({type(exc).__name__}); settings still blank stay unset", file=sys.stderr)
@@ -180,6 +183,13 @@ CME_LOGIN_PASSWORD = optional_env("CME_LOGIN_PASSWORD", default="")
 SMTP_SERVER = optional_env("SMTP_SERVER", default="")
 SMTP_PORT = int_env("SMTP_PORT", 587, minimum=1, maximum=65535)
 RECIPIENT_EMAIL = optional_env("RECIPIENT_EMAIL", default="")
+# Report email transport: "smtp" (the four settings above) or "resend" (HTTPS API; RESEND_API_KEY, RESEND_FROM, RECIPIENT_EMAIL)
+EMAIL_TRANSPORT = (optional_env("EMAIL_TRANSPORT", default="smtp") or "smtp").strip().lower()
+if EMAIL_TRANSPORT not in ("smtp", "resend"):
+    raise ConfigError(f"EMAIL_TRANSPORT must be smtp or resend, not {EMAIL_TRANSPORT!r}")
+RESEND_API_KEY = optional_env("RESEND_API_KEY", default="")
+RESEND_FROM = optional_env("RESEND_FROM", default="")
+COINALYZE_API_KEY = optional_env("COINALYZE_API_KEY", default="")      # Bitcoin tab: live liquidations, open interest, funding
 IMAP_SERVER = optional_env("IMAP_SERVER", default="") or SMTP_SERVER      # the sender's mailbox, read only to find bounce notices
 NTFY_URL = optional_env("NTFY_URL", default="")
 # scripts/deploy.sh --auto: where deploy news goes (a full ntfy topic URL; blank = none), and the standby copy it waits for

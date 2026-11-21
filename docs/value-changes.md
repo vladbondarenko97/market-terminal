@@ -57,6 +57,7 @@ Newest first, then the changes that came with the v2 pipeline.
   The playbook rows are Vlad's tranche conditions; "retest without a new low" = the 30-session low of SPY closes is 5+ sessions old, price rebounded 3%+ since and now sits 0-2% above it.
   THE READ is model text (the picked local model, else Sonnet), stored with the model's name; its numbers are checked against the facts it was given.
 
+- **Bitcoin free feeds added** (`bitcoin_v1`, 2026-11-21): new parts `onchain_delayed`, `leverage.liq_live`, `oi_live`, `funding_live`, `bgeo`; the Deribit funding part no longer carries the `liquidations` text. No existing value changes meaning; the new rows are not graded.
 - **Bitcoin tab added** (`bitcoin_v1`, 2026-11-20): new snapshot key `bitcoin` and observation `bitcoin.ibit_shares`; no earlier value changes meaning. New values: the
   200-week MA (mean of the last 1,400 daily closes), the Mayer multiple (price / 200-day MA), the realized cap (market cap / MVRV, because Coin Metrics' free API refuses
   `CapRealUSD`), the realized price (realized cap / supply) and the **MVRV Z-score = (market cap - realized cap) / sample standard deviation (ddof 1) of market cap over all days to that date**

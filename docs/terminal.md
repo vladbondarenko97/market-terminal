@@ -307,8 +307,8 @@ The BITCOIN tab sits right after CHART (`static/bitcoin.js`, data: `/api/bitcoin
 
 - **B1 · Verdict**: HOLD / BUY (start) / BUY (add) / SELL (trim) / NO CALL, the count of rows available (`n of m`), and the bottom (6) and top (5) checklists. A row is FIRED, waiting or missing (with its reason). Only rows graded on history vote; until the grading exists (phase 4 of `docs/plan-bitcoin-tab.md`) every row is untested, so the card says so and answers NO CALL (fewer than half the rows available) or HOLD. The card is conditions, not a trade call or financial advice.
 - **B2 · Price & cycle**: price, drawdown from the high, 200-week MA, realized price, Mayer multiple, halving clock, and a log chart of price, 200-week MA and realized price.
-- **B3 · On-chain**: MVRV Z-score (with its 0 and 6 lines), MVRV, realized price, hash ribbons. SOPR, short-term-holder cost basis and exchange balances show as missing (no free keyless source).
-- **B4 · Leverage & options**: Deribit perpetual funding per 8 hours and its 7-day average, open interest, DVOL. Liquidations and skew show as missing.
+- **B3 · On-chain**: MVRV Z-score (with its 0 and 6 lines), MVRV, realized price, hash ribbons. SOPR, STH SOPR and the short-term-holder cost basis (BGeometrics free API) show under it with their own as-of date and age ("as of <date> (6 days old, BGeometrics free)"), a chart of the STH cost basis over price and one of SOPR around 1.0. Exchange balances show as missing (no free source).
+- **B4 · Leverage & options**: Deribit perpetual funding per 8 hours and its 7-day average, open interest, DVOL; live liquidations (longs vs shorts bar chart, 90 days), aggregated open interest and funding (lines) from Coinalyze; the same three delayed from BGeometrics with their dates. Skew shows as missing. None of the new rows is graded on history.
 - **B5 · Flows**: IBIT shares and 5-day net flow, Coinbase premium, USDT + USDC supply, CME COT.
 
 B6 (macro link), B7 (regulation calendar) and B8 (plan and taxes) are phase 3 and not built. A part whose source failed shows `<name>: <reason>`; if `/api/bitcoin` fails every card shows the server's message.

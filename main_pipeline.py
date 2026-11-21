@@ -460,6 +460,14 @@ def mark_bounces(conn):
     return out
 
 
+def email_notice(status, detail, bounced):
+    """The one line at the bottom of the run's ntfy when email did not go through: this run's failure, else an earlier bounce."""
+    if status not in ("smtp_accepted", "skipped"):
+        return f"email: {status} ({' '.join(lake.redact(str(detail)).split())[:110]})"
+    if bounced:
+        return f"email: bounced ({bounced[-1].split(': ', 1)[1][:110]})"
+
+
 def _deliver(conn, ctx, run_id, out_dir, report, *, upload, note=None):
     """Email, report upload, phone pushes, then the database/dashboard upload. Every channel is attempted whatever
     the others did. A channel that is not configured is `skipped`; one that is configured and fails is a warning.
@@ -494,7 +502,7 @@ def _deliver(conn, ctx, run_id, out_dir, report, *, upload, note=None):
     pushes = []
     try:
         pushes.append(ntfy_brief(ctx, report, config.DASHBOARD_URL, report_up.get("url"), narrative=note,
-                                 notice=f"⚠ {len(bounced)} report email(s) bounced: {bounced[-1].split(': ', 1)[1][:110]}" if bounced else None))
+                                 notice=email_notice(email_status, email_detail, bounced)))
     except Exception as e:
         pushes.append({"title": "daily brief", "status": "failed", "error": failure(e)})
     try:

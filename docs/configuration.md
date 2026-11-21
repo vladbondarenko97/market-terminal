@@ -132,7 +132,7 @@ login Keychain (service `market-terminal`); a value in `.env` or the environment
 
 ### Email
 
-Email is sent with `send_email.py deliver()`: plain SMTP with STARTTLS on `SMTP_PORT` (587 works; an implicit-SSL
+Email is sent with `send_email.py deliver()`: by default plain SMTP with STARTTLS on `SMTP_PORT` (587 works; an implicit-SSL
 port such as 465 does not). The message is always saved as `email.eml` first.
 
 The four settings `EMAIL_SENDER`, `EMAIL_PASSWORD`, `SMTP_SERVER` and `RECIPIENT_EMAIL` go together. **All four
@@ -147,6 +147,10 @@ set, some empty: `failed`**, with the empty names in the detail, and the run end
 | `SMTP_PORT` | `587` | `config.SMTP_PORT` | Empty or blank: 587. Text that is not a number from 1 to 65535 is a `ConfigError`. |
 | `RECIPIENT_EMAIL` | `""` | `send_email.py` (To header) | Same as above. |
 | `IMAP_SERVER` | `SMTP_SERVER` | `send_email.bounced_runs()` | Mailbox of `EMAIL_SENDER` (IMAP over TLS, port 993, the SMTP login), read only to find bounce notices of earlier report emails. A mailbox that cannot be read changes nothing. |
+| `EMAIL_TRANSPORT` | `smtp` | `config.EMAIL_TRANSPORT`, `send_email.deliver()` | `smtp` or `resend`; blank is `smtp`, anything else is a `ConfigError`. `resend` posts the saved `email.eml` (text, HTML, inline charts) to `https://api.resend.com/emails`; the SMTP settings are not used, so SMTP stays the fallback by switching this back. |
+| `RESEND_API_KEY` | `""` | `send_email.deliver_resend()` | With `EMAIL_TRANSPORT=resend`: email is `skipped` if `RESEND_API_KEY`, `RESEND_FROM` and `RECIPIENT_EMAIL` are all empty, otherwise `failed` naming the empty ones. Falls back to the Keychain (service `resend`, account `api_key`). A successful send is recorded as `smtp_accepted` (the status name is shared by both transports: the provider accepted it). |
+| `RESEND_FROM` | `""` | `send_email.deliver_resend()` | The From address; its domain must be verified in the Resend account. It replaces `EMAIL_SENDER` as the From of the sent message. |
+| `COINALYZE_API_KEY` | `""` | `core/sources.py coinalyze_*` (Bitcoin tab) | The Bitcoin tab's liquidations, aggregated open interest and funding rows are `missing` with "COINALYZE_API_KEY not set". Falls back to the Keychain (service `coinalyze`, account `api_key`). Free key, 40 calls a minute; a run makes 4. |
 | `REPORT_SENDER` | `EMAIL_SENDER` | `scripts/import_email_positions.py` only | The script uses `EMAIL_SENDER`. If both are empty it exits and asks you to set one. |
 
 ### Phone push and dashboard link

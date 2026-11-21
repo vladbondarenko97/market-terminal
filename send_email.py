@@ -12,8 +12,8 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import formatdate
 
-from config import (EMAIL_PASSWORD, EMAIL_SENDER, IMAP_SERVER, NTFY_URL, PROJECT_ROOT, RECIPIENT_EMAIL, SMTP_PORT,
-                    SMTP_SERVER)
+from config import (EMAIL_PASSWORD, EMAIL_SENDER, EMAIL_TRANSPORT, IMAP_SERVER, NTFY_URL, PROJECT_ROOT, RECIPIENT_EMAIL,
+                    RESEND_API_KEY, RESEND_FROM, SMTP_PORT, SMTP_SERVER)
 
 EMAIL_PAIRS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
@@ -111,10 +111,48 @@ def plain_body(msg):
     return part.get_content() if part else None
 
 
+def deliver_resend(eml_path):
+    """The saved message through Resend's HTTPS API (EMAIL_TRANSPORT=resend). Same return as deliver(); `smtp_accepted` here means
+    Resend accepted it. A 4xx is `failed` with Resend's message; a timeout is `outcome_unknown` (it may have gone out)."""
+    import base64
+    import requests
+    settings = {"RESEND_API_KEY": RESEND_API_KEY, "RESEND_FROM": RESEND_FROM, "RECIPIENT_EMAIL": RECIPIENT_EMAIL}
+    if not any(settings.values()):
+        return "skipped", "email not configured (RESEND_API_KEY, RESEND_FROM and RECIPIENT_EMAIL are empty)"
+    missing = [k for k, v in settings.items() if not v]
+    if missing:
+        return "failed", f"email partly configured: {', '.join(missing)} empty"
+    msg = load_eml(eml_path)
+    body, html_part = msg.get_body(("plain",)), msg.get_body(("html",))
+    payload = {"from": RESEND_FROM, "to": [RECIPIENT_EMAIL], "subject": str(msg["Subject"]), "text": body.get_content() if body else "",
+               "headers": {"X-Run-ID": str(msg["X-Run-ID"])}}
+    if html_part:
+        payload["html"] = html_part.get_content()
+        payload["attachments"] = [{"filename": p.get_filename() or "chart.png", "content_id": p["Content-ID"].strip("<>"),
+                                   "content": base64.b64encode(p.get_content()).decode()}
+                                  for p in msg.walk() if p["Content-ID"] and p.get_content_maintype() == "image"]
+    try:
+        r = requests.post("https://api.resend.com/emails", json=payload, timeout=60,
+                          headers={"Authorization": f"Bearer {RESEND_API_KEY}", "User-Agent": "market-terminal"})
+    except requests.ReadTimeout as e:
+        return "outcome_unknown", f"no answer from Resend ({e}); not retried automatically"
+    except requests.RequestException as e:
+        return "failed", f"connect: {e}"
+    try:
+        j = r.json()
+    except ValueError:
+        j = {}
+    if r.status_code != 200:
+        return "failed", f"rejected: HTTP {r.status_code} {j.get('message') or j.get('name') or ''}".strip()
+    return "smtp_accepted", f"accepted by Resend for {RECIPIENT_EMAIL} (id {j.get('id')})"
+
+
 def deliver(eml_path):
     """Send a saved message. Returns (status, detail): smtp_accepted | skipped | failed | outcome_unknown.
     `skipped` means email is not configured at all (all four settings empty); a partly configured setup is `failed`.
-    SMTP acceptance is not proof of inbox delivery."""
+    SMTP acceptance is not proof of inbox delivery. EMAIL_TRANSPORT=resend sends through deliver_resend() instead."""
+    if EMAIL_TRANSPORT == "resend":
+        return deliver_resend(eml_path)
     settings = {"EMAIL_SENDER": EMAIL_SENDER, "EMAIL_PASSWORD": EMAIL_PASSWORD, "SMTP_SERVER": SMTP_SERVER,
                 "RECIPIENT_EMAIL": RECIPIENT_EMAIL}
     if not any(settings.values()):

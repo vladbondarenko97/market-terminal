@@ -114,7 +114,7 @@ def onchain(df, today):
            "market_cap": _f(df["mcap"].iloc[-1]), "mvrv": _f(df["mvrv"].iloc[-1]), "realized_cap": _f(rcap.iloc[-1]), "realized_price": _f(rprice.iloc[-1]),
            "supply": _f(df["supply"].iloc[-1]), "mvrv_z": zz, "hash_ribbons": hash_ribbons(df["hash"]), "days": len(df),
            "formula": "MVRV Z = (market cap - realized cap) / stdev(market cap over all days to date); realized cap = market cap / MVRV",
-           "unavailable": {"sopr": "no free keyless source", "sth_cost_basis": "no free keyless source", "exchange_balances": "no free keyless source"}}
+           "unavailable": {"exchange_balances": "no free source"}}      # SOPR and the STH cost basis: see onchain_delayed
     if zz is None:
         out["missing"] = {"mvrv_z": "needs 365 days of market cap and a positive MVRV"}
     if out["status"] == "stale":
@@ -148,8 +148,7 @@ def funding(ticker, hist, today):
         return missing("no Deribit ticker")
     out = {"status": "fresh", "source": "deribit.com public API", "funding_8h": _f(ticker["funding_8h"]),
            "annualized_pct": _f(ticker["funding_8h"]) * 3 * 365 * 100 if _f(ticker["funding_8h"]) is not None else None,
-           "open_interest_usd": _f(ticker.get("open_interest")), "mark_price": _f(ticker.get("mark_price")),
-           "liquidations": "missing: no free keyless liquidation feed (Binance and Bybit refuse US addresses)"}
+           "open_interest_usd": _f(ticker.get("open_interest")), "mark_price": _f(ticker.get("mark_price"))}
     daily = {}
     for r in hist or []:
         d = datetime.fromtimestamp(r["timestamp"] / 1000, timezone.utc).date()
@@ -241,6 +240,92 @@ def cot(rows):
         now = net(r, who)
         out[key] = {"net": now, "change_1w": None if now is None or p is None or net(p, who) is None else now - net(p, who)}
     return out
+
+
+# ---------------------------------------------------------------- B3/B4 free feeds: Coinalyze (live) and BGeometrics (6 days late)
+COINALYZE_SYMBOLS = "BTCUSD_PERP.A,BTCUSDT_PERP.A,BTCUSDC_PERP.A"       # aggregated across exchanges: coin-margined, USDT and USDC perpetuals
+BGEO_SOURCE = "BGeometrics free API"
+
+
+def _day(t):
+    return datetime.fromtimestamp(t, timezone.utc).date()
+
+
+def _coinalyze_days(resp, keys):
+    """[{symbol, history}] -> {date: {symbol: {key: value}}}; a point without a number for a key is left out, not zero."""
+    out = {}
+    for sym in resp or []:
+        for h in sym.get("history") or []:
+            v = {k: _f(h.get(k)) for k in keys}
+            if None not in v.values():
+                out.setdefault(_day(h["t"]), {})[sym["symbol"]] = v
+    return out
+
+
+def _all_symbols(days, n):
+    """Only dates every symbol reports: a sum over fewer perpetuals would look like a fall."""
+    return {d: v for d, v in sorted(days.items()) if len(v) == n}
+
+
+def coinalyze_block(liq, oi, fr, today, n_symbols=3):
+    """Live liquidations (longs vs shorts, USD), aggregated open interest (USD) and funding (OI-weighted, percent per funding interval) of
+    BTC perpetuals. The newest liquidation day is today's and still filling: it is shown and marked `partial`, never graded or compared."""
+    src_ = "Coinalyze free API (BTCUSD, BTCUSDT, BTCUSDC perpetuals, all exchanges)"
+    out = {}
+    ld = _all_symbols(_coinalyze_days(liq, ("l", "s")), n_symbols)
+    if ld:
+        rows = [{"date": d.isoformat(), "long_usd": sum(x["l"] for x in v.values()), "short_usd": sum(x["s"] for x in v.values()), "partial": d >= today}
+                for d, v in ld.items()]
+        done = [r for r in rows if not r["partial"]]
+        out["liquidations"] = {"status": "fresh", "source": src_, "as_of": rows[-1]["date"], "days": rows[-90:], "last_full_day": done[-1] if done else None,
+                               "long_7d_usd": sum(r["long_usd"] for r in done[-7:]) if len(done) >= 7 else None,
+                               "short_7d_usd": sum(r["short_usd"] for r in done[-7:]) if len(done) >= 7 else None}
+    else:
+        out["liquidations"] = missing("no Coinalyze liquidation history")
+    od = _all_symbols(_coinalyze_days(oi, ("c",)), n_symbols)
+    if od:
+        rows = [{"date": d.isoformat(), "oi_usd": sum(x["c"] for x in v.values())} for d, v in od.items()]
+        week = next((r for r in reversed(rows) if r["date"] <= (date.fromisoformat(rows[-1]["date"]) - timedelta(days=7)).isoformat()), None)
+        out["open_interest"] = {"status": "fresh", "source": src_, "as_of": rows[-1]["date"], "oi_usd": rows[-1]["oi_usd"], "days": rows[-90:],
+                                "change_7d_pct": (rows[-1]["oi_usd"] / week["oi_usd"] - 1) * 100 if week else None}
+    else:
+        out["open_interest"] = missing("no Coinalyze open-interest history")
+    fd, od2 = _all_symbols(_coinalyze_days(fr, ("c",)), n_symbols), od
+    both = [d for d in fd if d in od2]
+    if both:
+        rows = [{"date": d.isoformat(), "funding_pct": sum(fd[d][k]["c"] * od2[d][k]["c"] for k in fd[d]) / sum(od2[d][k]["c"] for k in fd[d])} for d in both]
+        out["funding"] = {"status": "fresh", "source": src_, "as_of": rows[-1]["date"], "funding_pct": rows[-1]["funding_pct"], "days": rows[-90:],
+                          "avg_7d_pct": sum(r["funding_pct"] for r in rows[-7:]) / 7 if len(rows) >= 7 else None,
+                          "note": "percent per funding interval (Coinalyze's unit), open-interest weighted across the three perpetuals; the day's last reading"}
+    else:
+        out["funding"] = missing("no Coinalyze funding history")
+    return out
+
+
+BGEO_FIELD = {"liquidations": "totalLiquidationsUsd", "open_interest": "openInterestFutures", "funding": "fundingRate"}      # the aggregate among a row's fields
+
+
+def bgeo_reading(rows, today, prices=None, what="value"):
+    """BGeometrics rows [{d, unixTs, <metric>: number, ...}] -> the newest reading with its own as-of date and age, plus the dated series.
+    Free data is ~6 days late (the API says so in X-Data-Available-Until): `lag_days` is always today minus that date, and the status is
+    `delayed`, never `fresh`, when it is over a day. `value` is the metric's first numeric field; `fields` keeps the others (liquidations
+    may carry more than one)."""
+    pts, main = [], BGEO_FIELD.get(what)
+    for r in rows or []:
+        vals = {k: _f(v) for k, v in r.items() if k not in ("d", "unixTs")}
+        vals = {k: v for k, v in vals.items() if v is not None}
+        if main in vals:
+            vals = {main: vals.pop(main), **vals}
+        if r.get("d") and vals:
+            pts.append((r["d"][:10], vals))
+    if not pts:
+        return missing(f"no {what} rows")
+    pts.sort(key=lambda x: x[0])
+    d, vals = pts[-1]
+    lag = (today - date.fromisoformat(d)).days
+    days = [{"date": x, "value": next(iter(v.values())), **({"price": prices.get(x)} if prices is not None else {})} for x, v in pts[-90:]]
+    return {"status": "fresh" if lag <= 1 else "delayed", "source": BGEO_SOURCE, "as_of": d, "lag_days": lag, "value": next(iter(vals.values())),
+            "fields": vals, "days": days, "note": f"as of {d} ({lag} days old, BGeometrics free)"}
 
 
 # ---------------------------------------------------------------- B1 rows and verdict
@@ -372,6 +457,43 @@ def _cm_rows(session, today, errors):
         return None
 
 
+def _coinalyze_parts(session, today, errors):
+    """Three history calls (liquidations, open interest, funding), 120 days; a failed call leaves its part missing with the reason."""
+    t1, t0 = int(_ms(today + timedelta(days=1)) / 1000), int(_ms(today - timedelta(days=120)) / 1000)
+    got = {}
+    for ep in ("liquidation", "open-interest", "funding-rate"):
+        try:
+            got[ep] = src.coinalyze(session, ep, COINALYZE_SYMBOLS, t0, t1)[0]
+        except Exception as e:
+            errors[f"coinalyze:{ep}"] = lake.redact(f"{type(e).__name__}: {e}")
+            got[ep] = None
+    parts = coinalyze_block(got["liquidation"], got["open-interest"], got["funding-rate"], today)
+    for key, ep in (("liquidations", "liquidation"), ("open_interest", "open-interest"), ("funding", "funding-rate")):
+        if parts[key].get("status") == "missing" and f"coinalyze:{ep}" in errors:
+            parts[key]["reason"] = errors[f"coinalyze:{ep}"]
+    return {"liq_live": parts["liquidations"], "oi_live": parts["open_interest"], "funding_live": parts["funding"]}
+
+
+def _bgeo_parts(session, today, closes, errors):
+    """The six BGeometrics metrics, each one request over the last 120 days (the free plan: 10 an hour, 15 a day; src.bgeometrics_series
+    reuses a capture under a day old, so three runs a day cost six requests)."""
+    start, end = (today - timedelta(days=120)).isoformat(), today.isoformat()
+    prices = {d.date().isoformat(): _f(v) for d, v in closes.items()} if closes is not None else None
+    out = {}
+    for key in src.BGEOMETRICS_METRICS:
+        try:
+            out[key] = bgeo_reading(src.bgeometrics_series(session, key, start, end)[0], today, prices if key == "sth_realized_price" else None, key)
+        except Exception as e:
+            errors[f"bgeometrics:{key}"] = lake.redact(f"{type(e).__name__}: {e}")
+            out[key] = missing(errors[f"bgeometrics:{key}"])
+    deriv = _group({"liquidations": out["liquidations"], "open_interest": out["open_interest"], "funding": out["funding"]})
+    delayed = _group({"sopr": out["sopr"], "sth_sopr": out["sth_sopr"], "sth_cost_basis": out["sth_realized_price"]})
+    for g in (deriv, delayed):
+        if g["status"] != "missing" and any(v.get("status") == "delayed" for v in g.values() if isinstance(v, dict)):
+            g["status"] = "delayed"            # a group holding a delayed reading never reads as fresh
+    return deriv, delayed
+
+
 def collect(conn, session, run_id, today, chaos=None, vix_ratio=None):
     """Fetch every Bitcoin source (a failure becomes an entry in `errors` and a missing part, never an exception), compute the block."""
     errors, blk = {}, {"version": BITCOIN_VERSION, "as_of": today.isoformat()}
@@ -413,6 +535,10 @@ def collect(conn, session, run_id, today, chaos=None, vix_ratio=None):
     dv = get("deribit:dvol", src.deribit_dvol, _ms(today - timedelta(days=365)), _ms(today + timedelta(days=1)))
     blk["leverage"] = _group({"funding": funding(tk, hist, today) if tk else missing(errors.get("deribit:ticker", "no Deribit ticker")),
                               "dvol": dvol(dv) if dv else missing(errors.get("deribit:dvol", "no DVOL candles"))})
+
+    blk["leverage"].update(_coinalyze_parts(session, today, errors))
+    blk["leverage"]["bgeo"], blk["onchain_delayed"] = _bgeo_parts(session, today, closes, errors)
+    blk["leverage"]["status"] = _group({k: v for k, v in blk["leverage"].items() if k != "status"})["status"]
 
     ib = None
     try:
