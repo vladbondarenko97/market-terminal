@@ -3,7 +3,7 @@
 // Data: /api/people = people_portfolios.json from the data folder (an input written daily by an external job; nothing is computed here).
 // Shares the helpers of forecast.js (fcNum, fcPct, fcCls, fcEsc, kpi) and Lightweight Charts v5 (as chart.js). Cards fill when they scroll into view.
 // ==========================================================================================
-const PPL = { doc: null, kind: 'all', full: null, cards: {}, io: null, pins: null };
+const PPL = { view: 'people', doc: null, kind: 'all', full: null, cards: {}, io: null, pins: null };
 const PPL_FEATURED = ['pelosi', 'trump', 'musk'];          // pinned until the user changes a pin
 const PPL_RANGES = ['1W', '1M', '3M', 'YTD', '1Y', 'ALL'];
 const PPL_COL = ['#3987e5', '#d95926', '#199e70', '#c98500', '#9085e9', '#e5a0c8', '#6bb7c9', '#a3a3a3'];
@@ -45,7 +45,7 @@ async function loadPeople() {
         if (j.status !== 'success') throw new Error(j.reason || j.message || 'load failed');
         PPL.doc = j.data; PPL.pins = pplLoadPins();
         document.getElementById('pplRunInfo').textContent = `${(j.data.people || []).length} tracked · as of ${j.as_of || '—'}`;
-        pplRender();
+        pplRender(); pplViews();
     } catch (e) {
         PPL.doc = null;
         document.getElementById('pplStrip').innerHTML = '';
@@ -57,6 +57,95 @@ function pplKind(k) {
     PPL.kind = k;
     document.querySelectorAll('#people-tab [data-kind]').forEach(b => b.classList.toggle('active', b.dataset.kind === k));
     pplRender();
+}
+
+// ---- view switcher: PEOPLE | CONGRESS | COMPANIES. A view whose fields are absent from the file has no button.
+const pplHasCong = d => !!(d && d.congress_detail);
+const pplHasComp = d => !!(d && Array.isArray(d.companies) && d.companies.length);
+function pplViews() {
+    const d = PPL.doc, show = { congress: pplHasCong(d), companies: pplHasComp(d) };
+    document.querySelectorAll('#pplViews [data-view]').forEach(b => { if (b.dataset.view !== 'people') b.classList.toggle('hidden', !show[b.dataset.view]); });
+    if (PPL.view !== 'people' && !show[PPL.view]) PPL.view = 'people';
+    pplView(PPL.view);
+}
+function pplView(v) {
+    PPL.view = v;
+    document.querySelectorAll('#pplViews [data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+    document.getElementById('pplPeopleCtl').classList.toggle('hidden', v !== 'people');
+    document.getElementById('pplPeopleView').classList.toggle('hidden', v !== 'people');
+    document.getElementById('pplCong').classList.toggle('hidden', v !== 'congress');
+    document.getElementById('pplComp').classList.toggle('hidden', v !== 'companies');
+    if (v === 'congress') pplCongress(PPL.doc);
+    if (v === 'companies') pplCompanies(PPL.doc);
+}
+const pplSym = t => `<a class="ppl-sym" data-sym="${fcEsc(t)}" href="#">${fcEsc(t)}</a>`;
+const pplMember = m => `<a class="ppl-member" data-member="${fcEsc(m)}" href="#">${fcEsc(m)}</a>`;
+const pplRange = (lo, hi) => lo == null && hi == null ? pplDash('amount not disclosed') : `${pplMoney(lo)}–${pplMoney(hi)}`;
+const pplPanel = (t, body, note) => `<div class="rainbow-card" style="min-height:0"><div class="rainbow-inner"><div class="fc-title">${t}</div><div class="fc-body">${body}${note ? `<div class="fc-note">${note}</div>` : ''}</div></div></div>`;
+
+// ---- CONGRESS view: most bought / sold, recent big sales, overlaps (tickers several members traded)
+function pplCongTrades(d) {            // every Congress trade in the file, with the member's name
+    return (d.people || []).filter(p => p.kind === 'congress').flatMap(p => (p.transactions || []).map(t => ({ ...t, who: p.name })));
+}
+function pplCongRank(d, rows, dir) {   // rows from congress_summary (member counts); $ range summed from the file's trades in the same 30 days
+    const ref = Date.parse(String(d.as_of || '').slice(0, 10)), trades = pplCongTrades(d).filter(t => pplBuy(t) === (dir === 'buy') && ref - Date.parse(t.date) <= 30 * 864e5 && Date.parse(t.date) <= ref);
+    const sum = {};
+    trades.forEach(t => { const s = sum[t.ticker] = sum[t.ticker] || { lo: 0, hi: 0 }; s.lo += t.amount_low || 0; s.hi += t.amount_high || 0; });
+    if (!rows || !rows.length) return '<div class="fc-muted">none</div>';
+    const max = Math.max(...rows.map(r => r.n_members || 0), 1);
+    return `<table class="fc-table">${rows.slice(0, 8).map(r => {
+        const s = sum[r.ticker];
+        return `<tr><td>${pplSym(r.ticker)}</td><td style="width:45%"><div style="height:6px;border-radius:3px;background:${dir === 'buy' ? '#4ade80' : '#f87171'};width:${Math.max(6, 100 * (r.n_members || 0) / max)}%"></div></td>
+            <td>${fcNum(r.n_members, 0)} member${r.n_members === 1 ? '' : 's'}</td><td>${s ? pplRange(s.lo, s.hi) : pplDash('no matching trades with amounts in the file')}</td></tr>`;
+    }).join('')}</table>`;
+}
+function pplTimeline(d, o) {           // one dot per trade by the overlap's members in that ticker, on the span of those trades
+    const tr = pplCongTrades(d).filter(t => t.ticker === o.ticker && (o.members || []).includes(t.who));
+    if (!tr.length) return '';
+    const ts = tr.map(t => Date.parse(t.date)), lo = Math.min(...ts), span = Math.max(Math.max(...ts) - lo, 864e5);
+    return `<div style="position:relative;height:18px;margin:6px 4px 2px;border-bottom:1px solid #27272a" title="Trades by these members, ${fcEsc(tr.map(t => t.date).sort()[0])} to ${fcEsc(tr.map(t => t.date).sort().pop())}">
+        ${tr.map(t => `<span title="${fcEsc(`${t.who} ${pplBuy(t) ? 'bought' : 'sold'} ${t.date}`)}" style="position:absolute;bottom:-5px;left:calc(${(100 * (Date.parse(t.date) - lo) / span).toFixed(1)}% - 5px);width:10px;height:10px;border-radius:50%;background:${pplBuy(t) ? '#4ade80' : '#f87171'}"></span>`).join('')}</div>
+        <div class="fc-note" style="display:flex;justify-content:space-between"><span>${fcEsc(new Date(lo).toISOString().slice(0, 10))}</span><span>${fcEsc(new Date(lo + span).toISOString().slice(0, 10))}</span></div>`;
+}
+function pplCongress(d) {
+    const box = document.getElementById('pplCong');
+    if (!pplHasCong(d)) { box.innerHTML = ''; return; }
+    const cd = d.congress_detail, cs = d.congress_summary || {}, sales = [...(cd.big_sales_30d || [])].sort((a, b) => (b.amount_high || 0) - (a.amount_high || 0));
+    const ov = [...(cd.overlaps || [])].sort((a, b) => (b.members || []).length - (a.members || []).length || (b.n || 0) - (a.n || 0));
+    const dirBadge = x => `<span class="fc-badge ${x === 'buy' ? 'fc-pos' : x === 'sell' ? 'fc-neg' : ''}">${x === 'buy' ? 'BUY' : x === 'sell' ? 'SELL' : 'MIXED'}</span>`;
+    box.innerHTML = `<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        ${pplPanel('MEMBERS TRADING', `<div style="font-size:30px;font-weight:700">${cs.members_trading_30d == null ? pplDash('not in the file') : fcNum(cs.members_trading_30d, 0)}</div><div class="fc-note">members of Congress traded in the last 30 days</div>`)}
+        ${pplPanel('MOST BOUGHT (30 DAYS)', pplCongRank(d, cs.most_bought_30d, 'buy'), 'by number of members; the range adds up the disclosure ranges of the trades in the file')}
+        ${pplPanel('MOST SOLD (30 DAYS)', pplCongRank(d, cs.most_sold_30d, 'sell'))}
+        ${pplPanel('RECENT BIG SALES', sales.length ? `<div style="max-height:300px;overflow-y:auto"><table class="fc-table"><tr><th>Date</th><th>Member</th><th>Ticker</th><th>Amount</th></tr>${sales.map(x => `<tr><td title="Filed ${fcEsc(x.filed || 'unknown')}">${fcEsc(x.date)}</td><td>${pplMember(x.member)}</td><td>${pplSym(x.ticker)}</td><td>${pplRange(x.amount_low, x.amount_high)}</td></tr>`).join('')}</table></div>` : '<div class="fc-muted">no big sales in the file</div>', 'sorted by the top of the disclosed range')}</div>
+        <div class="fc-sub" style="margin:16px 0 8px">OVERLAPS: TICKERS SEVERAL MEMBERS TRADED <span class="fc-note">(tap a name for the member, a ticker for CHART)</span></div>
+        ${ov.length ? `<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">${ov.map(o => `<div class="rainbow-card" style="min-height:0"><div class="rainbow-inner"><div class="fc-body">
+            <div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:20px;font-weight:700">${pplSym(o.ticker)}</span>${dirBadge(o.direction)}</div>
+            <div class="fc-note">${fcNum((o.members || []).length, 0)} members · ${fcNum(o.n, 0)} trade${o.n === 1 ? '' : 's'}</div>
+            <div style="margin-top:4px">${(o.members || []).map(pplMember).join(' · ')}</div>${pplTimeline(d, o)}</div></div></div>`).join('')}</div>` : '<div class="fc-muted">no overlaps in the file</div>'}
+        <div class="fc-note" style="margin-top:12px">Public disclosures filed up to 45 days after a trade, as dollar ranges. Not a trade call and not financial advice.</div>`;
+}
+
+// ---- COMPANIES view: one card per company
+function pplCompanies(d) {
+    const box = document.getElementById('pplComp');
+    if (!pplHasComp(d)) { box.innerHTML = ''; return; }
+    box.innerHTML = d.companies.map(c => {
+        const tr = c.treasury || [], th = c.top_holders || [], ins = [...(c.insider_trades || [])].sort((a, b) => b.date.localeCompare(a.date));
+        const tot = tr.reduce((s, x) => s + (x.value_est || 0), 0), anyVal = tr.some(x => x.value_est != null);
+        return `<div class="rainbow-card" style="min-height:0"><div class="rainbow-inner">
+            <div class="fc-head"><div><div class="fc-title">${fcEsc(c.name)}</div><div class="fc-sub">${pplSym(c.ticker)}${c.cik ? ` · CIK ${fcEsc(c.cik)}` : ''} · as of ${fcEsc(c.as_of || '—')}</div></div></div>
+            <div class="fc-body"><div class="fc-kpis">${kpi('Price', c.price == null ? pplDash('not in the file') : `$${fcNum(c.price, 2)}`, c.price_as_of ? `as of ${fcEsc(c.price_as_of)}` : '')}${kpi('Market cap', pplMon(c.market_cap, 'no market cap in the file'))}${kpi('Shares out', c.shares_outstanding == null ? pplDash('not in the file') : fcNum(c.shares_outstanding, 0))}</div>
+            <div class="fc-sub" style="margin-top:10px">TREASURY HOLDINGS${anyVal ? ` · ${pplMoney(tot)} at today's price` : ''}</div>
+            ${tr.length ? `<table class="fc-table"><tr><th>Asset</th><th>Held</th><th>Value now</th><th>As of</th><th>Source</th></tr>${tr.map(x => `<tr><td>${fcEsc(x.asset)}</td><td>${x.amount == null ? pplDash('not in the file') : fcNum(x.amount, 0)}</td><td>${pplMon(x.value_est, 'no price to value it')}</td><td>${fcEsc(x.as_of || '—')}</td><td>${pplUrl(x.source_url) ? `<a href="${fcEsc(x.source_url)}" target="_blank" rel="noopener">filing ↗</a>` : pplDash('no link in the file')}</td></tr>`).join('')}</table>` : '<div class="fc-muted">No treasury holdings in the file</div>'}
+            <div class="fc-sub" style="margin-top:10px">TOP HOLDERS</div>
+            ${th.length ? `<div style="max-height:240px;overflow-y:auto"><table class="fc-table"><tr><th>Holder</th><th>Shares</th><th>%</th><th>Change</th><th>As of</th></tr>${th.map(h => `<tr><td>${fcEsc(h.name)}</td><td>${h.shares == null ? pplDash('not in the file') : fcNum(h.shares, 0)}</td><td>${h.pct == null ? pplDash('not in the file') : h.pct.toFixed(2) + '%'}</td>
+                <td>${h.change_shares == null ? pplDash('no prior filing in the file') : `<span class="${fcCls(h.change_shares)}">${h.change_shares > 0 ? '+' : ''}${fcNum(h.change_shares, 0)}</span>`}</td><td>${fcEsc(h.as_of || '—')}${h.form ? ` <span class="fc-muted">${fcEsc(h.form)}</span>` : ''}</td></tr>`).join('')}</table></div>` : '<div class="fc-muted">No holders in the file</div>'}
+            <div class="fc-sub" style="margin-top:10px">INSIDER TRADES</div>
+            ${ins.length ? `<div style="max-height:240px;overflow-y:auto"><table class="fc-table"><tr><th>Date</th><th></th><th>Who</th><th>Amount</th><th>Filing</th></tr>${ins.map(x => `<tr><td>${fcEsc(x.date)}</td><td>${pplBadge(x)}</td><td>${fcEsc(x.owner || x.name || '—')}</td><td>${pplAmount(x)}</td><td>${pplUrl(x.source_url) ? `<a href="${fcEsc(x.source_url)}" target="_blank" rel="noopener">${fcEsc(x.form || 'filing')} ↗</a>` : pplDash('no filing link in the file')}</td></tr>`).join('')}</table></div>` : '<div class="fc-muted">No insider trades in the file</div>'}
+            <div class="fc-note" style="margin-top:8px">${fcEsc(c.completeness || '')}</div>
+            <div class="fc-note">Sources: ${(c.sources || []).map(s => pplUrl(s.url) ? `<a href="${fcEsc(s.url)}" target="_blank" rel="noopener">${fcEsc(s.label)}</a>` : fcEsc(s.label)).join(' · ') || pplDash('no sources in the file')}</div></div></div></div>`;
+    }).join('');
 }
 
 // ---- top strip: Congress this month (from congress_summary), latest trades across everyone, most bought this month
@@ -176,6 +265,13 @@ function pplChart(p, range) {
 document.addEventListener('click', e => {
     const sym = e.target.closest && e.target.closest('#people-tab [data-sym]');
     if (sym) { e.preventDefault(); if (window.chartOpenSymbol) window.chartOpenSymbol(sym.dataset.sym); return; }
+    const mem = e.target.closest && e.target.closest('#people-tab [data-member]');
+    if (mem) {          // open the member's card: back to the PEOPLE view, filtered to the name
+        e.preventDefault();
+        document.getElementById('pplSearch').value = mem.dataset.member; PPL.kind = 'all';
+        document.querySelectorAll('#people-tab [data-kind]').forEach(b => b.classList.toggle('active', b.dataset.kind === 'all'));
+        pplView('people'); pplRender(); return;
+    }
     const card = e.target.closest && e.target.closest('.ppl-card');
     if (!card) return;
     const slug = card.dataset.slug, rb = e.target.closest('[data-range]'), act = e.target.closest('[data-act]');

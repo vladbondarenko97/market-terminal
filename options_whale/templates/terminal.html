@@ -1618,11 +1618,18 @@
                         <span class="text-zinc-600">·</span> <span id="pplRunInfo">—</span>
                     </div>
                     <div class="flex flex-wrap items-center gap-2">
+                        <span id="pplViews" class="flex gap-1 mr-2">
+                            <button class="fc-toggle active" data-view="people" onclick="pplView('people')">PEOPLE</button>
+                            <button class="fc-toggle hidden" data-view="congress" onclick="pplView('congress')">CONGRESS</button>
+                            <button class="fc-toggle hidden" data-view="companies" onclick="pplView('companies')">COMPANIES</button>
+                        </span>
+                        <span id="pplPeopleCtl" class="flex flex-wrap items-center gap-2">
                         <button class="fc-toggle active" data-kind="all" onclick="pplKind('all')">ALL</button>
                         <button class="fc-toggle" data-kind="sec" onclick="pplKind('sec')">SEC</button>
                         <button class="fc-toggle" data-kind="congress" onclick="pplKind('congress')">CONGRESS</button>
                         <input id="pplSearch" type="search" placeholder="Search name" aria-label="Search people" oninput="pplRender()"
                             class="bg-black border border-zinc-800 rounded px-2 py-1 text-[11px] text-zinc-300 w-36">
+                        </span>
                         <button class="fc-toggle" onclick="loadPeople()">REFRESH</button>
                         <a class="fc-toggle" href="https://search.vlad.yt/people" target="_blank" rel="noopener"
                             title="Where people are added. Reachable only on the tailnet (Tailscale).">manage people →</a>
@@ -1638,9 +1645,13 @@
                         </div>
                     </div>
                 </div>
+                <div id="pplCong" class="hidden p-5 overflow-y-auto terminal-scroll pb-24 flex-1"></div>
+                <div id="pplComp" class="hidden grid grid-cols-1 xl:grid-cols-2 gap-6 p-5 overflow-y-auto terminal-scroll pb-24 flex-1 auto-rows-min"></div>
+                <div id="pplPeopleView" class="flex flex-col flex-1 overflow-hidden">
                 <div class="px-5 pt-3"><div id="pplStrip" class="grid grid-cols-1 lg:grid-cols-3 gap-4"></div></div>
                 <div id="pplGrid" class="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-6 p-5 overflow-y-auto terminal-scroll pb-24 flex-1 auto-rows-min">
                     <div class="fc-muted">Loading…</div>
+                </div>
                 </div>
             </div>
 
@@ -1907,7 +1918,7 @@
                                 class="console-title-ext"> Engine v3 · ask the terminal</span></span>
                         <div class="console-actions flex flex-wrap gap-3 items-center">
                             <select id="askBackend" class="ask-select" onclick="event.stopPropagation()" title="Which engine answers"
-                                aria-label="Engine"><option value="local">Local 9B</option><option value="claude">Sonnet</option></select>
+                                aria-label="Engine"><option value="local">Local</option><option value="claude">Sonnet</option></select>
                             <select id="askEngine" class="ask-select" onclick="event.stopPropagation()" title="Which model on this machine answers"
                                 aria-label="Answering model"><option value="">Local model</option></select>
                             <button onclick="event.stopPropagation(); askNewChat()" class="text-[9px] text-zinc-500 hover:text-white uppercase"

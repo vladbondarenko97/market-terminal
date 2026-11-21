@@ -1965,6 +1965,10 @@ def api_help():
       <description>Asks the console engine a question ({"question", "model", "conversation"}). Streams events: delta, replace, thinking, tool, error, done. The model can only read the listed GET sources.</description>
       <parameters />
     </endpoint>
+    <endpoint method="POST" path="/api/assistant/switch" format="json" writes="the local model loaded in oMLX (~/.imessage_local_model, the dash's placement switch)">
+      <description>Loads another local model ({"model": "12b|9b|27b|sonnet"}), the same switch as the iMessage assistant's /load and ai.vlad.yt use: one model in oMLX. 403 on the Oracle copy, which has no oMLX. /api/assistant/ask always asks the loaded model.</description>
+      <parameters />
+    </endpoint>
     <endpoint method="POST" path="/api/assistant/reset" format="json" writes="forgets one conversation (in memory)">
       <description>Forgets the conversation with the given id.</description>
       <parameters />
