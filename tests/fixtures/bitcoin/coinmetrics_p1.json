@@ -1,0 +1,14 @@
+{
+ "data": [
+  {
+   "asset": "btc",
+   "time": "2026-11-18T00:00:00.000000000Z",
+   "CapMVRVCur": "1.176184053390177897",
+   "CapMrktCurUSD": "1265106448470.685319662102673368",
+   "HashRate": "1052234303.161751",
+   "PriceUSD": "62896.9341901052",
+   "SplyCur": "20113960.47773834"
+  }
+ ],
+ "next_page_url": "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics?page=2"
+}

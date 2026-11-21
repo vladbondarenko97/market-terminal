@@ -32,6 +32,7 @@ When you change how a stored value is computed:
 | `FANS_VERSION` (`core/fans.py`) | `fans_v2` | Scenario fans (`fans` snapshot block) and the `kronos_fan_v2` / `baseline_fan_v1` forecast log rows |
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
 | `STUDY_VERSION` (`core/chaos.py`) | `regime_study_v2` | The regime study of card 14 (`chaos.long.study`: base rates, early-warning onsets) |
+| `BITCOIN_VERSION` (`core/bitcoin.py`) | `bitcoin_v1` | BITCOIN tab block: price and cycle, on-chain, leverage, flows, checklist rows and verdict |
 | `FEDOPS_VERSION` (`core/fedops.py`) | `fed_ops_v4` | Fed / Treasury operations block and its summaries (card 15) |
 | `SHANGHAI_VERSION` (`core/metrics.py`) | `shanghai_dated_v1` | Date-paired Shanghai silver spread (`shanghai.dated`) |
 | `EAGLE_VERSION` (`core/metrics.py`) | `eagle_premium_v1` | Silver Eagle premium statistics, units-sold flow and dealer-book summary (`ebay.premium`, `ebay.flow`, `ebay.book`) |
@@ -45,6 +46,12 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 ## Changes
 
 Newest first, then the changes that came with the v2 pipeline.
+
+- **Bitcoin tab added** (`bitcoin_v1`, 2026-11-20): new snapshot key `bitcoin` and observation `bitcoin.ibit_shares`; no earlier value changes meaning. New values: the
+  200-week MA (mean of the last 1,400 daily closes), the Mayer multiple (price / 200-day MA), the realized cap (market cap / MVRV, because Coin Metrics' free API refuses
+  `CapRealUSD`), the realized price (realized cap / supply) and the **MVRV Z-score = (market cap - realized cap) / sample standard deviation (ddof 1) of market cap over all days to that date**
+  (expanding window, so a past day's Z never uses later data; no value before 365 days of history). Hash ribbons use 30- and 60-day means of the hash rate; "recovery" means the
+  30-day mean crossed back above the 60-day within 30 days. The verdict counts only rows graded on history (none until phase 4), so it is NO CALL or HOLD. Signal Watch gets two `BTC` rows.
 
 - **CHART tab fans** (`kronos_fan_intraday_v1`, `baseline_fan_intraday_v1`, 2026-11-10): new, not a change to an existing value.
   `bars --fans` builds 1h and 5m fans for SPY and SLV from the stored Parquet bars (the last 401 bars; the baseline bootstraps

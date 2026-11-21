@@ -1870,6 +1870,14 @@ def api_help():
       <description>The Chaos / Peace block (Forecast Lab card 14) of the latest committed snapshot: score, regime, components, levers, election studies. 503 until a pipeline run has created the database; 404 when the snapshot has no chaos block.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/bitcoin" format="json" source="stored">
+      <description>The BITCOIN tab's block of the latest committed snapshot: price and cycle (200-week MA, Mayer multiple, drawdown, halving clock), on-chain (realized price, MVRV, MVRV Z-score, hash ribbons), leverage (Deribit funding, open interest, DVOL), flows (IBIT, Coinbase premium, stablecoin supply, CME COT), the checklist rows with their status and the HOLD / BUY / SELL / NO CALL verdict. Each part is fresh, stale or missing with a reason; the history series are left out (see /api/bitcoin/history). Conditions, not a trade call. 404 when the snapshot has no bitcoin block, 503 before the first run.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/bitcoin/history" format="json" source="stored">
+      <description>Weekly series stored in the latest snapshot's bitcoin block for the charts: `t` (days since 1970-01-01), `price`, `ma_200w`, `realized_price`, `mvrv_z` (null where not computable). 404 when the snapshot has none.</description>
+      <parameters />
+    </endpoint>
     <endpoint method="GET" path="/api/fed_ops" format="json" source="stored">
       <description>Fed / Treasury operations (card 15) of the latest committed snapshot, or before the first run the same block summarised from the stored history (every part stale). repo: per market and reference rate (SOFR, TGCR, BGCR, EFFR) the latest day, the 4-week change and `ago` (the reading 1 month, 3 months and 1 year earlier); `monthly` and `yearly` levels (average, highest day, last day with its date, in USD bn; rate means). buybacks: `this_year_vs_last_year_same_dates`, the last operations, scheduled ones, the 5 largest, monthly, quarterly, yearly (with year to date and by operation type) and trailing-12-month totals, by security type. auctions: recent results, the upcoming calendar, per-tenor bid-to-cover now and a year earlier and by year, monthly issuance. A part that could not be refreshed is status stale with the date of its stored data. 404 when nothing is stored.</description>
       <parameters />
@@ -3101,9 +3109,9 @@ def _latest_forecast(conn):
     if hit is None:
         ctx = _v2lake.load_snapshot(conn, row["run_id"])
         hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining"), "chaos": ctx.get("chaos"),
-               "fed_ops": ctx.get("fed_ops")}
+               "fed_ops": ctx.get("fed_ops"), "bitcoin": ctx.get("bitcoin")}
         data_cache.set(key, hit)
-    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"), chaos=hit.get("chaos"), fed_ops=hit.get("fed_ops"))
+    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"), chaos=hit.get("chaos"), fed_ops=hit.get("fed_ops"), bitcoin=hit.get("bitcoin"))
 
 
 @app.route('/api/forecast', methods=['GET'])
@@ -3378,6 +3386,47 @@ def api_fed_ops():
     if not sec:
         return json_error("no Fed / Treasury operations data yet: run the pipeline", 404)
     return jsonify({"status": "success", "run": run, "as_of": sec.get("as_of"), "data": sec[part] if part else sec})
+
+
+def _bitcoin_block():
+    """(run, block) of the latest snapshot, or an error response."""
+    conn = _open_readonly()
+    if conn is None:
+        return None, None, _not_initialised()
+    try:
+        run, fc = _latest_forecast(conn)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return None, None, _not_initialised()
+        raise
+    finally:
+        conn.close()
+    blk = (fc or {}).get("bitcoin")
+    if not blk or blk.get("status") == "error":
+        return run, None, json_error((blk or {}).get("reason") or "no Bitcoin data yet: run the pipeline", 404)
+    return run, blk, None
+
+
+@app.route('/api/bitcoin', methods=['GET'])
+@guarded("Bitcoin")
+def api_bitcoin():
+    """The BITCOIN tab's block of the latest committed snapshot, without its chart series."""
+    run, blk, err = _bitcoin_block()
+    if err:
+        return err
+    return jsonify({"status": "success", "run": run, "as_of": blk.get("as_of"), "data": {k: v for k, v in blk.items() if k != "history"}})
+
+
+@app.route('/api/bitcoin/history', methods=['GET'])
+@guarded("Bitcoin history")
+def api_bitcoin_history():
+    """The weekly chart series stored in the latest snapshot's bitcoin block."""
+    run, blk, err = _bitcoin_block()
+    if err:
+        return err
+    if not blk.get("history"):
+        return json_error("this snapshot has no Bitcoin history series", 404)
+    return jsonify({"status": "success", "run": run, "as_of": blk.get("as_of"), "data": blk["history"]})
 
 
 GUIDE_SKIP = {"what", "whats", "the", "and", "does", "mean", "means", "explain", "how", "why", "are", "for", "this", "that", "card", "like", "new", "simple", "terms", "program", "tell", "about"}

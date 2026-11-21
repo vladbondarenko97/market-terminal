@@ -63,6 +63,7 @@
                 <div id="tab-arbitrage" class="tab-btn" onclick="switchTab('arbitrage')">TIME ARBITRAGE</div>
                 <div id="tab-forecast" class="tab-btn" onclick="switchTab('forecast')"><span class="fc-rainbow-text">FORECAST LAB</span></div>
                 <div id="tab-chart" class="tab-btn" onclick="switchTab('chart')">CHART</div>
+                <div id="tab-bitcoin" class="tab-btn" onclick="switchTab('bitcoin')">BITCOIN</div>
                 <label class="fans-tog" title="Overlay Kronos scenario fans (100 sampled paths) on Forecast Lab cards 1, 10 and 11. Off by default."><input type="checkbox" id="fansToggle"> KRONOS</label>
             </nav>
 
@@ -1522,6 +1523,93 @@
                 <div id="chTracked" class="ch-tracked"></div>
             </div>
 
+            <div id="bitcoin-tab" class="tab-content hidden flex-1 flex flex-col overflow-hidden">
+                <div class="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
+                    <div class="text-[10px] tracking-[0.25em] text-zinc-400 uppercase">
+                        <span class="fc-rainbow-text font-bold">Bitcoin</span>
+                        <span class="text-zinc-600">·</span> <span id="btcRunInfo">—</span>
+                    </div>
+                    <button class="fc-toggle" onclick="loadBitcoin()">REFRESH</button>
+                </div>
+                <div id="btcBackdrop" class="fc-backdrop hidden" onclick="btcFull()"></div>
+                <div id="btcFaqModal" class="fc-faq hidden" role="dialog" aria-modal="true" aria-labelledby="btcFaqTitle">
+                    <div class="fc-faq-inner rainbow-card" style="min-height:0">
+                        <div class="rainbow-inner">
+                            <div class="fc-head"><div class="fc-title" id="btcFaqTitle">FAQ</div>
+                                <button class="fc-icon" onclick="btcFaqClose()" title="Close (Esc)">✕</button></div>
+                            <div id="btcFaqBody" class="fc-faq-body"></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="bitcoinGrid" class="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-6 p-5 overflow-y-auto terminal-scroll pb-24 flex-1 auto-rows-min">
+                    <div class="rainbow-card lg:col-span-2 2xl:col-span-3" style="--fc-delay:0s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">B1 · VERDICT</div><div class="fc-sub">Bottom and top checklists · fired, waiting or missing · conditions graded on history, not a price call</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="btcFaq('b1')" title="How to read this card">?</button>
+                                    <button class="fc-icon" onclick="btcFull('b1')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="btcCopy('b1')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="b1" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
+                    <div class="rainbow-card lg:col-span-2" style="--fc-delay:-0.66s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">B2 · PRICE &amp; CYCLE</div><div class="fc-sub">Price · drawdown · 200-week MA · realized price · Mayer multiple · halving clock</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="btcFaq('b2')" title="How to read this card">?</button>
+                                    <button class="fc-icon" onclick="btcFull('b2')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="btcCopy('b2')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="b2" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
+                    <div class="rainbow-card" style="--fc-delay:-1.32s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">B3 · ON-CHAIN</div><div class="fc-sub">MVRV Z-score · realized price · hash ribbons</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="btcFaq('b3')" title="How to read this card">?</button>
+                                    <button class="fc-icon" onclick="btcFull('b3')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="btcCopy('b3')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="b3" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
+                    <div class="rainbow-card" style="--fc-delay:-1.98s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">B4 · LEVERAGE &amp; OPTIONS</div><div class="fc-sub">Deribit perpetual funding · open interest · DVOL</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="btcFaq('b4')" title="How to read this card">?</button>
+                                    <button class="fc-icon" onclick="btcFull('b4')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="btcCopy('b4')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="b4" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
+                    <div class="rainbow-card lg:col-span-2" style="--fc-delay:-2.64s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">B5 · FLOWS</div><div class="fc-sub">IBIT flows · Coinbase premium · stablecoin supply · CME COT</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="btcFaq('b5')" title="How to read this card">?</button>
+                                    <button class="fc-icon" onclick="btcFull('b5')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="btcCopy('b5')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="b5" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div id="forecast-tab" class="tab-content hidden flex-1 flex flex-col overflow-hidden">
                 <div class="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
                     <div class="text-[10px] tracking-[0.25em] text-zinc-400 uppercase">
@@ -1948,6 +2036,7 @@
 
     <script src="/static/app.js"></script>
     <script src="/static/forecast.js"></script>
+    <script src="/static/bitcoin.js"></script>
     <script src="/static/fans.js"></script>
     <script src="/static/chart.js"></script>
     <script src="/static/assistant.js"></script>

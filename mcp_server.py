@@ -111,7 +111,7 @@ SOURCES.update({
 # ---------------------------------------------------------------- the knowledge base: the repo's own docs and model code (public, no secrets)
 ROOT = Path(__file__).resolve().parent
 DOC_CAP = 30000
-MODEL_FILES = ("metrics", "forecast", "refining", "chaos", "edges", "watch", "market_calendar")   # the models; not the broker, sources or run plumbing
+MODEL_FILES = ("metrics", "forecast", "refining", "chaos", "bitcoin", "edges", "watch", "market_calendar")   # the models; not the broker, sources or run plumbing
 
 
 def doc_files():
@@ -222,7 +222,7 @@ def market_server():
     @mcp.tool(annotations=READ)
     async def read_doc(name: str = "", section: str = "") -> str:
         """Read a document or model source: docs/*.md (guide: plain-English explanations; terminal, forecast-lab, data, api, operations, value-changes, known-issues), README.md, AGENTS.md and the model code
-        core/{metrics,forecast,refining,chaos,edges,watch,market_calendar}.py (core/metrics.py has the VMRI and GEX formulas). Empty name lists them. section = a heading (markdown) or a def/class/CONSTANT name (python), e.g. name=core/metrics.py section=VMRI_VERSION."""
+        core/{metrics,forecast,refining,chaos,bitcoin,edges,watch,market_calendar}.py (core/metrics.py has the VMRI and GEX formulas). Empty name lists them. section = a heading (markdown) or a def/class/CONSTANT name (python), e.g. name=core/metrics.py section=VMRI_VERSION."""
         if not name:
             return "error: pass name (and optionally section) from this list:\n" + "\n".join(doc_files()) if section else "\n".join(doc_files())
         return await asyncio.to_thread(read_doc_text, name, section)

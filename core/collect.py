@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 import config
-from core import cme, fedops, history, importer, lake, metrics
+from core import bitcoin, cme, fedops, history, importer, lake, metrics
 from core import news as newsmod
 from core import sources as src
 from core.sources import SourceUnavailable
@@ -823,6 +823,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
     fans_ctx = timed("fans", lambda: _guarded_fans(session, today, frames_hist, options))     # after refining: shares its fetches
     chaos_ctx = timed("chaos", lambda: _guarded_chaos(conn, session, run["run_id"], today, frames_hist))
     fed_ops_ctx = timed("fed_ops", lambda: _guarded_fed_ops(conn, session, run["run_id"], today))     # after chaos: the Treasury requests are shared
+    bitcoin_ctx = timed("bitcoin", lambda: _guarded_bitcoin(conn, session, run["run_id"], today, chaos_ctx, prices))     # after chaos: two of its rows read it
 
     ctx = {
         "run": {k: run[k] for k in ("run_id", "generated_at", "run_folder", "mode", "code_version", "trigger")}
@@ -839,6 +840,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
         "news": news,
         "chaos": chaos_ctx,
         "fed_ops": fed_ops_ctx,
+        "bitcoin": bitcoin_ctx,
     }
     frames = {"trades": {k: v[1] for k, v in flows.items()}}
     return lake.clean_json(ctx), frames
@@ -1180,6 +1182,15 @@ def _guarded_fed_ops(conn, session, run_id, today):
     """Card 15 is optional too: top up the stored repo, rate, buyback and auction history, then summarise it."""
     try:
         return fedops.build(conn, today, fedops.topup(conn, session, run_id, today))
+    except Exception as e:
+        return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
+
+
+def _guarded_bitcoin(conn, session, run_id, today, chaos, prices):
+    """The Bitcoin tab's block is optional too: a failure there must not abort the run."""
+    try:
+        vix, v3 = (prices.get("vix") or {}).get("value"), (prices.get("vix3m") or {}).get("value")
+        return bitcoin.collect(conn, session, run_id, today, chaos, vix / v3 if vix and v3 else None)
     except Exception as e:
         return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
 
