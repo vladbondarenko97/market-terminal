@@ -73,9 +73,17 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 `vmri`, `mmri`, `paper_physical`, `oi_divergence`, `es_put_call`, `options`, `flow`, `technicals`, `weather`, `breadth`,
 `execution`, `ebay`, `sources`, `stage_seconds`, the model-feature sections from `extended_features()`
 (`price_stats`, `vol_regime`, `cme_positioning`, `silver_options_cme`, `inventory_trend`, `silver_basis`,
-`regime_context`), `position_marks`, `forecast`, `refining`, `fans`, `chaos`, `fed_ops`, `news` and `appendix`. A section that could not be built is
+`regime_context`), `position_marks`, `forecast`, `refining`, `fans`, `chaos`, `fed_ops`, `bitcoin`, `news` and `appendix`. A section that could not be built is
 `{"status": "missing", "reason": "..."}`. The daily file `report_snapshot.json` is this document, indented.
 `python main_pipeline.py catalog` lists the metrics with their paths.
+
+`bitcoin` (model `bitcoin_v1`, `core/bitcoin.py`) is the BITCOIN tab's block: `status` (fresh, partial, missing), `reason`, `as_of`, `price` (price, ATH, drawdown, 200-week MA,
+Mayer multiple, halving clock; from the stored `BTC-USD` daily bars of the chart store, or Coin Metrics `PriceUSD` when the bars are missing or under 1,400 days), `onchain`
+(market cap, MVRV, realized cap and price, MVRV Z, hash ribbons; Coin Metrics community API), `leverage` (`funding`, `dvol`: Deribit public API), `flows` (`ibit`, `coinbase_premium`,
+`stablecoins`, `cot`), `rows` (the 11 checklist rows), `verdict`, `history` (weekly `t`, `price`, `ma_200w`, `realized_price`, `mvrv_z`) and `source_errors`. Every part is
+`{"status": "missing", "reason"}` when its source did not answer; offline runs have no Bitcoin part. The IBIT shares-outstanding day is stored as the observation `bitcoin.ibit_shares`
+(`observed_at` the iShares as-of date, `value_num` shares, `dims.nav`), one per day, so the flow history builds up from the first run. The Coin Metrics capture (`kind` `coinmetrics_full`,
+~1.5 MB) is taken once a month and each run adds a 21-day `coinmetrics_tail` on top of it; the DefiLlama capture keeps the last 120 days.
 
 `fans` (model `fans_v2`, `core/fans.py`) holds the scenario fans: `status`, `reason`, `version`, a `kronos` block (status, reason, model, input, spread, verdict, device, seconds)
 and `series`, keyed by series id (12 daily markets and fuels, `crack.diesel`, `crack.321`, 6 weekly EIA stocks and utilization, 3 `days.*`).

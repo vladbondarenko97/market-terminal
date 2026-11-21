@@ -94,6 +94,10 @@ SOURCES = OrderedDict([
     ("chaos", ("/api/chaos", (), "Chaos / Peace index (card 14) of the latest run as labelled rows: score, regime, previous day, components "
         "used and missing, the three largest drivers, liquidity and Treasury-supply lever rows with level and 4-week change, the midterm and "
         "presidential-year event studies (n and evidence grade), the stored 60-day record high and low, trading days to the next election.")),
+    ("bitcoin", ("/api/bitcoin", (), "Bitcoin (BITCOIN tab) of the latest run as labelled rows: price, drawdown from the all-time high, 200-week MA, Mayer "
+        "multiple, halving clock, realized price, MVRV and MVRV Z-score, hash ribbons, Deribit funding and open interest, DVOL, IBIT flows, Coinbase premium, "
+        "stablecoin supply, CME COT, then the HOLD / BUY / SELL / NO CALL verdict and every checklist row (fired, waiting or missing with the reason, and "
+        "whether it is graded on history). Conditions, not a trade call. Say the run time.")),
     ("macro_ledger", ("/api/macro_ledger_full", ("limit",), "Macro ledger rows per run: VMRI, DXY, yields, OAS, VIX, crude, gold, ratios. limit=N rows.")),
     ("institutional_history", ("/api/institutional_history", ("ticker", "limit"), "Per-run dark-pool and GEX history for SPY or SLV. limit=N rows.")),
     ("arbitrage_history", ("/api/arbitrage_history", ("limit",), "Physical silver vs spot premium history (eBay Silver Eagles). limit=N rows.")),
@@ -202,7 +206,7 @@ def _walk(obj, path):
 
 # Which end of a long list matters. Default "last": history runs oldest to newest.
 KEEP = {"positions": "first", "macro_news": "first", "macro_calendar": "first",     # newest or soonest first
-        "day_scanner": "first", "signal_watch": "first", "edge_lab": "first",
+        "day_scanner": "first", "signal_watch": "first", "edge_lab": "first", "bitcoin": "first",
         "option_chain": "middle", "gex": "middle"}                                   # strikes, centred on spot
 
 
@@ -380,6 +384,28 @@ def _shape_war_room(obj, params):
 
 def _shape_chaos(obj, _params):
     return {"as_of": obj.get("as_of"), "rows": [line for _label, line in narrative.chaos_rows(obj.get("data"))]}
+
+
+def _shape_bitcoin(obj, _params):
+    d = obj.get("data") or {}
+    pc, oc, lv, fl, v = d.get("price") or {}, d.get("onchain") or {}, d.get("leverage") or {}, d.get("flows") or {}, d.get("verdict") or {}
+    part = lambda name, x, fn: f"{name}: " + (fn(x) if x and x.get("status") not in (None, "missing") else f"missing ({(x or {}).get('reason')})")
+    n = lambda x, f="{:,.0f}": "n/a" if x is None else f.format(x)
+    rows = [part("Price", pc, lambda x: f"${n(x['price'])} on {x['as_of']}, {n(x['drawdown_pct'], '{:+.1f}')}% from the all-time high ${n(x['ath'])}; 200-week MA {n(x.get('ma_200w'))}; "
+                                       f"Mayer multiple {n(x.get('mayer'), '{:.2f}')}; {x['halving']['days_since']} days since the last halving, next about {x['halving']['next_estimate']} (estimate)"),
+            part("On-chain", oc, lambda x: f"realized price ${n(x.get('realized_price'))}, MVRV {n(x.get('mvrv'), '{:.2f}')}, MVRV Z {n(x.get('mvrv_z'), '{:+.2f}')} (as of {x['as_of']}); "
+                                         f"hash ribbons {(x.get('hash_ribbons') or {}).get('state') or 'missing'}"),
+            part("Funding", lv.get("funding"), lambda x: f"{n(x['funding_8h'] * 100, '{:+.4f}')}% per 8h ({n(x.get('annualized_pct'), '{:+.1f}')}% a year), 7-day average "
+                                                          f"{n(None if x.get('avg_7d') is None else x['avg_7d'] * 100, '{:+.4f}')}% per 8h; open interest ${n(x.get('open_interest_usd'))}"),
+            part("DVOL", lv.get("dvol"), lambda x: f"{n(x['dvol'], '{:.1f}')} ({n(x['percentile'], '{:.0f}')}th percentile of the last {x['days']} days), 30 days ago {n(x.get('dvol_30d_ago'), '{:.1f}')}"),
+            part("IBIT flows", fl.get("ibit"), lambda x: f"{n(x['shares_outstanding'])} shares as of {x['as_of']}, 5-day net flow ${n(x.get('sum_5d_usd'))}, {x['stored_days']} days stored"),
+            part("Coinbase premium", fl.get("coinbase_premium"), lambda x: f"{n(x['premium_pct'], '{:+.3f}')}% (Coinbase USD vs Kraken USDT)"),
+            part("Stablecoins", fl.get("stablecoins"), lambda x: f"USDT+USDC ${n(x['usdt_usdc_usd'])}, 30-day change {n(x.get('change_30d_pct'), '{:+.2f}')}%"),
+            part("CME COT", fl.get("cot"), lambda x: f"as of {x['as_of']}: asset managers net {n(x['asset_managers']['net'])}, leveraged funds net {n(x['leveraged_funds']['net'])}"),
+            f"Verdict: {v.get('call')}. {v.get('text')}"]
+    rows += [f"{r['side']} row {r['name']}: {r['status']}" + (f" ({r['reading']})" if r.get("reading") and r["status"] != "missing" else f" ({r.get('reason')})" if r["status"] == "missing" else "")
+             + f"; {r['evidence']}" for r in d.get("rows") or []]
+    return {"as_of": obj.get("as_of"), "rows": rows}
 
 
 def _shape_shanghai(obj, _params):
@@ -692,7 +718,7 @@ def _shape_fed_latest(obj, params=None):
 
 
 SHAPERS = {**{n: _shape_fed if n.endswith("_history") else _shape_fed_latest for n in FED_SOURCES},
-           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "eia_history": _shape_eia, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "eia_history": _shape_eia, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "bitcoin": _shape_bitcoin, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool

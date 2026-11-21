@@ -244,6 +244,8 @@ Card 9 grades the forecasts the pipeline logged.
   overlapping windows and no fitted parameters. Card 5's hit rate uses in-sample residuals from one fit on the full
   window, so it is in-sample and optimistic.
 
+Signal Watch also carries two `BTC` rows (Bitcoin bottom and top checklist) built from the snapshot's `bitcoin` verdict; they fire only on a BUY or SELL verdict, which needs rows graded on history (see [Terminal](terminal.md#bitcoin-tab)).
+
 ## Adding a Forecast Lab card
 
 A card is one Python function, one HTML block and one JavaScript renderer, joined by a key in the snapshot. The example

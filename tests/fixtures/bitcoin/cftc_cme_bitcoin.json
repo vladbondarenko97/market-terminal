@@ -1,0 +1,18 @@
+[
+ {
+  "report_date_as_yyyy_mm_dd": "2026-11-10T00:00:00.000",
+  "asset_mgr_positions_long": "3949",
+  "asset_mgr_positions_short": "1993",
+  "lev_money_positions_long": "6339",
+  "lev_money_positions_short": "7582",
+  "open_interest_all": "19265"
+ },
+ {
+  "report_date_as_yyyy_mm_dd": "2026-11-17T00:00:00.000",
+  "asset_mgr_positions_long": "3901",
+  "asset_mgr_positions_short": "1616",
+  "lev_money_positions_long": "6264",
+  "lev_money_positions_short": "7475",
+  "open_interest_all": "19257"
+ }
+]

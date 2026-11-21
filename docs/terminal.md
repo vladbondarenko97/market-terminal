@@ -301,6 +301,18 @@ Thirteen model cards, 1 to 11, 14 and 16 (full reference: [Forecast Lab](forecas
   recorded an error for their block, card 11 when the whole refining block failed, card 14 when the chaos block is missing or failed (it prints the reason), and card 15 likewise for `fed_ops`. If `/api/forecast` itself fails
   (for example `503` before the first run), every card shows the server's message.
 
+## Bitcoin tab
+
+The BITCOIN tab sits right after CHART (`static/bitcoin.js`, data: `/api/bitcoin` and `/api/bitcoin/history`, both stored in the latest snapshot). Five cards with the Forecast Lab controls (**?**, **⛶**, **COPY**; **REFRESH** at the top; Esc closes help or leaves full screen):
+
+- **B1 · Verdict**: HOLD / BUY (start) / BUY (add) / SELL (trim) / NO CALL, the count of rows available (`n of m`), and the bottom (6) and top (5) checklists. A row is FIRED, waiting or missing (with its reason). Only rows graded on history vote; until the grading exists (phase 4 of `docs/plan-bitcoin-tab.md`) every row is untested, so the card says so and answers NO CALL (fewer than half the rows available) or HOLD. The card is conditions, not a trade call or financial advice.
+- **B2 · Price & cycle**: price, drawdown from the high, 200-week MA, realized price, Mayer multiple, halving clock, and a log chart of price, 200-week MA and realized price.
+- **B3 · On-chain**: MVRV Z-score (with its 0 and 6 lines), MVRV, realized price, hash ribbons. SOPR, short-term-holder cost basis and exchange balances show as missing (no free keyless source).
+- **B4 · Leverage & options**: Deribit perpetual funding per 8 hours and its 7-day average, open interest, DVOL. Liquidations and skew show as missing.
+- **B5 · Flows**: IBIT shares and 5-day net flow, Coinbase premium, USDT + USDC supply, CME COT.
+
+B6 (macro link), B7 (regulation calendar) and B8 (plan and taxes) are phase 3 and not built. A part whose source failed shows `<name>: <reason>`; if `/api/bitcoin` fails every card shows the server's message.
+
 ## Chart tab
 
 TradingView's open-source Lightweight Charts (v5, pinned from jsDelivr) over our stored bars, from `static/chart.js`. It builds on the first open and reopens as you left it: layout, active chart, SYNC and each chart's symbol, timeframe, range, series, compare symbols, indicators, Kronos toggles, zones, overlays are remembered in this browser (`localStorage`; drawings per symbol). The toolbar edits the **active chart** (blue border); click a chart to make it active.

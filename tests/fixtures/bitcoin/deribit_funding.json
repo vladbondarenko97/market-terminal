@@ -1,0 +1,14 @@
+{
+ "result": [
+  {
+   "timestamp": 1795226400000,
+   "index_price": 56651.19,
+   "interest_8h": -3.8e-05
+  },
+  {
+   "timestamp": 1795230000000,
+   "index_price": 56651.19,
+   "interest_8h": -3.9e-05
+  }
+ ]
+}

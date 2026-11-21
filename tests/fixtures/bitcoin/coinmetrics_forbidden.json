@@ -1,0 +1,6 @@
+{
+ "error": {
+  "type": "forbidden",
+  "message": "Requested metric 'CapRealUSD' with frequency '1d' for asset 'btc' is not available with supplied credentials."
+ }
+}

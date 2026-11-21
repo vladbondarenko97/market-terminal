@@ -88,3 +88,19 @@ series; the shifted-clock run.
 
 ## Not financial advice
 The card states conditions and their measured history. It is not a trade call, and it says so in its help text.
+
+## Phase 5: extra cards (documented, not started)
+Every new rule is a candidate until Edge Lab grades it (phase 4); missing data is missing, never zero.
+
+- **B9 · Silver-to-BTC rotation**: BTC priced in silver ounces (already stored as `ratios.btc_silver_oz`) and its z-score against 4 years of history.
+  Rule: when BTC is cheap in silver (z <= -1) AND the B1 verdict is BUY, rotate a tranche of silver into BTC; the reverse when z >= +1.5 and B1 says
+  SELL. The operator holds physical silver, so this is the main lever. The card shows the collectibles-tax note: gains on physical metal are taxed as
+  collectibles, up to 28%.
+- **B10 · Extra cycle gauges**: Pi Cycle Top (111-day MA vs 2 x 350-day MA, from the bars) as a SELL-checklist candidate; Puell multiple (miner revenue /
+  its 365-day average, blockchain.com miners-revenue chart API, free) as a BUY candidate (< 0.5) and a SELL candidate (> 4); Crypto Fear & Greed
+  (alternative.me public API) as context only, not voting.
+- **B11 · Global liquidity lead**: BTC vs US M2 (FRED, already a provider) shifted 10 to 12 weeks, plus net liquidity from the existing lever; the
+  correlation and the current direction.
+- **B12 · Position sizing**: the operator's set-aside cash and holdings from `bitcoin_plan.json` give the maximum BTC allocation as a share of liquid net
+  worth (default cap 10%), the tranche size, and a "never from the emergency fund" check (cash below one month of expenses means no buy, and the card
+  says so).

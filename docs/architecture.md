@@ -30,7 +30,7 @@ Both run on one Mac. Data lives in its own folder, never in git (`CME_Data/`, se
    │            deduplicated per run, concurrency-limited per provider, logged,
    │            raw response stored (v2_payloads, SHA-256 dedup)
    │            models are computed here too                                         core/metrics.py, core/forecast.py,
-   │                                                                                 core/refining.py, core/chaos.py
+   │                                                                                 core/refining.py, core/chaos.py, core/bitcoin.py
    ├─ capture   lake.record_observations(): typed rows in v2_observations           core/lake.py
    ├─ commit    lake.commit_snapshot(): one immutable JSON document (v2_snapshots)
    │            then the snapshot is re-loaded; everything after reads only it
@@ -88,7 +88,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `config.py` | Paths, data-folder resolution, time zone, every setting read from `.env` |
 | `run_dashboard.command` | zsh launcher used by the schedule and by the terminal's Run button (`scheduled` or `manual` trigger) |
 | `core/collect.py` | Builds the run context: runs every collector, computes the models, decides fresh/cached/stale |
-| `core/sources.py` | Provider fetchers (yfinance, FRED, Databento, CFTC, EIA, TCEQ, eBay, iShares …) and `SourceSession` |
+| `core/sources.py` | Provider fetchers (yfinance, FRED, Databento, CFTC, EIA, TCEQ, eBay, iShares, Coin Metrics, Deribit, DefiLlama …) and `SourceSession` |
 | `core/cme.py` | CME downloads (volume FTP listing, inventory workbooks), browser login, workbook parsing |
 | `core/lake.py` | SQLite lake: `v2_*` schema, payload store, observations, snapshots, credential redaction |
 | `core/sqlite_layer.py` | Helpers for the legacy ledger tables in `portfolio.db` |
@@ -108,6 +108,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `options_whale/analyst_bin/mtq` | Read-only command the Claude Code analyst may run: one stored console source in-process, from an allowlist (`MTQ_SOURCES`) |
 | `core/fedops.py` | Fed / Treasury operations (card 15): NY Fed repo and reverse repo operations and reference rates, Treasury buybacks and auctions as `fedops.*` observations; the per-run top-up, history reads and summaries |
 | `core/chaos.py` | Chaos / Peace index: twelve stress z-scores, levers and the midterm studies (card 14), pure functions |
+| `core/bitcoin.py` | BITCOIN tab: price and cycle, on-chain (Coin Metrics), leverage (Deribit), flows (IBIT, Coinbase / Kraken, DefiLlama, CFTC), the 11 checklist rows and the verdict; `collect()` runs in the pipeline, the maths are pure functions |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
 | `core/brokerage.py` | SnapTrade client for the terminal's Brokerage Positions card: signed REST calls, spread grouping, 60 s cache. Live, not part of the pipeline |
 | `core/news.py` | Headline clustering (title normalisation, Jaccard de-duplication, recency windows, priority bucketing); pure functions |
@@ -137,6 +138,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `options_whale/templates/terminal.html` | Terminal page |
 | `options_whale/static/app.js` | Macro, Time Arbitrage, War Room, Engine Positions UI |
 | `options_whale/static/forecast.js` | Forecast Lab UI |
+| `options_whale/static/bitcoin.js` | BITCOIN tab UI (reuses forecast.js helpers) |
 | `options_whale/static/chart.js` | CHART tab UI (Lightweight Charts) |
 | `options_whale/static/favicon.svg`, `favicon-32.png`, `apple-touch-icon.png` | The terminal's icon (SVG, a PNG fallback, the iPhone home-screen icon) |
 | `options_whale/static/styles.css` | Styles |

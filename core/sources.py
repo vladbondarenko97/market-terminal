@@ -20,7 +20,8 @@ PROVIDER_LIMITS = {"eia": 5, "tceq": 2, "cftc": 2, "yahoo": 2, "fred": 2, "forex
                    "ebay": 1, "cme": 1,
                    "cboe": 1, "finra": 1, "treasury": 1, "rss": 6,
                    "federalreserve": 1, "nyfed": 2,
-                   "sec": 2, "alpaca": 3, "wikipedia": 1, "gdelt": 1}
+                   "sec": 2, "alpaca": 3, "wikipedia": 1, "gdelt": 1,
+                   "coinmetrics": 1, "deribit": 2, "coinbase": 1, "kraken": 1, "defillama": 1}
 
 
 class SourceUnavailable(Exception):
@@ -530,6 +531,112 @@ def ishares_slv(s):
     from datetime import datetime as _dt
     return {"ounces_in_trust": oz, "as_of": _dt.strptime(oz_date, "%b %d, %Y").date().isoformat() if oz_date else None,
             "premium_discount_pct": prem, "status": "fresh", "source": "ishares.com", "payload_id": pid}
+
+
+# ---------------------------------------------------------------- Bitcoin tab sources (no key; core/bitcoin.py)
+COINMETRICS_METRICS = "PriceUSD,CapMrktCurUSD,CapMVRVCur,SplyCur,HashRate"     # CapRealUSD needs a paid key (403): realized cap is derived
+
+
+def coinmetrics_btc(s, start):
+    """Coin Metrics community API v4: BTC daily rows from `start` (YYYY-MM-DD), every page -> ([{time, PriceUSD, ...}], payload_id).
+    The free tier answers the metrics above; CapRealUSD is forbidden without a key."""
+    import requests
+
+    def call():
+        rows, url, params = [], "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics", {
+            "assets": "btc", "metrics": COINMETRICS_METRICS, "frequency": "1d", "start_time": start, "page_size": 10000}
+        for _ in range(10):
+            r = requests.get(url, params=params, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                raise SourceUnavailable("coinmetrics", f"http_{r.status_code}", r.text[:200])
+            j = r.json()
+            rows += j.get("data") or []
+            url, params = j.get("next_page_url"), None
+            if not url:
+                break
+        if not rows:
+            raise SourceUnavailable("coinmetrics", "empty", start)
+        return rows
+    return s.fetch("coinmetrics", {"asset": "btc", "metrics": COINMETRICS_METRICS, "start": start}, call,
+                   kind="coinmetrics_full" if start < "2010-01-01" else "coinmetrics_tail", fmt="json", capture=_rows_capture)
+
+
+def deribit_ticker(s, instrument="BTC-PERPETUAL"):
+    """Deribit public ticker of the perpetual: funding_8h, current_funding, open_interest (USD), mark and index price."""
+    r, pid = s.fetch("deribit", {"ticker": instrument}, lambda: _get_json("deribit", instrument, "https://www.deribit.com/api/v2/public/ticker",
+                     {"instrument_name": instrument})["result"], kind="deribit_ticker", fmt="json",
+                     capture=lambda x: (json.dumps(x).encode(), None, None))
+    return r, pid
+
+
+def deribit_funding_history(s, start_ms, end_ms, instrument="BTC-PERPETUAL"):
+    """Hourly funding rows (interest_8h = the 8-hour rate in force) of one window; the API returns at most 744 rows (31 days)."""
+    return s.fetch("deribit", {"funding": instrument, "start": start_ms, "end": end_ms}, lambda: _get_json(
+        "deribit", "funding history", "https://www.deribit.com/api/v2/public/get_funding_rate_history",
+        {"instrument_name": instrument, "start_timestamp": start_ms, "end_timestamp": end_ms})["result"],
+        kind="deribit_funding", fmt="json", capture=_rows_capture)
+
+
+def deribit_dvol(s, start_ms, end_ms):
+    """DVOL (Deribit's 30-day implied volatility index of BTC) daily candles [ts, open, high, low, close]."""
+    return s.fetch("deribit", {"dvol": "BTC", "start": start_ms, "end": end_ms}, lambda: _get_json(
+        "deribit", "dvol", "https://www.deribit.com/api/v2/public/get_volatility_index_data",
+        {"currency": "BTC", "resolution": 86400, "start_timestamp": start_ms, "end_timestamp": end_ms})["result"]["data"],
+        kind="deribit_dvol", fmt="json", capture=_rows_capture)
+
+
+def ishares_ibit(s):
+    """Shares outstanding and NAV of the iShares Bitcoin Trust (IBIT) from its product page. Only the two data blocks are kept in the capture."""
+    import html as _html
+    import re
+    from datetime import datetime as _dt
+
+    def call():
+        import requests
+        r = requests.get("https://www.ishares.com/us/products/333011/ishares-bitcoin-trust-etf", headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+        r.raise_for_status()
+        t = _html.unescape(r.text)
+        a = re.search(r'"sharesOutstanding":\{[^{}]*?"formattedValue":"([\d,]+)"[^{}]*?"formattedAsOfDate":"([^"]+)"', t)
+        b = re.search(r'"navAmount":\{[^{}]*?"asOfDate":(\d{8})[^{}]*?"value":([\d.]+)', t)
+        if not (a and b):
+            raise SourceUnavailable("ishares", "parse", "IBIT shares outstanding or NAV not found")
+        return {"shares_outstanding": float(a.group(1).replace(",", "")), "shares_as_of": _dt.strptime(a.group(2), "%b %d, %Y").date().isoformat(),
+                "nav": float(b.group(2)), "nav_as_of": _dt.strptime(b.group(1), "%Y%m%d").date().isoformat()}
+    return s.fetch("ishares", {"page": "IBIT"}, call, kind="etf_page_excerpt", fmt="json", capture=lambda x: (json.dumps(x).encode(), None, None))
+
+
+def coinbase_btc_usd(s):
+    """Coinbase Exchange BTC-USD last trade price."""
+    r, pid = s.fetch("coinbase", {"ticker": "BTC-USD"}, lambda: _get_json("coinbase", "BTC-USD", "https://api.exchange.coinbase.com/products/BTC-USD/ticker"),
+                     kind="exchange_ticker", fmt="json", capture=lambda x: (json.dumps(x).encode(), None, None))
+    return {"price": _num(r.get("price")), "time": r.get("time")}, pid
+
+
+def kraken_btc_usdt(s):
+    """Kraken BTC-USDT last trade price (the Coinbase premium's other leg: dollars vs Tether)."""
+    def call():
+        j = _get_json("kraken", "XBTUSDT", "https://api.kraken.com/0/public/Ticker", {"pair": "XBTUSDT"})
+        if j.get("error"):
+            raise SourceUnavailable("kraken", "error", str(j["error"])[:200])
+        return next(iter(j["result"].values()))
+    r, pid = s.fetch("kraken", {"ticker": "XBTUSDT"}, call, kind="exchange_ticker", fmt="json", capture=lambda x: (json.dumps(x).encode(), None, None))
+    return {"price": _num((r.get("c") or [None])[0])}, pid
+
+
+def defillama_stablecoin(s, coin_id, keep=120):
+    """Circulating supply (USD) of one DefiLlama stablecoin (1 = USDT, 2 = USDC) -> ([{date, usd}], payload_id); the capture keeps the last `keep` days."""
+    def call():
+        rows = _get_json("defillama", f"stablecoin {coin_id}", "https://stablecoins.llama.fi/stablecoincharts/all", {"stablecoin": coin_id})
+        out = []
+        for x in rows:
+            v = _num(((x.get("totalCirculatingUSD") or {}).get("peggedUSD")))
+            if v is not None and x.get("date"):
+                out.append({"date": datetime.fromtimestamp(int(x["date"]), timezone.utc).date().isoformat(), "usd": v})
+        if not out:
+            raise SourceUnavailable("defillama", "empty", f"stablecoin {coin_id}")
+        return out
+    return s.fetch("defillama", {"stablecoin": coin_id}, call, kind="stablecoin_supply", fmt="json",
+                   capture=lambda r: (json.dumps(r[-keep:]).encode(), None, {"rows": len(r), "kept": keep}))
 
 
 def fomc_calendar(s):

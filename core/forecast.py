@@ -1042,5 +1042,16 @@ def signal_watch(fc, ticket=None):
             bool(ch.get("regime_changed")), "structure",
             f"Chaos/Peace regime changed: {pv.get('regime')} -> {ch['regime']} (a description of the reading, not a trade signal)",
             f"fixed, uncalibrated cut-offs at -30 / 30 / 60; previous day {pv.get('score')}", "none")
+    bv = (fc.get("bitcoin") or {}).get("verdict")
+    if bv:
+        graded = bv["graded_rows"] > 0
+        for side, name, call, n, what in (("bottom", "Bitcoin bottom checklist", ("BUY (start)", "BUY (add)"), 3, "6 conditions that have marked past Bitcoin cycle lows"),
+                                          ("top", "Bitcoin top checklist", ("SELL (trim)",), 3, "5 conditions that have marked past Bitcoin cycle highs")):
+            add("BTC", name, "Bitcoin tab · B1 verdict (checklist rows)",
+                f"{what}. Only rows graded on history vote; a missing row shrinks the count of rows available.",
+                f"{bv[side + '_fired']} of {bv[side + '_total']} fired (untested rows do not vote) · {bv['available']} of {bv['total']} rows available",
+                f"{n} graded {side} rows fired", bv["call"] in call, "bullish" if side == "bottom" else "bearish",
+                "Start the DCA ladder" if bv["call"] == "BUY (start)" else "Add a tranche" if bv["call"] == "BUY (add)" else "Trim", bv["text"],
+                "tested" if graded else "none")
     rows.sort(key=lambda r: (not r["fired"], r["asset"]))      # fired first, then grouped by asset
     return rows

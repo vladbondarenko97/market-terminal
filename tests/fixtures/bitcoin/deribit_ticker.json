@@ -1,0 +1,10 @@
+{
+ "result": {
+  "instrument_name": "BTC-PERPETUAL",
+  "open_interest": 900849340,
+  "mark_price": 55588.91,
+  "index_price": 55640.17,
+  "current_funding": -0.00067128,
+  "funding_8h": -8.085e-05
+ }
+}
