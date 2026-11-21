@@ -9,9 +9,11 @@ import json
 import math
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-REGIME_VERSION = "regime_v1"
+from core import flowproj
+
+REGIME_VERSION = "regime_v2"   # v2: flow_projection (core/flowproj.py) and its lines in THE READ's facts
 
 # ---- thresholds (every one is printed next to its reading in the block, so the card never hides a cut-off)
 VIX_JUMP_PCT = 20.0          # VIX up this much (%) on the day = "up hard"
@@ -305,7 +307,7 @@ def playbook(r, spy_closes, btc):
 
 # ============================================================ assembly
 def build(inp):
-    """inp: {today, prices, forecast, chaos, fed_ops, bitcoin, spy_closes, prev} -> the snapshot's `regime` block.
+    """inp: {today, prices, forecast, chaos, fed_ops, bitcoin, spy_closes, spy_dates, flow_runs, prev} -> the snapshot's `regime` block.
     `prev` is the previous run's regime block (or None). Never raises on missing parts; a block it cannot classify is missing."""
     r = _readings(inp)
     cls = classify(r, inp.get("prev"))
@@ -313,16 +315,40 @@ def build(inp):
     out = {"version": REGIME_VERSION, "as_of": str(inp.get("today")), "rules": [{"regime": k, "when": w} for k, w in RULES],
            "readings": list(r.values()), "forced_selling": forced_selling(inp.get("forecast")), "playbook": playbook(r, inp.get("spy_closes"), inp.get("bitcoin")),
            "previous": {"key": prev.get("key"), "regime": prev.get("regime"), "run_id": prev.get("run_id")} if prev.get("key") else None,
-           "read": {"status": "missing", "reason": "not written yet"}}
+           "flow_projection": _projection(inp), "read": {"status": "missing", "reason": "not written yet"}}
     out.update(cls)
     if cls.get("status") == "fresh":
         out["changed"] = bool(prev.get("key")) and prev["key"] != cls["key"]
     return out
 
 
+def _projection(inp):
+    spy = (inp.get("forecast") or {}).get("SPY") or {}
+    try:
+        return flowproj.build(inp.get("spy_closes"), inp.get("spy_dates"), _f(spy.get("spot")), spy.get("flows"),
+                              date.fromisoformat(str(inp.get("today"))[:10]), inp.get("flow_runs"))
+    except Exception as e:                           # a projection bug costs the projection, never the regime
+        return {"status": "error", "reason": f"{type(e).__name__}: {e}"[:200]}
+
+
+def projection_facts(fp):
+    """THE READ's lines for the forced-flow projection: the summary, three scenarios and the re-leveraging date of each path."""
+    if (fp or {}).get("status") != "fresh":
+        return [f"Forced-flow projection: missing ({(fp or {}).get('reason', 'not in this run')})"]
+    rows = {r["move_pct"]: r for r in fp["scenarios"]["rows"]}
+    usd = lambda v: "missing" if v is None else f"{v / 1e9:+.1f}B"
+    out = [f"Forced-flow projection (estimate): {fp['summary']}",
+           "Projection, SPY move -> est. forced flow: " + "; ".join(f"{m:g}% {usd(rows[m]['total'])} (range {usd(rows[m]['total_low'])} to {usd(rows[m]['total_high'])})"
+                                                                  for m in (-2.0, -5.0, -10.0) if m in rows)]
+    tp = fp.get("time_path") or {}
+    if tp.get("status") == "fresh":
+        out.append("Projection, vol-control turns net buyer: " + "; ".join(f"{p['label']}: {p['releverage_date'] or 'not within 30 sessions'}" for p in tp["paths"].values()))
+    return out
+
+
 # ============================================================ THE READ
 READ_SYSTEM = """You write "THE READ" for a private market terminal: three plain sentences, under 80 words, no markdown.
-Sentence 1: what is happening, in the regime's own terms. Sentence 2: who is being forced to sell or buy (only the rows marked ACTIVE in the FACTS, with their sizes). Sentence 3: what would change the picture (name a reading and its level from the FACTS).
+Sentence 1: what is happening, in the regime's own terms. Sentence 2: who is being forced to sell or buy (only the rows marked ACTIVE in the FACTS, with their sizes). Sentence 3: what would change the picture (name a reading and its level, or the forced-flow projection's estimate, from the FACTS).
 Use only the FACTS; copy every number as printed. No advice, no price targets, no causes or motives, never the words buy, sell short, should."""
 MAX_READ_CHARS = 600
 
@@ -333,6 +359,7 @@ def facts(block):
     lines = [f"Regime: {block.get('regime')}" + (f" (changed from {block['previous']['regime']})" if block.get("changed") and block.get("previous") else "")]
     lines += ["Why: " + w for w in block.get("why") or []]
     lines += [f"Forced flow, {x['label']}: {x['direction'] or 'n/a'}, {x['status']}. {x['detail'] or x.get('reason') or ''}" for x in fs.get("rows") or []]
+    lines += projection_facts(block.get("flow_projection"))
     lines += [f"Playbook, {p['name']}: {p['status']} ({p['rule']}; {p['detail']})" for p in block.get("playbook") or []]
     return "\n".join(lines)
 

@@ -586,6 +586,13 @@ def _days(stock_id, supp_id):
     return load
 
 
+def _forced_flow(conn):
+    """The latest snapshot's rebuilt daily forced-flow estimate (card R, core/flowproj.py), USD bn; days without one are left out."""
+    row = conn.execute("SELECT json_extract(context_json, '$.regime.flow_projection.history') AS h FROM v2_latest_snapshot").fetchone()
+    h = json.loads(row["h"]) if row and row["h"] else {}
+    return pd.Series({pd.Timestamp(d): v / 1e9 for d, v in zip(h.get("dates") or [], h.get("total") or []) if v is not None}, dtype=float).sort_index()
+
+
 def _series_catalog():
     from core import fans
     out = {f"eia.{k.split('.')[1]}": (label, unit, "W", f"EIA weekly US {label.lower()}, thousand barrels.", lambda c, i=i: _eia(c, i))
@@ -598,6 +605,8 @@ def _series_catalog():
     out["fedops.repo_day:rrp"] = ("Fed reverse repo (RRP)", "USD bn", "D", "Cash parked at the Fed overnight by money funds; falls when liquidity returns to markets.",
                                   _obs("fedops.repo_day", "rrp", "accepted_bn"))
     out["fedops.ref_rate:SOFR"] = ("SOFR", "%", "D", "Secured Overnight Financing Rate: what overnight loans against Treasuries cost.", _obs("fedops.ref_rate", "SOFR"))
+    out["regime.forced_flow"] = ("Forced flows (est.)", "USD bn", "D", "ESTIMATE of the day's mechanical flow in SPY (vol-control + CTA, plus leveraged ETFs and "
+                                 "dealer gamma where a stored run has their inputs; sell = negative), rebuilt by card R from stored closes and runs.", _forced_flow)
     out["macro.vmri.score"] = ("VMRI score", "index", "per run", "Our macro risk index: dollar x 10y yield, credit spread and VIX combined.", _obs("macro.vmri.score"))
     return out
 

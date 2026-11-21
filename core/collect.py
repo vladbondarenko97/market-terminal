@@ -1198,6 +1198,19 @@ def _guarded_bitcoin(conn, session, run_id, today, chaos, prices):
         return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
 
 
+def _flow_runs(conn):
+    """Leveraged-ETF size and dealer gamma of each stored live run, oldest first: the inputs of the forced-flow history."""
+    try:
+        rows = conn.execute("""SELECT json_extract(s.context_json, '$.forecast.generated_for') AS d,
+                                      json_extract(s.context_json, '$.forecast.SPY.flows.leveraged_etfs.flow_per_1pct_move') AS lev,
+                                      json_extract(s.context_json, '$.forecast.SPY.flows.dealer_gamma.net_gex_usd_per_1pt') AS ng
+                               FROM v2_snapshots s JOIN v2_runs r ON r.run_id = s.run_id
+                               WHERE r.mode = 'live' AND r.status IN ('committed', 'completed', 'completed_with_warnings') ORDER BY s.created_at""").fetchall()
+    except Exception:                          # no lake yet: the history has vol-control and CTA only
+        return []
+    return [{"date": r["d"], "lev_per_1pct": r["lev"], "net_gex": r["ng"]} for r in rows if r["d"]]
+
+
 def _guarded_regime(conn, session, today, parts, frames):
     """R · Market Regime: the rules over this run's blocks, then THE READ (the picked local model, else Sonnet; offline runs skip both).
     Optional like the other late blocks: a failure becomes an error block, never an aborted run."""
@@ -1209,8 +1222,10 @@ def _guarded_regime(conn, session, today, parts, frames):
         except Exception:
             prev = None
         close = frames.get("SPY")
-        closes = [float(x) for x in close["Close"].dropna().tolist()] if close is not None and "Close" in close else []
-        block = regime.build({"today": today, **parts, "spy_closes": closes, "prev": prev})
+        cs = close["Close"].dropna() if close is not None and "Close" in close else None
+        closes = [float(x) for x in cs.tolist()] if cs is not None else []
+        dates = [str(d)[:10] for d in cs.index] if cs is not None else []
+        block = regime.build({"today": today, **parts, "spy_closes": closes, "spy_dates": dates, "flow_runs": _flow_runs(conn), "prev": prev})
         if block.get("status") == "fresh" and not getattr(session, "offline", False):
             from core import narrative
             url, model, _ = narrative.local_settings()

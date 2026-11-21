@@ -471,6 +471,8 @@ body.resizing-active #v-resizer {
 .rg-pill { font-size: clamp(14px, 2.4vw, 22px); font-weight: 900; letter-spacing: .08em; padding: 8px 18px; border-radius: 999px; border: 2px solid currentColor;
     background: #0c0c10; box-shadow: 0 0 18px -6px currentColor; line-height: 1.2; }
 .rg-read { border: 1px solid; border-radius: 8px; padding: 9px 12px; background: #0c0c10; font-size: 12px; line-height: 1.55; color: #f4f4f5; }
+.rg-proj-sum { border: 1px solid #7f1d1d; border-radius: 8px; padding: 7px 10px; background: #0c0c10; font-size: 12px; color: #fecaca; box-shadow: 0 0 10px rgba(255, 40, 70, 0.35); margin: 2px 0 4px; }
+.rg-glow-key { color: #ff4d6d; text-shadow: 0 0 6px rgba(255, 40, 70, 0.9); font-weight: 600; }
 .rg-why { list-style: disc; padding-left: 18px; font-size: 10px; line-height: 1.6; color: #a1a1aa; }
 .trk-off { opacity: .55; }
 .trk-bar { height: 5px; margin-top: 3px; border-radius: 999px; background: #1f1f23; overflow: hidden; min-width: 90px; }
