@@ -153,7 +153,7 @@ class HelpPage(ApiCase):
                 documented.add(ep.get("alias"))
         served = set()
         for rule in api_router.app.url_map.iter_rules():
-            path = rule.rule.replace("<int:signal_id>", "{signal_id}").replace("<path:filename>", "{filename}").replace("<symbol>", "{symbol}")
+            path = rule.rule.replace("<int:signal_id>", "{signal_id}").replace("<path:filename>", "{filename}").replace("<symbol>", "{symbol}").replace("<tid>", "{tid}")
             served.add(path)
         self.assertEqual(documented, served)
 

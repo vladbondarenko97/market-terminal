@@ -33,6 +33,7 @@ When you change how a stored value is computed:
 | `CHAOS_VERSION` (`core/chaos.py`) | `chaos_v1` | Chaos / Peace index (card 14) |
 | `STUDY_VERSION` (`core/chaos.py`) | `regime_study_v2` | The regime study of card 14 (`chaos.long.study`: base rates, early-warning onsets) |
 | `BITCOIN_VERSION` (`core/bitcoin.py`) | `bitcoin_v1` | BITCOIN tab block: price and cycle, on-chain, leverage, flows, checklist rows and verdict |
+| `REGIME_VERSION` (`core/regime.py`) | `regime_v1` | R · Market Regime / Shock Reader block (`regime`): the regime, its readings, the forced-selling rows, the playbook rows and THE READ |
 | `FEDOPS_VERSION` (`core/fedops.py`) | `fed_ops_v4` | Fed / Treasury operations block and its summaries (card 15) |
 | `SHANGHAI_VERSION` (`core/metrics.py`) | `shanghai_dated_v1` | Date-paired Shanghai silver spread (`shanghai.dated`) |
 | `EAGLE_VERSION` (`core/metrics.py`) | `eagle_premium_v1` | Silver Eagle premium statistics, units-sold flow and dealer-book summary (`ebay.premium`, `ebay.flow`, `ebay.book`) |
@@ -46,6 +47,15 @@ Each run also stores `code_version` (the short git commit, with `-dirty` if the 
 ## Changes
 
 Newest first, then the changes that came with the v2 pipeline.
+
+- **Market Regime / Shock Reader added** (`regime_v1`, 2026-11-20): new snapshot key `regime`; no earlier value changes meaning. New values, all thresholds fixed in code
+  (`core/regime.py`, printed next to each reading): the regime is the first matching rule of RECESSION-TYPE BEAR (credit stress and Sahm >= 0.5 or 12-month recession probability >= 30%),
+  CREDIT STRESS (HY OAS > 4.5% or +1 pt in 3 months), LIQUIDITY SQUEEZE (net liquidity 20-day change <= -2.5% of its level, or SOFR - EFFR >= 0.10 pt, or Standing Repo Facility take-up >= $10B),
+  PANIC UNWINDING (the previous run was a shock or an unwinding, VIX/VIX3M < 1, Chaos down 3+ points on the day), VOLATILITY SHOCK (VIX up 20%+ on the day, or VIX/VIX3M > 1, or VVIX >= 120;
+  "no credit/recession confirmation" only with HY OAS < 4%, recession probability < 30% and Sahm < 0.5, else "credit/recession watch"), else CALM. The forced-selling rows reuse the Forecast
+  Lab flows (card 8) unchanged and add status cut-offs (vol-control 5-session estimate beyond +-$10B, leveraged-ETF rebalance beyond +-$1B, a 1M CTA flip level within 3%, negative dealer gamma).
+  The playbook rows are Vlad's tranche conditions; "retest without a new low" = the 30-session low of SPY closes is 5+ sessions old, price rebounded 3%+ since and now sits 0-2% above it.
+  THE READ is model text (the picked local model, else Sonnet), stored with the model's name; its numbers are checked against the facts it was given.
 
 - **Bitcoin tab added** (`bitcoin_v1`, 2026-11-20): new snapshot key `bitcoin` and observation `bitcoin.ibit_shares`; no earlier value changes meaning. New values: the
   200-week MA (mean of the last 1,400 daily closes), the Mayer multiple (price / 200-day MA), the realized cap (market cap / MVRV, because Coin Metrics' free API refuses

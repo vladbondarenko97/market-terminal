@@ -929,6 +929,15 @@ main_pipeline.py run"). The full repository map is in [Architecture](architectur
   one position failing does not stop the others. A ticker whose earnings date cannot be fetched counts as blocked.
   The engine row is the latest run's own ticket, never an older run's. `--dry-run` prints the live states and sends
   nothing; `--test` sends one sample alert (it pushes to the phone, so it is an operator command, not a check).
+- **`main_pipeline.py tracker-alerts`** evaluates the T · Trackers (your own conditions, `core/trackers.py`, file `TRACKERS_FILE`) against the latest **live** snapshot (an offline run's
+  snapshot is never used: its metrics read as errors) and live quotes, and pushes each tracker that just fired to `NTFY_URL` at its own priority (min, low, default, high, urgent = ntfy 1 to 5).
+  A tracker fires when its condition turns true (a `changes` tracker when the value differs from the last one seen), at most once per cooldown; the first check only records. A missing reading never fires and
+  never re-arms. State is saved beside the trackers file only after a push was delivered, so a failed push is sent again. The regime-change alert is the seeded `Regime change` tracker (urgent): the push
+  carries the new regime and THE READ. `--dry-run` prints every tracker's readings and state and sends nothing; `--test ID` sends that tracker's push once, marked TEST (the card's TEST button does the
+  same through the terminal).
+- **launchd job `com.vlad.trackeralerts`** runs it every 15 minutes, **every day and hour** (`StartInterval` 900), so 24/7 trackers (Bitcoin, the regime and verdict changes) are checked outside the NYSE session
+  too; a tracker set to `session` hours skips itself when the market is closed (`core/watch.in_session()`). Log `~/Library/Logs/trackeralerts.log`. `./setup.sh --schedule` installs it with the other two
+  jobs; `--remove-schedule` removes all three. A sleeping Mac runs a missed interval once on wake. The terminal can show trackers from any copy but only changes them on a machine that is not a container.
 - **launchd job `com.vlad.signalalerts`** runs it every 15 minutes of the regular session, on weekdays only
   (`core/watch.ALERT_SLOTS_ET`, 09:35 to 15:50 ET; log `~/Library/Logs/signalalerts.log`). Daily price history is
   downloaded once per ticker per day into `<data folder>/cache/` and shared by the job, the Day Scanner and the Edge Lab.

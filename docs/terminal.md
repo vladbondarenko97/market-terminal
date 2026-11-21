@@ -290,7 +290,7 @@ Things to know:
 
 ## Forecast Lab tab
 
-Thirteen model cards, 1 to 11, 14 and 16 (full reference: [Forecast Lab](forecast-lab.md)). Controls above the cards:
+Thirteen model cards, 1 to 11, 14 and 16, plus R and T (below) (full reference: [Forecast Lab](forecast-lab.md)). Controls above the cards:
 
 - **SPY** / **SLV** choose the ticker for the per-ticker cards. **REFRESH** reloads.
 - The status line reads `TICKER · run <run id> · <time>` and adds `· N source issue(s)` when the run could not fetch some inputs.
@@ -433,7 +433,20 @@ Browser storage (`localStorage`, per browser and per origin):
 
 ## Rule cards and alerts (Forecast Lab tab, top)
 
-Three cards are plain rules on stored runs and live Yahoo quotes: no model output. Every row is graded on history
+Two cards sit above Signal Watch and below it (`options_whale/static/regime.js`, routes `/api/regime` and `/api/trackers`):
+
+- **R · Market Regime / Shock Reader** (`core/regime.py`, the snapshot's `regime` block): a big pill with the regime (CALM; VOLATILITY SHOCK, NO CREDIT/RECESSION CONFIRMATION; CREDIT STRESS; RECESSION-TYPE BEAR; LIQUIDITY SQUEEZE;
+  PANIC UNWINDING) and whether it changed since the previous run; **THE READ** (three plain sentences written at the run by the picked local model, else Sonnet, with the model named; "No read: reason" when both failed, the rules still
+  show); **WHY** (each reading against its threshold, MET in amber); the **forced-selling gauge** (vol-control deleveraging, CTA position and flip levels, leveraged-ETF rebalance, dealer gamma for SPY, and the SLV equivalents, each with value,
+  direction, ACTIVE / quiet / missing and its detail, plus the estimated dollars sold and the extra if SPY falls 2%); the **playbook** (1st tranche VIX/VIX3M < 1.0, 2nd Chaos < 50 and HY OAS < 4%, 3rd a retest without a new low or BTC ETF
+  flows turning positive, STOP above 4.5% HY OAS; FIRED / waiting / missing); and the rules in a fold-out. Readings are as of the last run, not live.
+- **T · Trackers** (`core/trackers.py`): one row per tracker with its live value, the distance to its trigger (a bar, empty at 25% away, full when met), its state (armed, FIRED, cooling down, disabled), last fired, a priority badge and
+  EDIT / DUPLICATE / TEST / DELETE; **+ ADD TRACKER** opens the editor (name, one to four conditions that must all hold with an expression box that completes metric names, a comparator or `changes`, a threshold and a live preview of the
+  value, priority, cooldown, 24/7 or session hours, note, enabled). TEST sends the push once, marked TEST. Below the table is the fire history. Edits are refused (buttons disabled) on a read-only copy. Evaluation and alerts: [Operations](operations.md#signal-alerts-and-the-midday-run).
+  Expressions: `+ - * / ( )`, numbers, a symbol in capitals for its live price (`SLV`, `^VIX`, `BTC-USD`) and lower-case metric names (`hy_oas`, `chaos`, `regime`, `btc_verdict`, `btc_realized_price`, every catalog id).
+
+
+The three cards below are plain rules on stored runs and live Yahoo quotes: no model output. Every row is graded on history
 and only a row with tested evidence can say "Buy"; hover any cell for what it means and where it comes from.
 
 - **15 · Fed / Treasury operations** (`core/fedops.py`, in `/api/forecast` and `/api/fed_ops`): KPIs for ON RRP and

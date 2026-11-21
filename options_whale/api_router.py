@@ -1878,6 +1878,42 @@ def api_help():
       <description>Weekly series stored in the latest snapshot's bitcoin block for the charts: `t` (days since 1970-01-01), `price`, `ma_200w`, `realized_price`, `mvrv_z` (null where not computable). 404 when the snapshot has none.</description>
       <parameters />
     </endpoint>
+    <endpoint method="GET" path="/api/regime" format="json" source="stored">
+      <description>R · Market Regime / Shock Reader from the latest snapshot: the regime (CALM, VOLATILITY SHOCK with or without credit/recession confirmation, CREDIT STRESS, RECESSION-TYPE BEAR, LIQUIDITY SQUEEZE, PANIC UNWINDING), why (each reading against its threshold), the forced-selling rows (vol-control, CTA, leveraged ETFs, dealer gamma: value, direction, status, or missing with a reason), the playbook rows (FIRED / waiting / missing) and THE READ (a short text with the model that wrote it, or missing). 404 when the snapshot has no regime block.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/trackers" format="json" source="stored + live quotes">
+      <description>T · Trackers: every tracker (name, conditions, priority, cooldown, hours, note, enabled) with its live value and distance to trigger (a symbol operand reads a cached live quote, a metric the latest live snapshot), its state (armed, FIRED, cooling down, disabled) and last fire, plus the fire history. The state is what the 15-minute tracker-alerts job last recorded.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/trackers/metrics" format="json" source="stored">
+      <description>Metric names for the tracker editor's autocomplete: short snapshot names (hy_oas, chaos, regime, btc_verdict ...) and catalog ids. A symbol in capitals (SLV, ^VIX, BTC-USD) is its live last price.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="GET" path="/api/trackers/preview" format="json" source="stored + live quotes">
+      <description>The current value of one expression, and whether `op` `value` holds, for the editor's preview. Nothing is stored. A bad expression is a 400 with the reason.</description>
+      <parameters>
+        <param name="expr" type="string" default="" description="Expression over symbols and metrics, e.g. ^VIX / ^VIX3M" />
+        <param name="op" type="string" default="" description="Comparator: &lt; &lt;= &gt; &gt;= == changes" />
+        <param name="value" type="float" default="" description="Threshold" />
+      </parameters>
+    </endpoint>
+    <endpoint method="POST" path="/api/trackers" format="json" source="stored" writes="trackers file">
+      <description>Create or replace a tracker (JSON body: name, conditions [{expr, op, value}], priority, cooldown_min, hours, note, enabled; an existing id replaces it). 400 with the reason when invalid. Every tracker write needs the X-Tracker-Request: 1 header (403 without), passes the cross-site check, and is refused (403) by a copy running in a container.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="DELETE" path="/api/trackers/{tid}" format="json" source="stored" writes="trackers file">
+      <description>Delete a tracker. 404 for an unknown id. Same guards as the save.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="POST" path="/api/trackers/{tid}/duplicate" format="json" source="stored" writes="trackers file">
+      <description>A disabled copy named "(name) (copy)". Same guards as the save.</description>
+      <parameters />
+    </endpoint>
+    <endpoint method="POST" path="/api/trackers/{tid}/test" format="json" source="stored" writes="one ntfy push">
+      <description>Send the tracker's push once, titled TEST, at its own priority. 503 when NTFY_URL is not set, 502 when the push failed. Same guards as the save.</description>
+      <parameters />
+    </endpoint>
     <endpoint method="GET" path="/api/people" format="json" source="stored">
       <description>The PEOPLE tab's file: people_portfolios.json from the data folder, written daily by an external job (people_track.py), never computed here. Per tracked person (SEC 13F filer or member of Congress): total estimated value (with the disclosure range for Congress), day / 1M / YTD change, change vs SPY since tracking start, value history, holdings, transactions (with the filing date and link) and sources. 404 with status missing when the file is absent; 502 when it cannot be read.</description>
       <parameters>
@@ -3115,9 +3151,10 @@ def _latest_forecast(conn):
     if hit is None:
         ctx = _v2lake.load_snapshot(conn, row["run_id"])
         hit = {"run": ctx["run"], "forecast": ctx.get("forecast"), "refining": ctx.get("refining"), "chaos": ctx.get("chaos"),
-               "fed_ops": ctx.get("fed_ops"), "bitcoin": ctx.get("bitcoin")}
+               "fed_ops": ctx.get("fed_ops"), "bitcoin": ctx.get("bitcoin"), "regime": ctx.get("regime")}
         data_cache.set(key, hit)
-    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"), chaos=hit.get("chaos"), fed_ops=hit.get("fed_ops"), bitcoin=hit.get("bitcoin"))
+    return hit["run"], dict(hit["forecast"] or {}, _refining=hit.get("refining"), chaos=hit.get("chaos"), fed_ops=hit.get("fed_ops"), bitcoin=hit.get("bitcoin"),
+                                                            regime=hit.get("regime"))
 
 
 @app.route('/api/forecast', methods=['GET'])
@@ -3433,6 +3470,168 @@ def api_bitcoin_history():
     if not blk.get("history"):
         return json_error("this snapshot has no Bitcoin history series", 404)
     return jsonify({"status": "success", "run": run, "as_of": blk.get("as_of"), "data": blk["history"]})
+
+
+@app.route('/api/regime', methods=['GET'])
+@guarded("Regime")
+def api_regime():
+    """R · Market Regime / Shock Reader: the latest snapshot's regime block (rules, readings, forced-selling rows, playbook, THE READ)."""
+    conn = _open_readonly()
+    if conn is None:
+        return _not_initialised()
+    try:
+        run, fc = _latest_forecast(conn)
+    except sqlite3.OperationalError as exc:
+        if _uninitialised(exc):
+            return _not_initialised()
+        raise
+    finally:
+        conn.close()
+    blk = (fc or {}).get("regime")
+    if not blk or blk.get("status") == "error":
+        return json_error((blk or {}).get("reason") or "no regime data yet: run the pipeline", 404)
+    return jsonify({"status": "success", "run": run, "as_of": blk.get("as_of"), "data": blk})
+
+
+# ---------------------------------------------------------------- T · Trackers (core/trackers.py; the file is the store)
+from core import trackers as _trackers
+
+_TRACKERS_LOCK = threading.Lock()
+
+
+def _trackers_readonly():
+    """A copy in a container (Oracle) shows the trackers but never changes them: the alert job and the file live on the Mac."""
+    return os.path.exists("/.dockerenv")
+
+
+def _tracker_write_guard():
+    """Writes need the card's own header (a page on another site cannot send it, so it cannot make a write; the cross-site check of
+    every POST/DELETE runs as well) and a copy that owns the file."""
+    if request.headers.get("X-Tracker-Request") != "1":
+        raise ApiError("changing trackers needs the TRACKERS card (X-Tracker-Request header)", 403)
+    if _trackers_readonly():
+        raise ApiError("this copy shows the trackers read-only: change them on the Mac that runs the alerts", 403)
+
+
+def _tracker_env():
+    conn = _open_readonly()
+    try:
+        return _trackers.snapshot_env(conn, _cached_underlying) if conn is not None else _trackers.Env(None, "no database yet", _cached_underlying)
+    except sqlite3.OperationalError:
+        return _trackers.Env(None, "no committed run yet", _cached_underlying)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.route('/api/trackers', methods=['GET'])
+@guarded("Trackers")
+def api_trackers():
+    """Every tracker with its live value, distance to trigger, state and last fire, plus the fire history. Values read the latest live
+    snapshot and cached live quotes; the state (armed, last fired, cooldown) is what the 15-minute job last recorded."""
+    path, warn = _trackers.store_path()
+    try:
+        items = _trackers.load()
+    except (ValueError, OSError):
+        return json_error("the trackers file cannot be read (see the server log)", 500)
+    env, state, now = _tracker_env(), _trackers.load_state(), datetime.now(timezone.utc)
+    rows = []
+    for t in items:
+        st, live = state.get(t["id"], {}), _trackers.check(t, env)
+        ago = _trackers._ago_min(st.get("last_fired"), now)
+        cond = {**st, "met": live["met"] if t["conditions"][0]["op"] != "changes" else st.get("met")}
+        rows.append({**t, "live": live, "status": _trackers.status_of(t, cond, now), "last_fired": st.get("last_fired"), "checked": st.get("checked"),
+                     "cooldown_left_min": None if ago is None or ago >= t["cooldown_min"] else round(t["cooldown_min"] - ago)})
+    return jsonify({"status": "success", "trackers": rows, "history": _trackers.history(40), "file": path.name, "fallback": warn,
+                    "writable": not _trackers_readonly(), "run_id": env.run_id, "snapshot_note": env.ctx_why, "now": now.isoformat(timespec="seconds")})
+
+
+@app.route('/api/trackers/metrics', methods=['GET'])
+@guarded("Tracker metrics")
+def api_trackers_metrics():
+    """Metric names for the editor's autocomplete: snapshot names and catalog ids (a symbol in capitals is any live last price)."""
+    return jsonify({"status": "success", "metrics": _trackers.metric_list()})
+
+
+@app.route('/api/trackers/preview', methods=['GET'])
+@guarded("Tracker preview")
+def api_trackers_preview():
+    """The current value of an expression (and whether `op` `value` holds), for the editor's live preview. Nothing is stored."""
+    expr, op, raw = request.args.get("expr") or "", request.args.get("op") or "", request.args.get("value")
+    try:
+        _trackers.parse(expr)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    env = _tracker_env()
+    value, error = _trackers.value_of(expr, env)
+    met = None
+    if not error and op in _trackers.OPS and op != "changes" and raw not in (None, ""):
+        try:
+            met = _trackers.check_condition({"expr": expr, "op": op, "value": float(raw)}, env)["met"]
+        except ValueError:
+            met = None
+    return jsonify({"status": "success", "value": value, "error": error, "met": met, "run_id": env.run_id})
+
+
+def _tracker_body(tid=None):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise ApiError("a JSON body is required", 400)
+    return {**body, "id": tid or body.get("id")}
+
+
+@app.route('/api/trackers', methods=['POST'])
+@guarded("Save tracker")
+def api_trackers_save():
+    """Create or replace a tracker (body = the tracker; an existing id replaces it). 400 with the reason when it does not validate."""
+    _tracker_write_guard()
+    with _TRACKERS_LOCK:
+        try:
+            t = _trackers.upsert(_tracker_body())
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+    return jsonify({"status": "success", "tracker": t})
+
+
+@app.route('/api/trackers/<tid>', methods=['DELETE'])
+@guarded("Delete tracker")
+def api_trackers_delete(tid):
+    _tracker_write_guard()
+    with _TRACKERS_LOCK:
+        try:
+            _trackers.delete(tid)
+        except KeyError:
+            return json_error("unknown tracker", 404)
+    return jsonify({"status": "success"})
+
+
+@app.route('/api/trackers/<tid>/duplicate', methods=['POST'])
+@guarded("Duplicate tracker")
+def api_trackers_duplicate(tid):
+    """A disabled copy named '<name> (copy)'."""
+    _tracker_write_guard()
+    with _TRACKERS_LOCK:
+        try:
+            t = _trackers.duplicate(tid)
+        except KeyError:
+            return json_error("unknown tracker", 404)
+    return jsonify({"status": "success", "tracker": t})
+
+
+@app.route('/api/trackers/<tid>/test', methods=['POST'])
+@guarded("Test tracker")
+def api_trackers_test(tid):
+    """Send this tracker's push once, titled TEST, at its own priority. 503 when NTFY_URL is not set, 502 when the push failed."""
+    _tracker_write_guard()
+    t = next((x for x in _trackers.load() if x["id"] == tid), None)
+    if t is None:
+        return json_error("unknown tracker", 404)
+    if not config.NTFY_URL:
+        return json_error("NTFY_URL is not set in .env: there is nowhere to send a test", 503)
+    ok, title, text = _trackers.fire_test(t, _tracker_env(), _trackers.send_ntfy, datetime.now(timezone.utc))
+    if not ok:
+        return json_error("the push was not delivered (see the server log)", 502)
+    return jsonify({"status": "success", "title": title})
 
 
 @app.route('/api/people', methods=['GET'])

@@ -1657,6 +1657,9 @@
                     </div>
                 </div>
                 <div id="fcBackdrop" class="fc-backdrop hidden" onclick="toggleForecastFullscreen()"></div>
+                <div id="trkModal" class="fc-faq hidden" role="dialog" aria-modal="true" aria-label="Tracker editor">
+                    <div class="fc-faq-inner rainbow-card" style="min-height:0"><div class="rainbow-inner"><div class="trk-form"></div></div></div>
+                </div>
                 <div id="fcFaqModal" class="fc-faq hidden" role="dialog" aria-modal="true" aria-labelledby="fcFaqTitle">
                     <div class="fc-faq-inner rainbow-card" style="min-height:0">
                         <div class="rainbow-inner">
@@ -1668,6 +1671,19 @@
                 </div>
                 <div id="forecastGrid"
                     class="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-6 p-5 overflow-y-auto terminal-scroll pb-24 flex-1 auto-rows-min">
+                    <div class="rainbow-card lg:col-span-2 2xl:col-span-3" style="--fc-delay:-6.6s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">R · MARKET REGIME / SHOCK READER</div><div class="fc-sub">What kind of selloff this is (volatility, credit, recession, liquidity) · who is forced to sell · your tranche conditions · a plain-English read</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="openForecastFaq('fcR')" title="How to use this card">?</button>
+                                    <button class="fc-icon" onclick="toggleForecastFullscreen('fcR')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="copyForecastCard('fcR')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="fcR" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
                     <div class="rainbow-card lg:col-span-2 2xl:col-span-3" style="--fc-delay:-7.26s">
                         <div class="rainbow-inner">
                             <div class="fc-head">
@@ -1679,6 +1695,19 @@
                                 </div>
                             </div>
                             <div id="fc0" class="fc-body"><div class="fc-muted">Loading…</div></div>
+                        </div>
+                    </div>
+                    <div class="rainbow-card lg:col-span-2 2xl:col-span-3" style="--fc-delay:-7.59s">
+                        <div class="rainbow-inner">
+                            <div class="fc-head">
+                                <div><div class="fc-title">T · TRACKERS</div><div class="fc-sub">Your own conditions with phone alerts · live value and distance to trigger · + ADD, EDIT, DUPLICATE, TEST</div></div>
+                                <div class="fc-actions">
+                                    <button class="fc-icon" onclick="openForecastFaq('fcT')" title="How to use this card">?</button>
+                                    <button class="fc-icon" onclick="toggleForecastFullscreen('fcT')" title="Full screen (Esc to exit)">⛶</button>
+                                    <button class="fc-copy" onclick="copyForecastCard('fcT')" title="Copy this card's data">COPY</button>
+                                </div>
+                            </div>
+                            <div id="fcT" class="fc-body"><div class="fc-muted">Loading…</div></div>
                         </div>
                     </div>
                     <div class="rainbow-card lg:col-span-2 2xl:col-span-3" style="--fc-delay:-7.92s">
@@ -2070,6 +2099,7 @@
 
     <script src="/static/app.js"></script>
     <script src="/static/forecast.js"></script>
+    <script src="/static/regime.js"></script>
     <script src="/static/bitcoin.js"></script>
     <script src="/static/people.js"></script>
     <script src="/static/fans.js"></script>

@@ -212,6 +212,9 @@ KRONOS_DEVICE = optional_env("KRONOS_DEVICE", default="").strip()      # blank: 
 # CHART tab (core/bars.py): its own folder (chart.db + bars/ day files). CHART_REMOTE forwards /api/chart/* to another terminal.
 CHART_STORE = Path(optional_env("CHART_STORE", default="") or DATA_DIR / "chart").expanduser()
 CHART_REMOTE = (optional_env("CHART_REMOTE", default="") or "").strip().rstrip("/")
+# T · Trackers (core/trackers.py): one JSON file of the operator's alert conditions; its state and fire history sit beside it. Blank: DATA_DIR/trackers.json.
+# A folder that cannot be used (an unmounted disk) falls back to the data folder with a logged warning.
+TRACKERS_FILE = (optional_env("TRACKERS_FILE", default="") or "").strip()
 # The footer (/api/version): this copy's name, the other copy's base URL (blank: CHART_REMOTE), and the commit a Docker image was built from.
 MARKET_SERVER = (optional_env("MARKET_SERVER", default="") or "").strip()
 MARKET_PEER = (optional_env("MARKET_PEER", default="") or "").strip().rstrip("/")

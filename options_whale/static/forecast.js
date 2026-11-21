@@ -61,6 +61,7 @@ async function loadForecast(ticker) {
     ['SPY', 'SLV'].forEach(t => document.getElementById(`fcBtn${t}`)?.classList.toggle('active', t === FC.ticker));
     if (!FC.scanner) loadScanner();     // cards 12 and 13 have their own routes and REFRESH buttons: they load once per page
     if (!FC.fans16 && window.Fans) { FC.fans16 = true; Fans.card16(); }     // card 16 has its own routes: it loads once per page
+    if (!FC.regime && typeof RG !== 'undefined') { FC.regime = true; RG.load(); }      // cards R and T (regime.js) have their own routes: they load once per page
     if (!FC.edges) loadEdges();         // load (even when /api/forecast fails), not on every SPY/SLV switch
     try {
         // fetchJson (app.js) returns the body of a 404 or 503 too, so its message reaches the cards
@@ -86,7 +87,7 @@ async function loadForecast(ticker) {
 function copyForecastCard(id) {
     const d = FC.data || {};
     const map = {
-        fc0: d.signals, fc12: FC.scanner, fc13: FC.edges, fc1: d.data?.implied, fc2: d.data?.vol_forecast, fc3: d.data?.trend, fc4: d.positioning, fc5: d.silver_fair_value,
+        fc0: d.signals, fcR: typeof RG !== 'undefined' ? RG.data : null, fcT: typeof RG !== 'undefined' ? RG.trk : null, fc12: FC.scanner, fc13: FC.edges, fc1: d.data?.implied, fc2: d.data?.vol_forecast, fc3: d.data?.trend, fc4: d.positioning, fc5: d.silver_fair_value,
         fc6: d.macro_regime, fc7: d.data?.calendar, fc8: d.data?.flows, fc9: d.scorecard, fc10: d.refining, fc11: d.refining?.inventories, fc14: d.chaos, fc15: d.fed_ops, fc16: window.Fans ? Fans.copyData() : null,
     };
     const title = document.querySelector(`#${id}`)?.closest('.rainbow-inner')?.querySelector('.fc-title')?.textContent || id;
@@ -1114,6 +1115,25 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', e => { if (e.target && e.target.id === 'fcFaqModal') closeForecastFaq(); });
 
 const FC_FAQ = {
+    fcR: { title: 'R · Market Regime / Shock Reader — FAQ',
+        what: 'Classifies the current market into one regime from stored readings only, with the reason for each call, then shows who is being forced to sell and where your tranche conditions stand. It is computed by the pipeline at every run; nothing here is live.',
+        read: ['<b>The pill</b> is the regime. A <i>volatility shock with no credit/recession confirmation</i> means VIX is up hard, the VIX curve is inverted or VVIX is high while high-yield spreads, recession odds and the Sahm rule all still say calm. Credit stress, a recession-type bear, a liquidity squeeze and a panic unwinding are the other states; the rules are listed at the bottom, first match wins.',
+               '<b>WHY</b> prints each reading against its cut-off. MET means that cut-off was crossed. A reading that is not in the run says missing and why.',
+               '<b>Forced-selling gauge</b>: estimates of vol-control funds, trend followers (CTAs), leveraged ETFs and dealer gamma from Forecast Lab card 8. They are models built on public AUM, not reported positions. ACTIVE means the estimate is past its cut-off.',
+               '<b>Playbook</b>: your tranche plan written as true/false conditions. FIRED means the condition holds at this run; it is a condition, not advice.',
+               '<b>THE READ</b> is a short text written at the run by the local model (or Sonnet if the local one was off), checked so that every number in it is in the facts above. If no model answered, the card says so and the rules still stand.'],
+        trade: ['Nothing here is a trade signal. It tells you what kind of event the market is in so you can match your own plan to it.'],
+        funds: ['Desks separate a volatility event from a credit event first: spreads, funding markets and recession gauges decide whether a drawdown is a buy-the-dip or a regime change.'],
+        caveats: ['Thresholds are fixed in code and are not backtested. The vol-control AUM ($400B) is an industry estimate. Readings are as of the last run (three a day), so the VIX can differ from the live quote.'] },
+    fcT: { title: 'T · Trackers — FAQ',
+        what: 'Your own alert conditions. Each tracker watches an expression over live prices and stored metrics and sends a phone push (ntfy) when it fires. The job runs every 15 minutes, every day, so crypto trackers run outside the stock session.',
+        read: ['<b>Live value</b> is the current number of each condition and the bar shows how close it is to the trigger (empty at 25% away or more, full when met). <b>State</b>: armed (waiting), FIRED (true now), cooling down (fired inside its cooldown), disabled.',
+               '<b>Expressions</b> use + - * / and parentheses. A symbol in capitals is its live price: <code>SLV</code>, <code>^VIX</code>, <code>BTC-USD</code>. Lower-case names are metrics of the latest run: <code>hy_oas</code>, <code>chaos</code>, <code>regime</code>, <code>btc_verdict</code> and every catalog id. The editor completes names as you type and shows the current value.',
+               '<b>changes</b> fires when a value (such as the regime or the Bitcoin verdict) differs from the last one the job saw. Several conditions in one tracker must all hold.',
+               '<b>TEST</b> sends the tracker\'s push once, at its priority, marked TEST. Priority maps to ntfy 1 to 5 (min, low, default, high, urgent).'],
+        trade: ['A tracker only tells you a condition became true. What to do about it is your plan.'],
+        funds: ['Desks alert on crossings, not levels, and rate-limit repeats; that is what the edge trigger and the cooldown do.'],
+        caveats: ['A reading that is missing never fires. Snapshot metrics change only when a pipeline run commits (three a day). The first check after you add a tracker only records its state. A read-only copy (Oracle) shows trackers but cannot change them.'] },
     fc16: { title: '16 · Scenario Lab — FAQ',
         what: 'Scenario fans: for each series, 100 possible 20-day (or 8-week) paths sampled by Kronos, a model trained on market candles, drawn next to the baseline 80% band (a bootstrap of the series\' own past changes; a seasonal one for weekly data).',
         read: ['<b>Fan</b>: the thin orange lines are Kronos paths; dashed = p10 and p90, solid = median. The blue band is the baseline p10–p90.',
