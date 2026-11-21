@@ -126,7 +126,7 @@ class Maths(unittest.TestCase):
         o = B.onchain(df, TODAY)
         self.assertAlmostEqual(o["mvrv_z"], z.iloc[-1])
         self.assertEqual(o["status"], "fresh")
-        self.assertIn("sopr", o["unavailable"])
+        self.assertEqual(list(o["unavailable"]), ["exchange_balances"])
 
     def test_mvrv_zero_or_missing_does_not_divide(self):
         idx = pd.date_range(end="2026-11-19", periods=3, freq="D")

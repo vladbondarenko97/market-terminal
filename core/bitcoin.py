@@ -114,7 +114,7 @@ def onchain(df, today):
            "market_cap": _f(df["mcap"].iloc[-1]), "mvrv": _f(df["mvrv"].iloc[-1]), "realized_cap": _f(rcap.iloc[-1]), "realized_price": _f(rprice.iloc[-1]),
            "supply": _f(df["supply"].iloc[-1]), "mvrv_z": zz, "hash_ribbons": hash_ribbons(df["hash"]), "days": len(df),
            "formula": "MVRV Z = (market cap - realized cap) / stdev(market cap over all days to date); realized cap = market cap / MVRV",
-           "unavailable": {"sopr": "no free keyless source", "sth_cost_basis": "no free keyless source", "exchange_balances": "no free keyless source"}}
+           "unavailable": {"exchange_balances": "no free source"}}      # SOPR and the STH cost basis: see onchain_delayed
     if zz is None:
         out["missing"] = {"mvrv_z": "needs 365 days of market cap and a positive MVRV"}
     if out["status"] == "stale":
