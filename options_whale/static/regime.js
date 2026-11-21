@@ -52,10 +52,134 @@ function rgRenderRegime(d, run) {
         <div class="fc-sub">FORCED-SELLING GAUGE${fs.sold_recent_usd != null ? ` · est. ${rgUsd(fs.sold_recent_usd)} of vol-control (5 sessions) and leveraged-ETF selling` : ''}${fs.if_spy_down_2pct_usd != null ? ` · another ${rgUsd(fs.if_spy_down_2pct_usd)} if SPY falls 2%` : ''}</div>
         ${fs.status === 'missing' && !rows ? missing(fs) : `<table class="fc-table fc-sig"><tr><th>Flow</th><th>Value</th><th>Direction</th><th>Status</th><th>Detail</th></tr>${rows}</table>`}
         <div class="fc-note">${fcEsc(fs.note || '')}</div>
+        ${rgProjection(d.flow_projection)}
         <div class="fc-sub">PLAYBOOK (Vlad's tranche plan, as conditions; not advice)</div>
         <table class="fc-table fc-sig"><tr><th>Step</th><th>Condition</th><th>Status</th><th>Reading</th></tr>${pb}</table>
         <details class="fc-note"><summary>The rules (first match wins)</summary><ol style="padding-left:16px">${(d.rules || []).map(r => `<li><b>${fcEsc(r.regime)}</b>: ${fcEsc(r.when)}</li>`).join('')}</ol></details>`;
     fcLabelCells(el);
+    rgProjectionCharts(d.flow_projection);
+}
+
+// ---- forced-flow projection (core/flowproj.py): ESTIMATES; a missing source is a gap, never a zero
+const RG_SRC = { vol_control: ['Vol-control', '#ef4444'], cta: ['CTA', '#f59e0b'], leveraged_etf: ['Leveraged ETFs', '#a78bfa'], dealer_gamma: ['Dealer gamma', '#22d3ee'] };
+const RG_PATH = { calm: '#4ade80', recent: '#fbbf24', stressed: '#f87171' };
+const rgB = v => v === null || v === undefined ? null : v / 1e9;
+const rgDay = iso => iso ? new Date(iso + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' }) : 'not within 30 sessions';
+function rgProjection(fp) {
+    const head = '<div class="fc-sub">FORCED-FLOW PROJECTION · ESTIMATE (sell = negative)</div>';
+    if (!fp || fp.status !== 'fresh') return head + missing(fp || { status: 'missing', reason: 'not in this run (an older snapshot)' });
+    const rows = Object.fromEntries(fp.scenarios.rows.map(r => [r.move_pct, r])), tp = fp.time_path || {};
+    const miss = Object.entries(fp.scenarios.missing || {}).map(([k, why]) => `<li class="fc-neg">${fcEsc(RG_SRC[k][0])}: missing (${fcEsc(why)})</li>`).join('');
+    const scen = [-2, -5, -10].map(m => rows[m]).filter(Boolean).map(r => `<tr><td>SPY ${r.move_pct}% (${fcNum(r.price, 2)})</td>
+        ${Object.keys(RG_SRC).map(k => `<td class="${fcCls(r[k])}">${r[k] === null ? '<span class="fc-muted">missing</span>' : rgUsd(r[k])}</td>`).join('')}
+        <td class="${fcCls(r.total)}"><b>${rgUsd(r.total)}</b></td><td class="fc-muted">${rgUsd(r.total_low)} to ${rgUsd(r.total_high)}</td></tr>`).join('');
+    const paths = tp.status === 'fresh' ? Object.entries(tp.paths).map(([k, p]) => `<tr><td style="color:${RG_PATH[k]}">${fcEsc(p.label)}</td><td>${fcNum(p.daily_move_pct, 2)}%</td>
+        <td class="${p.releverage_date ? 'fc-pos' : 'fc-muted'}">${rgDay(p.releverage_date)}</td><td class="${fcCls(p.cumulative[p.cumulative.length - 1])}">${rgUsd(p.cumulative[p.cumulative.length - 1])}</td>
+        <td class="fc-muted">${rgUsd(p.cumulative_low)} to ${rgUsd(p.cumulative_high)}</td></tr>`).join('') : '';
+    const cf = tp.cta_flat || {};
+    const ctaTxt = cf.status === 'missing' ? `CTA under a flat price: missing (${fcEsc(cf.reason)})` : cf.exposure ? `CTA held flat at spot: exposure ${fcNum(cf.exposure_now, 2)} → ${fcNum(cf.exposure[cf.exposure.length - 1], 2)} over 30 sessions (${rgUsd(cf.cumulative[cf.cumulative.length - 1])} est.)`
+        + `; window flips: ${Object.entries(cf.window_flip_dates || {}).map(([w, d]) => `${w} ${d ? rgDay(d) : 'none'}`).join(', ')}` : '';
+    return `${head}
+        <div class="rg-proj-sum">${fcEsc(fp.summary)}</div>
+        <div class="fc-note">SPY close vs the daily forced-flow estimate, then the next 30 sessions. <span class="rg-glow-key">red glow = estimated forced selling</span>, green = forced buying;
+            the projected part is lighter and dashed (shaded on the "same as the last 5 sessions" path). Dots mark where each path's vol-control funds turn buyers.</div>
+        <div class="fc-chart fc-chart-tall"><canvas id="rgFlowHist"></canvas></div>
+        <div class="fc-note">Extra forced flow if SPY moves from ${fcNum(fp.scenarios.spot, 2)} (next close vs an unchanged close), stacked by source. Lines: spot, the zero-gamma level and each CTA window's flip level.</div>
+        <div class="fc-chart fc-chart-tall"><canvas id="rgFlowScen"></canvas></div>
+        <table class="fc-table fc-sig"><tr><th>Scenario</th>${Object.values(RG_SRC).map(([n]) => `<th>${n}</th>`).join('')}<th>Total</th><th>Range (AUM band)</th></tr>${scen}</table>
+        ${paths ? `<table class="fc-table fc-sig"><tr><th>Next 30 sessions (vol-control)</th><th>Daily move</th><th>Turns buyer</th><th>Cumulative</th><th>Range</th></tr>${paths}</table>` : missing(tp)}
+        <div class="fc-note">${ctaTxt}</div>
+        ${miss ? `<ul class="rg-why">${miss}</ul>` : ''}
+        <details class="fc-note"><summary>Assumptions (every number here is an estimate)</summary><ul class="rg-why">${(fp.assumptions || []).map(a => `<li>${fcEsc(a)}</li>`).join('')}
+            <li>${fcEsc(fp.history.note)}</li><li>Dealer gamma model in this run: ${fcEsc(fp.scenarios.gamma_model)}.</li></ul></details>`;
+}
+
+// Bands behind the price where the daily estimate is net selling (neon red, stronger for bigger days) or buying (soft green).
+// `bands` = [{i, v (USD), proj}] on the chart's category index; projected bands are lighter with a dashed edge.
+const rgGlow = bands => ({
+    id: 'rgGlow',
+    beforeDatasetsDraw(chart) {
+        const { ctx, chartArea: a, scales: { x } } = chart;
+        const top = p => Math.max(1, ...bands.filter(b => b.proj === p).map(b => Math.abs(b.v || 0)));     // projected days scale on their own
+        const max = { true: top(true), false: top(false) };
+        const w = Math.max(2, (x.getPixelForValue(1) - x.getPixelForValue(0)) || 4);
+        ctx.save();
+        bands.forEach(b => {
+            const k = Math.min(1, Math.abs(b.v || 0) / max[b.proj]);
+            if (k < 0.12) return;                       // small days stay unshaded so the selling spikes stand out
+            const sell = b.v < 0, x0 = x.getPixelForValue(b.i) - w / 2;
+            const al = (sell ? 0.10 + 0.45 * k : 0.05 + 0.18 * k) * (b.proj ? 0.5 : 1);
+            ctx.fillStyle = sell ? `rgba(255,40,70,${al})` : `rgba(74,222,128,${al})`;
+            ctx.shadowColor = sell ? 'rgba(255,40,70,.9)' : 'rgba(74,222,128,.5)';
+            ctx.shadowBlur = sell ? 6 + 14 * k : 4;
+            ctx.fillRect(x0, a.top, w, a.bottom - a.top);
+            if (b.proj) { ctx.shadowBlur = 0; ctx.setLineDash([3, 3]); ctx.strokeStyle = ctx.fillStyle; ctx.strokeRect(x0, a.top, w, a.bottom - a.top); ctx.setLineDash([]); }
+        });
+        ctx.restore();
+    },
+});
+// Vertical marks on a category axis of prices: [{price, label, color}], placed between the two grid points around the price
+const rgMarks = (prices, marks) => ({
+    id: 'rgMarks',
+    afterDatasetsDraw(chart) {
+        const { ctx, chartArea: a, scales: { x } } = chart;
+        ctx.save(); ctx.font = '9px sans-serif';
+        marks.forEach((m, n) => {
+            if (m.price == null) return;
+            const j = prices.findIndex((p, i) => i < prices.length - 1 && (p - m.price) * (prices[i + 1] - m.price) <= 0);
+            if (j < 0) return;
+            const f = (m.price - prices[j]) / (prices[j + 1] - prices[j] || 1), px = x.getPixelForValue(j) + f * (x.getPixelForValue(j + 1) - x.getPixelForValue(j));
+            ctx.strokeStyle = m.color; ctx.fillStyle = m.color; ctx.setLineDash(m.dash || [4, 3]);
+            ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+            ctx.fillText(m.label, Math.min(px + 3, a.right - 60), a.top + 10 + 11 * (n % 4));
+        });
+        ctx.restore();
+    },
+});
+function rgProjectionCharts(fp) {
+    if (!fp || fp.status !== 'fresh' || typeof Chart === 'undefined') return;
+    const h = fp.history, tp = fp.time_path || {}, n = Math.min(120, h.dates.length), H = h.dates.slice(-n), tot = h.total.slice(-n);
+    const fut = tp.status === 'fresh' ? tp.dates : [], pad = a => Array(fut.length).fill(null), lead = Array(n).fill(null);
+    const labels = H.concat(fut), proj = (tp.paths || {}).recent;
+    const bands = tot.map((v, i) => ({ i, v, proj: false })).concat(proj ? proj.flow.map((v, i) => ({ i: n + i, v, proj: true })) : []);
+    const ds = [
+        { type: 'line', label: 'SPY close', data: h.close.slice(-n).concat(pad()), borderColor: '#e4e4e7', borderWidth: 1.5, pointRadius: 0, yAxisID: 'px', spanGaps: false, order: 0 },
+        { type: 'bar', label: 'Forced flow, est. ($B/day)', data: tot.map(rgB).concat(pad()), yAxisID: 'usd', order: 2,
+          backgroundColor: tot.map(v => v < 0 ? 'rgba(255,60,90,.85)' : 'rgba(74,222,128,.7)') },
+    ];
+    Object.entries(tp.paths || {}).forEach(([k, p]) => {
+        const at = fut.indexOf(p.releverage_date);
+        ds.push({ type: 'line', label: `Vol-control, ${p.label}${p.releverage_date ? ' · buyer ' + rgDay(p.releverage_date) : ''}`, data: lead.concat(p.flow.map(rgB)), yAxisID: 'usd',
+                  borderColor: RG_PATH[k], borderDash: [5, 4], borderWidth: 1.5, order: 1,
+                  pointRadius: lead.concat(p.flow.map((_, i) => i === at ? 5 : 0)), pointBackgroundColor: RG_PATH[k] });
+    });
+    if ((tp.cta_flat || {}).flow) ds.push({ type: 'line', label: 'CTA, price flat', data: lead.concat(tp.cta_flat.flow.map(rgB)), yAxisID: 'usd', borderColor: '#fb923c', borderDash: [2, 3], borderWidth: 1, pointRadius: 0, order: 1 });
+    fcChart('rgFlowHist', { type: 'bar', data: { labels, datasets: ds }, plugins: [rgGlow(bands)],
+        options: { onResize: fcFitLegend, plugins: { legend: { position: fcLegendPosition(document.getElementById('rgFlowHist')?.clientWidth || 0), labels: { color: FC_COL.ink, boxWidth: 10, font: { size: 9 } } },
+                            tooltip: { callbacks: { label: c => c.dataset.yAxisID === 'usd' ? `${c.dataset.label}: ${c.raw === null ? 'missing' : (c.raw > 0 ? '+' : '') + c.raw.toFixed(1) + 'B'}` : `${c.dataset.label}: ${fcNum(c.raw, 2)}` } } },
+                   scales: { x: axis({ ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 8, maxRotation: 0 } }),
+                             usd: axis({ position: 'left', title: { display: true, text: '$B / day (est.)', color: FC_COL.ink2, font: { size: 9 } } }),
+                             px: axis({ position: 'right', beginAtZero: false, grace: '5%', grid: { display: false }, title: { display: true, text: 'SPY', color: FC_COL.ink2, font: { size: 9 } } }) } } });
+    // scenarios: one stacked area per source and sign (Chart.js stacks lines without splitting signs), total as a line
+    const sc = fp.scenarios, moves = sc.rows.map(r => r.move_pct), prices = sc.rows.map(r => r.price), sds = [];
+    // datasets alternate neg, pos per source: each fills to the one two back (the same sign's previous source), the first to zero
+    Object.entries(RG_SRC).forEach(([k, [name, col]]) => {
+        if (sc.missing && sc.missing[k]) return;
+        [['neg', v => Math.min(v, 0)], ['pos', v => Math.max(v, 0)]].forEach(([st, f], j) => sds.push({ type: 'line', label: name, stack: st, fill: sds.length < 2 ? 'origin' : '-2', data: sc.rows.map(r => rgB(f(r[k]))),
+            borderColor: col, backgroundColor: col + '99', borderWidth: 1, pointRadius: 0, yAxisID: 'y', hidden: false, _dup: j === 1 }));
+    });
+    // total and its range are lines in stacks of their own, so the stacked axis does not add them to the areas
+    sds.push({ type: 'line', label: 'Total', data: sc.rows.map(r => rgB(r.total)), borderColor: '#f4f4f5', borderWidth: 2, pointRadius: 0, stack: 'total', fill: false, yAxisID: 'y' },
+             { type: 'line', label: 'Range (AUM band)', data: sc.rows.map(r => rgB(r.total_low)), borderColor: '#e4e4e7', borderDash: [3, 3], borderWidth: 1, pointRadius: 0, stack: 'lo', fill: false, yAxisID: 'y' },
+             { type: 'line', label: '', data: sc.rows.map(r => rgB(r.total_high)), borderColor: '#e4e4e7', borderDash: [3, 3], borderWidth: 1, pointRadius: 0, stack: 'hi', fill: false, yAxisID: 'y' });
+    const marks = [{ price: sc.spot, label: `spot ${fcNum(sc.spot, 0)}`, color: '#e4e4e7', dash: [] }, { price: sc.zero_gamma, label: `zero γ ${fcNum(sc.zero_gamma, 0)}`, color: '#22d3ee' }]
+        .concat(Object.entries(sc.cta_flip_levels || {}).map(([w, p]) => ({ price: p, label: `CTA ${w} flip ${fcNum(p, 0)}`, color: '#fb923c' })));
+    fcChart('rgFlowScen', { type: 'line', data: { labels: moves.map((m, i) => `${m > 0 ? '+' : ''}${m}% · ${fcNum(prices[i], 0)}`), datasets: sds }, plugins: [rgMarks(prices, marks)],
+        options: { onResize: fcFitLegend, plugins: { legend: { position: fcLegendPosition(document.getElementById('rgFlowScen')?.clientWidth || 0),
+                       labels: { color: FC_COL.ink, boxWidth: 10, font: { size: 9 }, filter: (it, d) => !d.datasets[it.datasetIndex]._dup && it.text } },
+                            tooltip: { filter: it => !it.dataset._dup || it.raw, callbacks: { label: c => `${c.dataset.label || 'Range high'}: ${c.raw === null ? 'missing' : (c.raw > 0 ? '+' : '') + c.raw.toFixed(1) + 'B'}` } } },
+                   scales: { x: axis({ ticks: { color: FC_COL.ink2, font: { size: 9 }, maxTicksLimit: 7, maxRotation: 0 } }),
+                             y: axis({ stacked: true, title: { display: true, text: '$B (est.)', color: FC_COL.ink2, font: { size: 9 } } }) } } });
 }
 
 // ---------------------------------------------------------------- T · trackers

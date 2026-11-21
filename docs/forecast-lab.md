@@ -444,7 +444,7 @@ instead:
 
 ## R · Market Regime / Shock Reader and T · Trackers
 
-**R** is a market-wide card built like the late blocks of the run (it follows the Adding steps 1 to 5, with its own route): `core/regime.py` (`regime_v1`) turns the run's `prices`, `forecast`, `chaos`, `fed_ops` and
+**R** is a market-wide card built like the late blocks of the run (it follows the Adding steps 1 to 5, with its own route): `core/regime.py` (`regime_v2`, with the forced-flow projection of `core/flowproj.py`) turns the run's `prices`, `forecast`, `chaos`, `fed_ops` and
 `bitcoin` blocks and the previous run's regime into the snapshot key `regime`; `collect._guarded_regime()` runs it last and an exception becomes an error block, never an aborted run. `/api/regime` returns the block and
 `options_whale/static/regime.js` renders it (card id `fcR`, above Signal Watch). It reads the picked model in oMLX through `narrative.chat_local` for THE READ (never another model, so oMLX never loads a second one) and falls back to
 one no-tools Sonnet call through Claude Code (`--max-budget-usd 0.10`); offline runs skip both. **T** is not a model: it reads and writes the operator's tracker file (`core/trackers.py`, id `fcT`). Both are described in

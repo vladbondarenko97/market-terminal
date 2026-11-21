@@ -140,7 +140,9 @@ SOURCES = OrderedDict([
         "whether it is graded on history). Conditions, not a trade call. Say the run time.")),
     ("regime", ("/api/regime", (), "R · Market Regime / Shock Reader of the latest run: the regime (CALM, VOLATILITY SHOCK with or without credit/recession confirmation, CREDIT STRESS, "
         "RECESSION-TYPE BEAR, LIQUIDITY SQUEEZE, PANIC UNWINDING), why (each reading against its threshold), the forced-selling gauge (vol-control funds, CTA position vs flip levels, "
-        "leveraged ETFs, dealer gamma: value, direction, status; missing with a reason), the tranche playbook conditions (FIRED or waiting) and THE READ (a short text and which model "
+        "leveraged ETFs, dealer gamma: value, direction, status; missing with a reason), the forced-flow projection (ESTIMATE: extra forced flow for SPY moves "
+        "of -10..+5% by source with a low/high AUM range, the date vol-control funds turn buyers under calm / recent / stressed daily moves, CTA under a flat price, "
+        "the rebuilt daily estimate; path=data.flow_projection for the raw arrays), the tranche playbook conditions (FIRED or waiting) and THE READ (a short text and which model "
         "wrote it). Conditions, not advice. Say the run time.")),
     ("trackers", ("/api/trackers", (), "T · Trackers: the operator's own alert conditions (name, conditions, priority, cooldown, hours) with their live value, distance to trigger, "
         "state (armed, FIRED, cooling down, disabled), last fired time and the recent fire history. Read-only here; they are edited on the terminal's TRACKERS card.")),
@@ -434,6 +436,24 @@ def _shape_war_room(obj, params):
 
 def _shape_chaos(obj, _params):
     return {"as_of": obj.get("as_of"), "rows": [line for _label, line in narrative.chaos_rows(obj.get("data"))]}
+
+
+def _shape_regime(obj, _params):
+    """The forced-flow projection's arrays are for the chart: the model reads its summary, the scenario rows at whole-percent moves,
+    the re-leveraging date of each path and the last 10 rebuilt days (path=data.flow_projection opens the raw block)."""
+    fp = (obj.get("data") or {}).get("flow_projection")
+    if not isinstance(fp, dict) or fp.get("status") != "fresh":
+        return obj
+    tp, h = fp.get("time_path") or {}, fp.get("history") or {}
+    short = {"status": "fresh", "estimate": True, "version": fp.get("version"), "summary": fp.get("summary"), "assumptions": fp.get("assumptions"),
+             "scenarios": {**{k: v for k, v in fp["scenarios"].items() if k != "rows"},
+                           "rows": [r for r in fp["scenarios"]["rows"] if float(r["move_pct"]).is_integer()]},
+             "time_path": tp if tp.get("status") != "fresh" else {
+                 "paths": {k: {"label": p["label"], "daily_move_pct": p["daily_move_pct"], "releverage_date": p["releverage_date"],
+                               "cumulative_30_sessions": p["cumulative"][-1], "range": [p["cumulative_low"], p["cumulative_high"]]} for k, p in tp["paths"].items()},
+                 "cta_flat": {k: v for k, v in (tp.get("cta_flat") or {}).items() if k not in ("exposure", "flow", "cumulative")}, "last_date": tp["dates"][-1]},
+             "history_last_10": [{"date": d, "close": c, "total": t} for d, c, t in list(zip(h.get("dates") or [], h.get("close") or [], h.get("total") or []))[-10:]]}
+    return {**obj, "data": {**obj["data"], "flow_projection": short}}
 
 
 def _shape_bitcoin(obj, _params):
@@ -791,7 +811,7 @@ def _shape_fed_latest(obj, params=None):
 
 
 SHAPERS = {**{n: _shape_fed if n.endswith("_history") else _shape_fed_latest for n in FED_SOURCES},
-           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "eia_history": _shape_eia, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "bitcoin": _shape_bitcoin, "people": _shape_people, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
+           "buyback_history": lambda obj, params: _shape_fed(obj, params, buyback=True), "war_room": _shape_war_room, "shanghai_spread": _shape_shanghai, "eia_history": _shape_eia, "brokerage": _shape_brokerage, "chaos": _shape_chaos, "regime": _shape_regime, "bitcoin": _shape_bitcoin, "people": _shape_people, "macro_news": _shape_news, "vmri_history": _shape_vmri_history, "gex": _shape_gex, "positions": _shape_positions, "signal_watch": _shape_signals, "day_scanner": _shape_scanner, "edge_lab": _shape_edges}
 
 
 # ---------------------------------------------------------------- the one data tool
@@ -916,7 +936,7 @@ def fetch_source(app, source, query="", path="", last=10, sources=None):
                 keep = len(items) - len(items) // 3
                 summary[key] = items[-keep:] if isinstance(items, list) else dict(list(items.items())[-keep:])
                 summary[f"{key}_note"] = f"the latest {keep} shown to fit; the history starts {obj.get('earliest_stored')}: narrow from/to for older ones"
-        if source in SHAPERS and isinstance(obj, dict) and not (source == "eia_history" and path):   # path= reads the raw arrays
+        if source in SHAPERS and isinstance(obj, dict) and not (source in ("eia_history", "regime") and path):   # path= reads the raw arrays
             obj = SHAPERS[source](obj, params)
             last = last if str(last) != "10" or source in ("positions", "gex", "brokerage") else 40     # already compact: whole lists by default
             if source in FED_SOURCES and source.endswith("_history") and str(last) in ("10", "40"):

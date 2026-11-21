@@ -316,6 +316,32 @@
         if (cell.i === st.active) renderInfo();
     }
 
+    // ---- card R's forced-flow estimate (an ESTIMATE, USD bn per day): red/green bars in their own pane and, on an S&P chart, a glow behind
+    // the candles on the days it is net selling (neon red, stronger for bigger days) or buying (soft green). Days without one are gaps.
+    const FORCED = 'regime.forced_flow', SPXISH = /^(SPY|\^GSPC|ES=F|VOO|IVV|\^SPX)$/;
+    function forcedFlow(cell, c, m, add, pane, mv) {
+        const pts = m.t.map((t, i) => ({ t, v: m.v[i] })).filter(x => nn(x.v));
+        add('HistogramSeries', { priceLineVisible: false, lastValueVisible: true, title: m.label + ' $B · red glow = estimated forced selling' }, pane)
+            .setData(pts.map(x => ({ time: x.t, value: x.v, color: x.v < 0 ? 'rgba(255,60,90,.85)' : 'rgba(74,222,128,.7)' })));
+        if (mv || !SPXISH.test(c.symbol) || !pts.length) return;
+        const max = Math.max(...pts.map(x => Math.abs(x.v)), 1e-9);
+        const p = prim((ctx, size, ts) => {
+            const w = Math.max(2, ts.options().barSpacing || 6);
+            ctx.save();
+            pts.forEach(x => {
+                const px = ts.timeToCoordinate(x.t);
+                const k = Math.min(1, Math.abs(x.v) / max), sell = x.v < 0;
+                if (px == null || k < 0.12) return;                     // small days stay unshaded so the selling spikes stand out
+                ctx.fillStyle = sell ? `rgba(255,40,70,${0.08 + 0.4 * k})` : `rgba(74,222,128,${0.04 + 0.14 * k})`;
+                ctx.shadowColor = sell ? 'rgba(255,40,70,.9)' : 'rgba(74,222,128,.5)';
+                ctx.shadowBlur = sell ? 6 + 14 * k : 4;
+                ctx.fillRect(px - w / 2, 0, w, size.height);
+            });
+            ctx.restore();
+        }, 'bottom');
+        cell.candles.attachPrimitive(p); cell.cprims.push(p); cell.prims.push(p);
+    }
+
     // ---- extra data: series lines, compare symbols, fans, overlays (each cached; a late answer re-renders the cell)
     async function ensureLine(cell, id) {
         if (cell.lines[id]) return;
@@ -450,6 +476,7 @@
             if (!l) { ensureLine(cell, sd.id); return; }
             if (!l.meta) return;
             const color = COLORS[(k + 3) % COLORS.length], m = l.meta;
+            if (sd.id === FORCED) { forcedFlow(cell, c, m, add, np++, mv); return; }
             if (sd.where === 'left') left = true;
             const s = add('LineSeries', { color, lineWidth: 2, priceScaleId: sd.where === 'left' ? 'left' : 'right', title: m.label }, sd.where === 'left' ? 0 : np++);
             s.setData(m.t.map((t, i) => ({ time: t, value: m.v[i] })).filter(x => nn(x.value)));

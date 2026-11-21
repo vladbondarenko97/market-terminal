@@ -1832,7 +1832,7 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/chart/series" format="json" source="stored">
-      <description>CHART tab: one non-price series as {t, v, label, unit, description}: EIA stocks and days of supply, Chaos, RRP, SOFR, VMRI. Ids are listed by /api/chart/catalog; an unknown id is a 404.</description>
+      <description>CHART tab: one non-price series as {t, v, label, unit, description}: EIA stocks and days of supply, Chaos, RRP, SOFR, VMRI, the forced-flow estimate of card R. Ids are listed by /api/chart/catalog; an unknown id is a 404.</description>
       <parameters>
         <param name="id" type="string" default="" description="series id, e.g. eia.days.distillate" />
         <param name="from" type="string" default="" description="first date, YYYY-MM-DD" />
@@ -1879,7 +1879,7 @@ def api_help():
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/regime" format="json" source="stored">
-      <description>R · Market Regime / Shock Reader from the latest snapshot: the regime (CALM, VOLATILITY SHOCK with or without credit/recession confirmation, CREDIT STRESS, RECESSION-TYPE BEAR, LIQUIDITY SQUEEZE, PANIC UNWINDING), why (each reading against its threshold), the forced-selling rows (vol-control, CTA, leveraged ETFs, dealer gamma: value, direction, status, or missing with a reason), the playbook rows (FIRED / waiting / missing) and THE READ (a short text with the model that wrote it, or missing). 404 when the snapshot has no regime block.</description>
+      <description>R · Market Regime / Shock Reader from the latest snapshot: the regime (CALM, VOLATILITY SHOCK with or without credit/recession confirmation, CREDIT STRESS, RECESSION-TYPE BEAR, LIQUIDITY SQUEEZE, PANIC UNWINDING), why (each reading against its threshold), the forced-selling rows (vol-control, CTA, leveraged ETFs, dealer gamma: value, direction, status, or missing with a reason), the forced-flow projection (an estimate: SPY -10..+5% scenarios by source, 30-session vol-control and CTA paths with the re-leveraging dates, the rebuilt daily history), the playbook rows (FIRED / waiting / missing) and THE READ (a short text with the model that wrote it, or missing). 404 when the snapshot has no regime block.</description>
       <parameters />
     </endpoint>
     <endpoint method="GET" path="/api/trackers" format="json" source="stored + live quotes">

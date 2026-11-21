@@ -681,6 +681,13 @@ def calendar_effects(df, fomc_dates, cpi_dates, today, releases=None, speeches=N
 LEVERED = {"SPY": {"SSO": 2, "UPRO": 3, "SPXL": 3, "SH": -1, "SDS": -2, "SPXU": -3, "SPXS": -3},
            "SLV": {"AGQ": 2, "ZSL": -2}}
 VOL_CONTROL_AUM = 400e9          # midpoint of the commonly cited $300-500B equity notional in vol-control strategies
+VOL_CONTROL_TARGET, VOL_CONTROL_CAP = 0.10, 1.5
+
+
+def vol_control_exposure(rets):
+    """(exposure, realized vol) of a vol-control fund over daily returns: min(target / max(1m, 3m realized vol), cap)."""
+    rv = max(rets.tail(21).std(), rets.tail(63).std()) * math.sqrt(252)
+    return min(VOL_CONTROL_TARGET / rv, VOL_CONTROL_CAP) if rv else VOL_CONTROL_CAP, rv
 
 
 def mechanical_flows(symbol, df, aum, gex, trend, spot):
@@ -703,9 +710,7 @@ def mechanical_flows(symbol, df, aum, gex, trend, spot):
                              "pct_of_adv_per_1pct": (tot * 0.01 / adv * 100) if adv else None,
                              "note": "end-of-day rebalance = sum AUM x L(L-1) x return; buys after up days, sells after down days"}
     if symbol == "SPY":
-        def expo(rets):
-            rv = max(rets.tail(21).std(), rets.tail(63).std()) * math.sqrt(252)
-            return min(0.10 / rv, 1.5) if rv else 1.5, rv
+        expo = vol_control_exposure
         e0, rv0 = expo(r)
         e5, _ = expo(r.iloc[:-5])
         e21, _ = expo(r.iloc[:-21])

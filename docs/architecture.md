@@ -110,6 +110,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/chaos.py` | Chaos / Peace index: twelve stress z-scores, levers and the midterm studies (card 14), pure functions |
 | `core/bitcoin.py` | BITCOIN tab: price and cycle, on-chain (Coin Metrics), leverage (Deribit), flows (IBIT, Coinbase / Kraken, DefiLlama, CFTC), the 11 checklist rows and the verdict; `collect()` runs in the pipeline, the maths are pure functions |
 | `core/regime.py` | R · Market Regime / Shock Reader: the regime rules, forced-selling rows, playbook conditions and THE READ (the only model call, made in the pipeline); `regime` snapshot block |
+| `core/flowproj.py` | Card R's forced-flow projection (an estimate): SPY price scenarios by source, 30-session vol-control and CTA paths, the daily estimate rebuilt from stored closes and runs; called by `core/regime.py` |
 | `core/trackers.py` | T · Trackers: the operator's alert conditions (expression parser over `ast`, evaluation, edge-triggered firing with cooldown, the JSON store at `TRACKERS_FILE`, fire history); run by `main_pipeline.py tracker-alerts` |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
 | `core/brokerage.py` | SnapTrade client for the terminal's Brokerage Positions card: signed REST calls, spread grouping, 60 s cache. Live, not part of the pipeline |
