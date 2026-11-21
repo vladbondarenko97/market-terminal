@@ -30,7 +30,7 @@ Both run on one Mac. Data lives in its own folder, never in git (`CME_Data/`, se
    │            deduplicated per run, concurrency-limited per provider, logged,
    │            raw response stored (v2_payloads, SHA-256 dedup)
    │            models are computed here too                                         core/metrics.py, core/forecast.py,
-   │                                                                                 core/refining.py, core/chaos.py, core/bitcoin.py
+   │                                                                                 core/refining.py, core/chaos.py, core/bitcoin.py, core/regime.py
    ├─ capture   lake.record_observations(): typed rows in v2_observations           core/lake.py
    ├─ commit    lake.commit_snapshot(): one immutable JSON document (v2_snapshots)
    │            then the snapshot is re-loaded; everything after reads only it
@@ -109,6 +109,8 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `core/fedops.py` | Fed / Treasury operations (card 15): NY Fed repo and reverse repo operations and reference rates, Treasury buybacks and auctions as `fedops.*` observations; the per-run top-up, history reads and summaries |
 | `core/chaos.py` | Chaos / Peace index: twelve stress z-scores, levers and the midterm studies (card 14), pure functions |
 | `core/bitcoin.py` | BITCOIN tab: price and cycle, on-chain (Coin Metrics), leverage (Deribit), flows (IBIT, Coinbase / Kraken, DefiLlama, CFTC), the 11 checklist rows and the verdict; `collect()` runs in the pipeline, the maths are pure functions |
+| `core/regime.py` | R · Market Regime / Shock Reader: the regime rules, forced-selling rows, playbook conditions and THE READ (the only model call, made in the pipeline); `regime` snapshot block |
+| `core/trackers.py` | T · Trackers: the operator's alert conditions (expression parser over `ast`, evaluation, edge-triggered firing with cooldown, the JSON store at `TRACKERS_FILE`, fire history); run by `main_pipeline.py tracker-alerts` |
 | `core/positions.py` | Engine tickets: record, mark to market, horizon values, star and hide |
 | `core/brokerage.py` | SnapTrade client for the terminal's Brokerage Positions card: signed REST calls, spread grouping, 60 s cache. Live, not part of the pipeline |
 | `core/news.py` | Headline clustering (title normalisation, Jaccard de-duplication, recency windows, priority bucketing); pure functions |
@@ -139,6 +141,7 @@ These rules hold across the codebase. A change that breaks one needs a very good
 | `options_whale/static/app.js` | Macro, Time Arbitrage, War Room, Engine Positions UI |
 | `options_whale/static/forecast.js` | Forecast Lab UI |
 | `options_whale/static/bitcoin.js` | BITCOIN tab UI (reuses forecast.js helpers) |
+| `options_whale/static/regime.js` | Forecast Lab cards R (regime) and T (trackers): the pill, the forced-selling and playbook tables, the tracker table and its editor modal. Reads `/api/regime` and `/api/trackers` |
 | `options_whale/static/people.js` | PEOPLE tab UI: cards, filters, lazy rendering (reuses forecast.js helpers and Lightweight Charts). Reads `/api/people`, a file in the data folder written by an external job |
 | `options_whale/static/chart.js` | CHART tab UI (Lightweight Charts) |
 | `options_whale/static/favicon.svg`, `favicon-32.png`, `apple-touch-icon.png` | The terminal's icon (SVG, a PNG fallback, the iPhone home-screen icon) |

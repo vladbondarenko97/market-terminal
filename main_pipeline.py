@@ -17,6 +17,7 @@
                                                                  # CHART tab bars into CHART_STORE (own lock; not the run lock)
   python main_pipeline.py headlines [--date D | --backfill FROM [--to D]] [--offline]
                                                                  # CHART day-view headlines (Wikipedia, GDELT) into CHART_STORE
+  python main_pipeline.py tracker-alerts [--dry-run] [--test ID] # evaluate the T · Trackers (24/7; session-only ones only in the session)
   python main_pipeline.py status                                 # last 10 runs + the current run's status
   python main_pipeline.py ntfy-test                              # send the latest run's phone brief to NTFY_URL
 
@@ -685,6 +686,47 @@ def signal_alerts(dry_run=False, test=False):
         conn.close()
 
 
+def tracker_alerts(dry_run=False, test_id=None):
+    """Evaluate the operator's T · Trackers (core/trackers.py) against the latest live snapshot and live quotes and push each one that just
+    fired (ntfy). 24/7 trackers run at any hour; session-only ones only inside the NYSE session. State is written beside the trackers
+    file only after a push is delivered. `--dry-run` prints every tracker's reading and sends and saves nothing; `--test ID` sends that
+    tracker's push once, marked TEST."""
+    from core import trackers as T, watch as W
+    import yfinance as yf
+
+    def quote(sym):
+        return float(yf.Ticker(sym).fast_info["last_price"])
+    items, now = T.load(), datetime.now(timezone.utc)
+    conn = lake.connect(DB_PATH)
+    try:
+        env = T.snapshot_env(conn, quote)
+    finally:
+        conn.close()
+    if test_id:
+        t = next((x for x in items if x["id"] == test_id), None)
+        if t is None:
+            print(f"tracker-alerts: no tracker {test_id!r}")
+            return 1
+        ok, title, _ = T.fire_test(t, env, T.send_ntfy, now)
+        print(f"tracker-alerts: test {'sent' if ok else 'NOT delivered'}: {title}")
+        return 0 if ok else 2
+    state = T.load_state()
+    send = (lambda *a: False) if dry_run else T.send_ntfy
+    new, fired = T.run_due(items, env, state, now, send, W.in_session())
+    if dry_run:
+        for t in items:
+            res = T.check(t, env)
+            vals = ", ".join(f"{c['expr']}={c['value']}" if c["value"] is not None else f"{c['expr']}=({c['error']})" for c in res["conditions"])
+            print(f"{T.status_of(t, {'met': res['met'], **state.get(t['id'], {})}, now):12} {t['name']:50} {vals}")
+        return 0
+    if env.ctx_why:
+        print(f"{now:%Y-%m-%d %H:%M} tracker-alerts: snapshot metrics unavailable: {env.ctx_why}")
+    T.save_state(new)
+    if fired:
+        print(f"{now:%Y-%m-%d %H:%M} tracker-alerts: fired {fired}")
+    return 0
+
+
 def _latest_run_id(conn):
     row = conn.execute("SELECT run_id FROM v2_latest_snapshot").fetchone()
     return row["run_id"] if row else None
@@ -1078,6 +1120,9 @@ def main(argv=None):
     sa = sub.add_parser("signal-alerts", help="notify (ntfy + this Mac) for each Signal Watch row that just went from waiting to FIRED")
     sa.add_argument("--dry-run", action="store_true", help="print the live signal states and what would be sent; send and save nothing")
     sa.add_argument("--test", action="store_true", help="send the first signal as a sample alert to check delivery")
+    ta = sub.add_parser("tracker-alerts", help="evaluate the T · Trackers and push (ntfy) each one that just fired; 24/7 trackers run outside the session too")
+    ta.add_argument("--dry-run", action="store_true", help="print every tracker's reading and state; send and save nothing")
+    ta.add_argument("--test", metavar="ID", help="send that tracker's push once, marked TEST, to check delivery")
     a = p.parse_args(argv)
     try:
         return _dispatch(a)
@@ -1133,6 +1178,8 @@ def _dispatch(a):
         return status()
     if a.cmd == "signal-alerts":
         return signal_alerts(dry_run=a.dry_run, test=a.test)
+    if a.cmd == "tracker-alerts":
+        return tracker_alerts(dry_run=a.dry_run, test_id=a.test)
     if a.cmd == "ntfy-test":
         from send_email import ntfy_brief
         conn = lake.connect(DB_PATH)

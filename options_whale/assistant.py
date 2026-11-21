@@ -138,6 +138,12 @@ SOURCES = OrderedDict([
         "multiple, halving clock, realized price, MVRV and MVRV Z-score, hash ribbons, Deribit funding and open interest, DVOL, IBIT flows, Coinbase premium, "
         "stablecoin supply, CME COT, then the HOLD / BUY / SELL / NO CALL verdict and every checklist row (fired, waiting or missing with the reason, and "
         "whether it is graded on history). Conditions, not a trade call. Say the run time.")),
+    ("regime", ("/api/regime", (), "R · Market Regime / Shock Reader of the latest run: the regime (CALM, VOLATILITY SHOCK with or without credit/recession confirmation, CREDIT STRESS, "
+        "RECESSION-TYPE BEAR, LIQUIDITY SQUEEZE, PANIC UNWINDING), why (each reading against its threshold), the forced-selling gauge (vol-control funds, CTA position vs flip levels, "
+        "leveraged ETFs, dealer gamma: value, direction, status; missing with a reason), the tranche playbook conditions (FIRED or waiting) and THE READ (a short text and which model "
+        "wrote it). Conditions, not advice. Say the run time.")),
+    ("trackers", ("/api/trackers", (), "T · Trackers: the operator's own alert conditions (name, conditions, priority, cooldown, hours) with their live value, distance to trigger, "
+        "state (armed, FIRED, cooling down, disabled), last fired time and the recent fire history. Read-only here; they are edited on the terminal's TRACKERS card.")),
     ("people", ("/api/people", ("person",), "Tracked people (PEOPLE tab: SEC 13F filers and members of Congress) as labelled rows: estimated portfolio value "
         "(Congress: the disclosure range), day / 1M / YTD change, change vs SPY since tracking start, top holdings with weight, and the latest trades "
         "(date, filed date, BUY or SELL, ticker, amount or range, owner, filing link). person=name or slug narrows it, e.g. 'what did Pelosi buy'. "

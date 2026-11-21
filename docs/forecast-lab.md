@@ -442,6 +442,14 @@ instead:
    `copyForecastCard()` mapping to `d.refining.<key>`), and bump `VERSION` in `core/refining.py` when you change an
    existing value.
 
+## R · Market Regime / Shock Reader and T · Trackers
+
+**R** is a market-wide card built like the late blocks of the run (it follows the Adding steps 1 to 5, with its own route): `core/regime.py` (`regime_v1`) turns the run's `prices`, `forecast`, `chaos`, `fed_ops` and
+`bitcoin` blocks and the previous run's regime into the snapshot key `regime`; `collect._guarded_regime()` runs it last and an exception becomes an error block, never an aborted run. `/api/regime` returns the block and
+`options_whale/static/regime.js` renders it (card id `fcR`, above Signal Watch). It reads the picked model in oMLX through `narrative.chat_local` for THE READ (never another model, so oMLX never loads a second one) and falls back to
+one no-tools Sonnet call through Claude Code (`--max-budget-usd 0.10`); offline runs skip both. **T** is not a model: it reads and writes the operator's tracker file (`core/trackers.py`, id `fcT`). Both are described in
+[Terminal](terminal.md#rule-cards-and-alerts-forecast-lab-tab-top) and [Operations](operations.md#signal-alerts-and-the-midday-run).
+
 ## Rule cards (0, 12, 13)
 
 Three cards on this tab are rules, not models, and are not part of the snapshot: **0 · Signal Watch** reads the

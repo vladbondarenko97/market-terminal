@@ -26,6 +26,9 @@ SCHED_LOG="$HOME/Library/Logs/marketdashboard.log"
 ALERT_LABEL="com.vlad.signalalerts"
 ALERT_PLIST="$HOME/Library/LaunchAgents/$ALERT_LABEL.plist"
 ALERT_LOG="$HOME/Library/Logs/signalalerts.log"
+TRACK_LABEL="com.vlad.trackeralerts"
+TRACK_PLIST="$HOME/Library/LaunchAgents/$TRACK_LABEL.plist"
+TRACK_LOG="$HOME/Library/Logs/trackeralerts.log"
 
 MENUBAR=1
 UNINSTALL=0
@@ -62,7 +65,8 @@ set_scheduled_runs() {
 remove_schedule() {
     launchctl bootout "$DOMAIN/$SCHED_LABEL" 2>/dev/null || true
     launchctl bootout "$DOMAIN/$ALERT_LABEL" 2>/dev/null || true
-    rm -f "$SCHED_PLIST" "$ALERT_PLIST"
+    launchctl bootout "$DOMAIN/$TRACK_LABEL" 2>/dev/null || true
+    rm -f "$SCHED_PLIST" "$ALERT_PLIST" "$TRACK_PLIST"
     set_scheduled_runs ""
 }
 
@@ -285,6 +289,37 @@ EOF
     for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$ALERT_PLIST" 2>/dev/null && break; sleep 1; done
     launchctl print "$DOMAIN/$ALERT_LABEL" >/dev/null 2>&1 || warn "launchd did not load $ALERT_PLIST"
     echo "ok: Signal Watch alerts every 15 minutes of the session, weekdays only (log: $ALERT_LOG)"
+    # Trackers (T card): every 15 minutes, any day and hour, so 24/7 trackers (crypto) are checked outside the session too; session-only
+    # trackers skip themselves when the market is closed. A sleeping Mac runs it once on wake.
+    cat > "$TRACK_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$TRACK_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$VPY</string>
+        <string>$ROOT/main_pipeline.py</string>
+        <string>tracker-alerts</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$ROOT</string>
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>StandardOutPath</key>
+    <string>$TRACK_LOG</string>
+    <key>StandardErrorPath</key>
+    <string>$TRACK_LOG</string>
+</dict>
+</plist>
+EOF
+    plutil -lint "$TRACK_PLIST" >/dev/null
+    launchctl bootout "$DOMAIN/$TRACK_LABEL" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do launchctl bootstrap "$DOMAIN" "$TRACK_PLIST" 2>/dev/null && break; sleep 1; done
+    launchctl print "$DOMAIN/$TRACK_LABEL" >/dev/null 2>&1 || warn "launchd did not load $TRACK_PLIST"
+    echo "ok: Tracker alerts every 15 minutes, every day (log: $TRACK_LOG)"
     # A sleeping Mac runs the missed job when it wakes; the run skips itself if that is more than 30 minutes late.
     SLEEP_MIN="$(pmset -g 2>/dev/null | awk '$1=="sleep"{print $2; exit}')"
     if [ -n "$SLEEP_MIN" ] && [ "$SLEEP_MIN" != "0" ]; then

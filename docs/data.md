@@ -73,7 +73,7 @@ Top-level sections: `run`, `calendar`, `inventory`, `cme_volume`, `prices`, `sha
 `vmri`, `mmri`, `paper_physical`, `oi_divergence`, `es_put_call`, `options`, `flow`, `technicals`, `weather`, `breadth`,
 `execution`, `ebay`, `sources`, `stage_seconds`, the model-feature sections from `extended_features()`
 (`price_stats`, `vol_regime`, `cme_positioning`, `silver_options_cme`, `inventory_trend`, `silver_basis`,
-`regime_context`), `position_marks`, `forecast`, `refining`, `fans`, `chaos`, `fed_ops`, `bitcoin`, `news` and `appendix`. A section that could not be built is
+`regime_context`), `position_marks`, `forecast`, `refining`, `fans`, `chaos`, `fed_ops`, `bitcoin`, `regime`, `news` and `appendix`. A section that could not be built is
 `{"status": "missing", "reason": "..."}`. The daily file `report_snapshot.json` is this document, indented.
 `python main_pipeline.py catalog` lists the metrics with their paths.
 
@@ -84,6 +84,12 @@ Mayer multiple, halving clock; from the stored `BTC-USD` daily bars of the chart
 `{"status": "missing", "reason"}` when its source did not answer; offline runs have no Bitcoin part. The IBIT shares-outstanding day is stored as the observation `bitcoin.ibit_shares`
 (`observed_at` the iShares as-of date, `value_num` shares, `dims.nav`), one per day, so the flow history builds up from the first run. The Coin Metrics capture (`kind` `coinmetrics_full`,
 ~1.5 MB) is taken once a month and each run adds a 21-day `coinmetrics_tail` on top of it; the DefiLlama capture keeps the last 120 days.
+
+`regime` (model `regime_v1`, `core/regime.py`) is the R · Market Regime / Shock Reader block, built last in the run from the other blocks: `status` (fresh or missing with `reason`; HY OAS or every volatility
+reading missing makes it missing), `key` and `regime` (CALM, VOL_SHOCK, VOL_SHOCK_WATCH, CREDIT_STRESS, RECESSION_BEAR, LIQUIDITY_SQUEEZE, PANIC_UNWINDING and their labels), `why` (readings against thresholds),
+`readings` (every input with value, threshold, `met`, as-of and a reason when missing), `confirmation`, `previous` (the previous committed run's regime) and `changed`, `rules`, `forced_selling` (`rows`: value,
+unit, direction SELL / BUY / NEUTRAL, status ACTIVE / quiet / missing, detail, reason; plus `active_sellers`, `sold_recent_usd`, `if_spy_down_2pct_usd`), `playbook` (FIRED / waiting / missing) and `read`
+(`status`, `text`, `engine` local or claude, `model`, `generated_at`, `cost_usd`; or missing with a reason). Offline runs have the block without a read.
 
 `fans` (model `fans_v2`, `core/fans.py`) holds the scenario fans: `status`, `reason`, `version`, a `kronos` block (status, reason, model, input, spread, verdict, device, seconds)
 and `series`, keyed by series id (12 daily markets and fuels, `crack.diesel`, `crack.321`, 6 weekly EIA stocks and utilization, 3 `days.*`).
@@ -188,6 +194,7 @@ CME_Data/
 ├── analyst_sandbox/                  empty working folder of the Claude Code analyst (`narrative --engine claude`)
 ├── backups/                          portfolio-<UTC time>.db copies made before import-history
 ├── backup_lake.log                   output of the Hugging Face lake backup after each live run
+├── trackers.json                     T · Trackers (+ trackers_state.json, trackers_fires.jsonl); here unless TRACKERS_FILE points elsewhere
 ├── people_portfolios.json            INPUT for the PEOPLE tab, written by an external job (see below); the terminal only reads it
 ├── .lake_backup.lock                 lock file: one lake backup at a time
 ├── archive/ledger_csvs_<date>.zip    the retired ledger CSVs (the tables in portfolio.db hold the rows)
@@ -261,6 +268,13 @@ the report text, `email.eml` and the whole snapshot of every run are stored in t
 The PEOPLE tab's data. **It is written once a day, atomically, by `people_track.py` in the operator's separate `~/dev/library` project** (not by the pipeline or the terminal) and synced to the web server with the rest of the data folder. The terminal only reads it (`GET /api/people`); a missing file is `{"status": "missing", "reason": ...}` with HTTP 404 and the tab shows the reason. Nothing here is computed or estimated by this repository.
 
 Shape (`version` 1): `as_of` (ISO time), optional `congress_summary` (`members_trading_30d`, `most_bought_30d` and `most_sold_30d`, each a list of `{ticker, n_members, n_buys}`; the strip is hidden when absent) and `people`, one entry per tracked person: `slug`, `name`, `role`, `kind` (`sec` for exact shares from 13F / Form 4, `congress` for disclosure ranges), `completeness` (what the data does not cover), `totals` (`value_est`, `value_low`, `value_high`, `n_positions`, `change_1d_pct`, `change_1m_pct`, `change_ytd_pct`, `vs_spy_since_start_pct`; any may be null), `value_history` (`[["YYYY-MM-DD", value], ...]`), `holdings` (ticker, name, shares or null, value estimate and range, `weight_pct`, price and its date, `change_1d_pct`, `owner`, `first_seen`, `last_tx_date`), `transactions` (date, filed date, ticker, name, `type` buy or sell, shares or null, `amount_low` / `amount_high`, owner, `form`, `source_url`) and `sources` (`label`, `url`). A null is shown as a dash with a tooltip, never as 0. A test fixture with fixed dates is `tests/fixtures/people/people_portfolios.json`.
+
+## trackers.json, trackers_state.json, trackers_fires.jsonl (T · Trackers)
+
+The operator's alert conditions. `trackers.json` is `{"version": 1, "trackers": [...]}` (a tracker: `id`, `name`, `conditions` (each `expr`, `op`, `value`), `priority`, `cooldown_min`, `hours`, `note`, `enabled`); it is written only by the
+terminal's TRACKERS card (`POST /api/trackers`). Until the first save the seven seed trackers are shown from code. `trackers_state.json` (per tracker: last values, armed or not, `last`, `last_fired`, `checked`, `error`) is written only
+by `main_pipeline.py tracker-alerts`, so an edit in the terminal cannot overwrite it; `trackers_fires.jsonl` gets one line per fire or test (`t`, `id`, `name`, `priority`, `text`, `test`). All three sit in
+the folder of `TRACKERS_FILE` (default: this data folder; on the Mac `/Volumes/1tb SSD/market-terminal/`, falling back to the data folder with a logged warning if the disk is not mounted). Not part of any snapshot or upload.
 
 ## What gets uploaded
 

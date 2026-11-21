@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 import config
-from core import bitcoin, cme, fedops, history, importer, lake, metrics
+from core import bitcoin, cme, fedops, history, importer, lake, metrics, regime
 from core import news as newsmod
 from core import sources as src
 from core.sources import SourceUnavailable
@@ -824,6 +824,8 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
     chaos_ctx = timed("chaos", lambda: _guarded_chaos(conn, session, run["run_id"], today, frames_hist))
     fed_ops_ctx = timed("fed_ops", lambda: _guarded_fed_ops(conn, session, run["run_id"], today))     # after chaos: the Treasury requests are shared
     bitcoin_ctx = timed("bitcoin", lambda: _guarded_bitcoin(conn, session, run["run_id"], today, chaos_ctx, prices))     # after chaos: two of its rows read it
+    regime_ctx = timed("regime", lambda: _guarded_regime(conn, session, today, {"prices": prices, "forecast": forecast, "chaos": chaos_ctx, "fed_ops": fed_ops_ctx,
+                                                                                 "bitcoin": bitcoin_ctx}, frames_hist))     # last: it reads every block above
 
     ctx = {
         "run": {k: run[k] for k in ("run_id", "generated_at", "run_folder", "mode", "code_version", "trigger")}
@@ -841,6 +843,7 @@ def build_context(conn, session, run, *, use_browser=True, skip_cme_download=Fal
         "chaos": chaos_ctx,
         "fed_ops": fed_ops_ctx,
         "bitcoin": bitcoin_ctx,
+        "regime": regime_ctx,
     }
     frames = {"trades": {k: v[1] for k, v in flows.items()}}
     return lake.clean_json(ctx), frames
@@ -1191,6 +1194,30 @@ def _guarded_bitcoin(conn, session, run_id, today, chaos, prices):
     try:
         vix, v3 = (prices.get("vix") or {}).get("value"), (prices.get("vix3m") or {}).get("value")
         return bitcoin.collect(conn, session, run_id, today, chaos, vix / v3 if vix and v3 else None)
+    except Exception as e:
+        return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
+
+
+def _guarded_regime(conn, session, today, parts, frames):
+    """R · Market Regime: the rules over this run's blocks, then THE READ (the picked local model, else Sonnet; offline runs skip both).
+    Optional like the other late blocks: a failure becomes an error block, never an aborted run."""
+    try:
+        try:                                   # the previous committed run's regime: what a change and a PANIC UNWINDING are measured against
+            row = conn.execute("SELECT run_id, json_extract(context_json, '$.regime') AS r FROM v2_latest_snapshot").fetchone()
+            prev = {**(json.loads(row["r"]) if row and row["r"] else {}), "run_id": row["run_id"]} if row and row["r"] else None
+            prev = prev if prev and prev.get("status") == "fresh" else None
+        except Exception:
+            prev = None
+        close = frames.get("SPY")
+        closes = [float(x) for x in close["Close"].dropna().tolist()] if close is not None and "Close" in close else []
+        block = regime.build({"today": today, **parts, "spy_closes": closes, "prev": prev})
+        if block.get("status") == "fresh" and not getattr(session, "offline", False):
+            from core import narrative
+            url, model, _ = narrative.local_settings()
+            block["read"] = regime.write_read(block, narrative.chat_local if url else None, model, regime.chat_claude)
+        elif block.get("status") == "fresh":
+            block["read"] = {"status": "missing", "reason": "offline run: no model is called"}
+        return block
     except Exception as e:
         return {"status": "error", "reason": lake.redact(f"{type(e).__name__}: {e}")}
 
